@@ -209,19 +209,148 @@ cat > "${SCRIPTS_DIR}/postinstall" << 'POSTINSTALL'
 INSTALL_DIR="/var/lib/slimrmm"
 LAUNCHD_LABEL="io.slimrmm.agent"
 AGENT_BINARY="${INSTALL_DIR}/slimrmm-agent"
+CONFIG_FILE="${INSTALL_DIR}/.slimrmm_config.json"
 
-echo "SlimRMM Agent - Post-installation"
+echo ""
+echo "=============================================="
+echo "  SlimRMM Agent - Post-installation"
+echo "  Copyright (c) 2025 Kiefer Networks"
+echo "=============================================="
+echo ""
 
 # Set proper permissions
 chmod 755 "${AGENT_BINARY}"
 chmod 700 "${INSTALL_DIR}/certs"
 chmod 755 "${INSTALL_DIR}/log"
 
-# Load the LaunchDaemon
-echo "Loading SlimRMM agent service..."
-launchctl bootstrap system /Library/LaunchDaemons/${LAUNCHD_LABEL}.plist
+# Check for silent installation parameters
+# These can be set via environment variables before running installer:
+# SLIMRMM_SERVER="https://..." SLIMRMM_KEY="..." sudo installer -pkg ...
+SILENT_SERVER="${SLIMRMM_SERVER:-}"
+SILENT_KEY="${SLIMRMM_KEY:-}"
 
-# Request TCC permissions (Full Disk Access, Screen Recording)
+# Also check for config file passed during installation
+if [ -f "/tmp/slimrmm_install_config.json" ]; then
+    SILENT_SERVER=$(python3 -c "import json; print(json.load(open('/tmp/slimrmm_install_config.json')).get('server', ''))" 2>/dev/null)
+    SILENT_KEY=$(python3 -c "import json; print(json.load(open('/tmp/slimrmm_install_config.json')).get('installation_key', ''))" 2>/dev/null)
+    rm -f /tmp/slimrmm_install_config.json
+fi
+
+# Function to register agent
+register_agent() {
+    local server_url="$1"
+    local install_key="$2"
+
+    echo "Registering agent with server: ${server_url}"
+
+    # Get system info
+    local hostname=$(hostname)
+    local os="darwin"
+    local arch=$(uname -m)
+
+    # Register with server
+    local response=$(curl -s -X POST "${server_url}/api/v1/agents/register" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"installation_key\": \"${install_key}\",
+            \"os\": \"${os}\",
+            \"arch\": \"${arch}\",
+            \"hostname\": \"${hostname}\",
+            \"agent_version\": \"1.0.0\"
+        }" 2>/dev/null)
+
+    if [ -z "$response" ]; then
+        echo "ERROR: Could not connect to server"
+        return 1
+    fi
+
+    # Parse response
+    local uuid=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('uuid',''))" 2>/dev/null)
+    local api_key=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('api_key',''))" 2>/dev/null)
+    local error=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('detail',''))" 2>/dev/null)
+
+    if [ -z "$uuid" ] || [ -z "$api_key" ]; then
+        echo "ERROR: Registration failed - ${error:-Unknown error}"
+        return 1
+    fi
+
+    # Save configuration
+    cat > "${CONFIG_FILE}" << CONFIGEOF
+{
+    "server": "${server_url}",
+    "uuid": "${uuid}",
+    "api_key": "${api_key}"
+}
+CONFIGEOF
+    chmod 600 "${CONFIG_FILE}"
+
+    echo "Agent registered successfully!"
+    echo "  UUID: ${uuid}"
+    return 0
+}
+
+# Interactive or silent installation
+if [ -n "$SILENT_SERVER" ] && [ -n "$SILENT_KEY" ]; then
+    # Silent installation with provided parameters
+    echo "Silent installation mode detected."
+    register_agent "$SILENT_SERVER" "$SILENT_KEY"
+    REGISTRATION_SUCCESS=$?
+else
+    # Check if we're in an interactive terminal
+    if [ -t 0 ]; then
+        # Interactive mode - prompt for configuration
+        echo "Please enter your SlimRMM server details:"
+        echo ""
+
+        read -p "Server URL (e.g., https://rmm.example.com): " SERVER_URL
+        read -p "Installation Key: " INSTALL_KEY
+
+        if [ -n "$SERVER_URL" ] && [ -n "$INSTALL_KEY" ]; then
+            register_agent "$SERVER_URL" "$INSTALL_KEY"
+            REGISTRATION_SUCCESS=$?
+        else
+            echo ""
+            echo "No server details provided. Skipping registration."
+            echo "You can register later with:"
+            echo "  sudo ${AGENT_BINARY} --install --installation-key <KEY> --server <URL>"
+            REGISTRATION_SUCCESS=1
+        fi
+    else
+        # Non-interactive without silent params - show instructions
+        echo "Non-interactive installation without configuration."
+        echo ""
+        echo "To configure the agent, either:"
+        echo ""
+        echo "1. Run the installer with environment variables:"
+        echo "   SLIMRMM_SERVER=\"https://...\" SLIMRMM_KEY=\"...\" sudo installer -pkg SlimRMM-Agent.pkg -target /"
+        echo ""
+        echo "2. Or configure manually after installation:"
+        echo "   sudo ${AGENT_BINARY} --install --installation-key <KEY> --server <URL>"
+        echo ""
+        REGISTRATION_SUCCESS=1
+    fi
+fi
+
+# Load the LaunchDaemon only if registration was successful
+if [ "$REGISTRATION_SUCCESS" -eq 0 ]; then
+    echo ""
+    echo "Loading SlimRMM agent service..."
+    launchctl bootstrap system /Library/LaunchDaemons/${LAUNCHD_LABEL}.plist 2>/dev/null || true
+
+    sleep 2
+
+    if launchctl list | grep -q "${LAUNCHD_LABEL}"; then
+        echo "SlimRMM Agent service is running."
+    else
+        launchctl kickstart -k system/${LAUNCHD_LABEL} 2>/dev/null || true
+    fi
+else
+    echo ""
+    echo "Agent installed but not started (no configuration)."
+    echo "Configure and start manually when ready."
+fi
+
+# Request TCC permissions
 echo ""
 echo "=============================================="
 echo "  IMPORTANT: Permissions Required"
@@ -229,37 +358,25 @@ echo "=============================================="
 echo ""
 echo "SlimRMM Agent requires the following permissions:"
 echo ""
-echo "1. FULL DISK ACCESS"
-echo "   Required for: File management, system monitoring"
+echo "1. FULL DISK ACCESS (Required)"
+echo "   For: File management, system monitoring"
 echo ""
-echo "2. SCREEN RECORDING (optional)"
-echo "   Required for: Remote desktop functionality"
+echo "2. SCREEN RECORDING (Optional)"
+echo "   For: Remote desktop functionality"
 echo ""
-echo "To grant these permissions:"
-echo "  1. Open System Settings"
-echo "  2. Go to Privacy & Security"
-echo "  3. Add '${AGENT_BINARY}' to:"
-echo "     - Full Disk Access"
-echo "     - Screen Recording (if using remote desktop)"
-echo ""
+echo "Opening System Settings..."
 
 # Try to open System Settings to the correct pane
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" 2>/dev/null || true
 
-# Small delay to ensure service is loaded
-sleep 2
-
-# Check if service is running
-if launchctl list | grep -q "${LAUNCHD_LABEL}"; then
-    echo "SlimRMM Agent service is running."
-else
-    echo "Starting SlimRMM Agent service..."
-    launchctl kickstart -k system/${LAUNCHD_LABEL}
-fi
-
 echo ""
-echo "Installation complete!"
-echo "Agent installed to: ${INSTALL_DIR}"
+echo "=============================================="
+echo "  Installation Complete"
+echo "=============================================="
+echo ""
+echo "Agent binary: ${AGENT_BINARY}"
+echo "Config file:  ${CONFIG_FILE}"
+echo "Log files:    ${INSTALL_DIR}/log/"
 echo ""
 
 exit 0
