@@ -1,0 +1,66 @@
+#
+# SlimRMM Agent - Docker Compose Build Configuration
+# Copyright (c) 2025 Kiefer Networks
+#
+# Usage:
+#   Build all:  docker compose -f docker-compose.build.yml up
+#   Build DEB:  docker compose -f docker-compose.build.yml up build-deb
+#   Build RPM:  docker compose -f docker-compose.build.yml up build-rpm
+#
+
+services:
+  build-deb:
+    build:
+      context: .
+      dockerfile: Dockerfile.build
+      target: builder
+    volumes:
+      - ./dist:/output
+    environment:
+      - VERSION=${VERSION:-1.0.0}
+      - ARCH=${ARCH_DEB:-amd64}
+    command: >
+      bash -c "
+        ./build-linux-deb.sh $${VERSION} $${ARCH} &&
+        cp dist/*.deb /output/ &&
+        echo 'DEB build complete!'
+      "
+
+  build-rpm:
+    build:
+      context: .
+      dockerfile: Dockerfile.build
+      target: builder
+    volumes:
+      - ./dist:/output
+    environment:
+      - VERSION=${VERSION:-1.0.0}
+      - ARCH=${ARCH_RPM:-x86_64}
+    command: >
+      bash -c "
+        ./build-linux-rpm.sh $${VERSION} $${ARCH} &&
+        cp dist/*.rpm /output/ &&
+        echo 'RPM build complete!'
+      "
+
+  build-all:
+    build:
+      context: .
+      dockerfile: Dockerfile.build
+      target: builder
+    volumes:
+      - ./dist:/output
+    environment:
+      - VERSION=${VERSION:-1.0.0}
+    command: >
+      bash -c "
+        echo '=== Building DEB ===' &&
+        ./build-linux-deb.sh $${VERSION} amd64 &&
+        cp dist/*.deb /output/ &&
+        rm -rf build dist &&
+        mkdir -p dist &&
+        echo '=== Building RPM ===' &&
+        ./build-linux-rpm.sh $${VERSION} x86_64 &&
+        cp dist/*.rpm /output/ &&
+        echo '=== All builds complete! ==='
+      "
