@@ -12,8 +12,9 @@ set -e
 # Configuration
 VERSION="${1:-1.0.0}"
 BUILD_TYPE="${2:-all}"  # all, deb, rpm
-ARCH_DEB="${3:-amd64}"
-ARCH_RPM="${4:-x86_64}"
+
+# Architecture is auto-detected in container, but can be overridden
+# Note: Cross-compilation requires QEMU setup in Docker
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE_NAME="slimrmm-agent-builder"
@@ -61,15 +62,14 @@ echo "[2/4] Starting build container..."
 # Function to build DEB package
 build_deb() {
     echo ""
-    echo "Building DEB package (${ARCH_DEB})..."
+    echo "Building DEB package..."
 
     docker run --rm \
         --name "${CONTAINER_NAME}-deb" \
         -v "${SCRIPT_DIR}/dist:/output" \
         -e VERSION="${VERSION}" \
-        -e ARCH="${ARCH_DEB}" \
         "${IMAGE_NAME}" \
-        bash -c "./build-linux-deb.sh ${VERSION} ${ARCH_DEB} && cp dist/*.deb /output/"
+        bash -c "./build-linux-deb.sh ${VERSION} && cp dist/*.deb /output/"
 
     echo "DEB package built successfully!"
 }
@@ -77,15 +77,14 @@ build_deb() {
 # Function to build RPM package
 build_rpm() {
     echo ""
-    echo "Building RPM package (${ARCH_RPM})..."
+    echo "Building RPM package..."
 
     docker run --rm \
         --name "${CONTAINER_NAME}-rpm" \
         -v "${SCRIPT_DIR}/dist:/output" \
         -e VERSION="${VERSION}" \
-        -e ARCH="${ARCH_RPM}" \
         "${IMAGE_NAME}" \
-        bash -c "./build-linux-rpm.sh ${VERSION} ${ARCH_RPM} && cp dist/*.rpm /output/"
+        bash -c "./build-linux-rpm.sh ${VERSION} && cp dist/*.rpm /output/"
 
     echo "RPM package built successfully!"
 }
@@ -104,7 +103,7 @@ case "${BUILD_TYPE}" in
         ;;
     *)
         echo "Unknown build type: ${BUILD_TYPE}"
-        echo "Usage: $0 [version] [all|deb|rpm] [deb-arch] [rpm-arch]"
+        echo "Usage: $0 [version] [all|deb|rpm]"
         exit 1
         ;;
 esac
@@ -124,10 +123,10 @@ echo ""
 echo "Installation commands:"
 echo ""
 echo "  DEB (Debian/Ubuntu):"
-echo "    sudo dpkg -i dist/slimrmm-agent_${VERSION}_${ARCH_DEB}.deb"
+echo "    sudo dpkg -i dist/slimrmm-agent_${VERSION}_*.deb"
 echo ""
 echo "  RPM (RHEL/Fedora):"
-echo "    sudo rpm -i dist/slimrmm-agent-${VERSION}-1.${ARCH_RPM}.rpm"
+echo "    sudo rpm -i dist/slimrmm-agent-${VERSION}-*.rpm"
 echo ""
 echo "  Silent installation (both):"
 echo "    SLIMRMM_SERVER=\"https://...\" SLIMRMM_KEY=\"...\" sudo dpkg -i ..."

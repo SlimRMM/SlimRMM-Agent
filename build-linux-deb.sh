@@ -11,11 +11,24 @@ set -e
 # Configuration
 APP_NAME="slimrmm-agent"
 VERSION="${1:-1.0.0}"
-ARCH="${2:-amd64}"
 MAINTAINER="Kiefer Networks <support@slimrmm.io>"
 DESCRIPTION="SlimRMM Agent - Remote Monitoring and Management"
 INSTALL_DIR="/var/lib/slimrmm"
 SYSTEMD_SERVICE="slimrmm-agent"
+
+# Detect architecture
+MACHINE_ARCH=$(uname -m)
+case "${MACHINE_ARCH}" in
+    x86_64)
+        ARCH="amd64"
+        ;;
+    aarch64|arm64)
+        ARCH="arm64"
+        ;;
+    *)
+        ARCH="${2:-${MACHINE_ARCH}}"
+        ;;
+esac
 
 # Paths
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
