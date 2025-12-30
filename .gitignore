@@ -1,0 +1,87 @@
+# SlimRMM Agent - Git Ignore File
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+log/
+
+# Configuration (contains sensitive data)
+.slimrmm_config.json
+.rmm_config.json
+config.json
+
+# Certificates (sensitive)
+certs/
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Build artifacts
+dist/
+dist-linux/
+dist-macos/
+*.pkg
+*.deb
+*.rpm
+
+# osquery binary (large file)
+osqueryi
+osqueryd
+
+# Test files
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/
