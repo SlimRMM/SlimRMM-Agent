@@ -142,6 +142,24 @@ sudo apt remove slimrmm-agent
 sudo rpm -e slimrmm-agent
 ```
 
+## Silent Installation
+
+For automated deployments, you can pass server credentials during installation:
+
+### macOS
+
+```bash
+SLIMRMM_SERVER="https://rmm.example.com" SLIMRMM_KEY="your-installation-key" \
+  sudo installer -pkg SlimRMM-Agent-1.0.0-arm64.pkg -target /
+```
+
+### Linux
+
+```bash
+SLIMRMM_SERVER="https://rmm.example.com" SLIMRMM_KEY="your-installation-key" \
+  sudo dpkg -i slimrmm-agent_1.0.0_amd64.deb
+```
+
 ## Building from Source
 
 ### Prerequisites
@@ -149,16 +167,59 @@ sudo rpm -e slimrmm-agent
 - Python 3.9+
 - PyInstaller
 - Required Python packages (see `requirements.txt`)
+- For Linux builds: Docker (recommended) or dpkg-dev/rpm-build
 
-### Build Commands
+### macOS PKG
 
 ```bash
-# macOS PKG
 ./build-macos-pkg.sh 1.0.0
-
-# Linux
-./build-linux-agent.sh 1.0.0
 ```
+
+Output: `dist/SlimRMM-Agent-1.0.0-arm64.pkg`
+
+### Linux (Docker-based - Recommended)
+
+Build both DEB and RPM packages using Docker (works on any OS):
+
+```bash
+# Build all packages
+./build-linux.sh 1.0.0 all
+
+# Build DEB only
+./build-linux.sh 1.0.0 deb
+
+# Build RPM only
+./build-linux.sh 1.0.0 rpm
+```
+
+Using Docker Compose:
+
+```bash
+# Build all
+VERSION=1.0.0 docker compose -f docker-compose.build.yml up build-all
+
+# Build DEB only
+VERSION=1.0.0 docker compose -f docker-compose.build.yml up build-deb
+
+# Build RPM only
+VERSION=1.0.0 docker compose -f docker-compose.build.yml up build-rpm
+```
+
+### Linux (Native)
+
+On a Linux system with build tools installed:
+
+```bash
+# DEB package (requires dpkg-dev)
+./build-linux-deb.sh 1.0.0 amd64
+
+# RPM package (requires rpm-build)
+./build-linux-rpm.sh 1.0.0 x86_64
+```
+
+Output:
+- `dist/slimrmm-agent_1.0.0_amd64.deb`
+- `dist/slimrmm-agent-1.0.0-1.x86_64.rpm`
 
 ## Security
 
