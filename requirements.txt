@@ -11,6 +11,9 @@ certifi>=2023.0.0
 # Build
 pyinstaller>=6.0.0
 
+# Windows Service (Windows only)
+pywin32>=306; sys_platform == 'win32'
+
 # Remote Desktop (optional)
 aiortc>=1.6.0
 mss>=9.0.0

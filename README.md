@@ -13,6 +13,10 @@ A lightweight, cross-platform Remote Monitoring and Management (RMM) agent devel
 
 ## System Requirements
 
+### Windows
+- Windows 10/11 (64-bit)
+- Administrator privileges for installation
+
 ### macOS
 - macOS 12.0 (Monterey) or later
 - Apple Silicon (M1/M2/M3)
@@ -20,10 +24,20 @@ A lightweight, cross-platform Remote Monitoring and Management (RMM) agent devel
 
 ### Linux
 - Ubuntu 20.04+, Debian 11+, RHEL 8+, or compatible
-- x86_64 architecture
+- x86_64 or ARM64 architecture
 - Root privileges for installation
 
 ## Installation
+
+### Windows (MSI Installer)
+
+Download the latest `.msi` file from the [Releases](https://github.com/SlimRMM/SlimRMM-Agent/releases) page.
+
+Double-click the MSI file, or install via command line (Run as Administrator):
+
+```cmd
+msiexec /i SlimRMM-Agent-x.x.x-x64.msi
+```
 
 ### macOS (PKG Installer)
 
@@ -80,6 +94,22 @@ The configuration is stored in `/var/lib/slimrmm/.slimrmm_config.json`.
 
 ## Service Management
 
+### Windows
+
+```cmd
+# Start (Run as Administrator)
+sc start SlimRMMAgent
+
+# Stop
+sc stop SlimRMMAgent
+
+# Query status
+sc query SlimRMMAgent
+
+# View logs (in Event Viewer or)
+Get-EventLog -LogName Application -Source SlimRMMAgent
+```
+
 ### macOS
 
 ```bash
@@ -117,6 +147,14 @@ sudo journalctl -u slimrmm-agent -f
 
 ## Uninstallation
 
+### Windows
+
+Via Control Panel > Programs and Features, or:
+
+```cmd
+msiexec /x SlimRMM-Agent-*.msi /qn
+```
+
 ### macOS
 
 ```bash
@@ -146,6 +184,12 @@ sudo rpm -e slimrmm-agent
 
 For automated deployments, you can pass server credentials during installation:
 
+### Windows
+
+```cmd
+msiexec /i SlimRMM-Agent-1.0.0-x64.msi /qn SLIMRMM_SERVER="https://rmm.example.com" SLIMRMM_KEY="your-installation-key"
+```
+
 ### macOS
 
 ```bash
@@ -168,6 +212,23 @@ SLIMRMM_SERVER="https://rmm.example.com" SLIMRMM_KEY="your-installation-key" \
 - PyInstaller
 - Required Python packages (see `requirements.txt`)
 - For Linux builds: Docker (recommended) or dpkg-dev/rpm-build
+- For Windows builds: WiX Toolset v3
+
+### Windows MSI
+
+On a Windows system with WiX Toolset installed:
+
+```powershell
+.\build-windows-msi.ps1 -Version 1.0.0
+```
+
+Or using the batch file:
+
+```cmd
+build-windows.bat 1.0.0
+```
+
+Output: `dist\SlimRMM-Agent-1.0.0-x64.msi`
 
 ### macOS PKG
 
