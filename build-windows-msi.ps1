@@ -94,6 +94,7 @@ Set-Location $ScriptDir
 # Create spec file for Windows build
 $specContent = @'
 # -*- mode: python ; coding: utf-8 -*-
+import os
 block_cipher = None
 
 a = Analysis(
@@ -129,6 +130,9 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# Check for icon file
+icon_path = 'assets/icon.ico' if os.path.exists('assets/icon.ico') else None
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -142,7 +146,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    icon='assets/icon.ico' if (Test-Path 'assets/icon.ico') else None,
+    icon=icon_path,
 )
 '@
 
