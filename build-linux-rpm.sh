@@ -10,7 +10,7 @@ set -e
 
 # Configuration
 APP_NAME="slimrmm-agent"
-VERSION="${1:-1.0.0}"
+VERSION="${1:-1.0.1}"
 RELEASE="1"
 MAINTAINER="Kiefer Networks <support@slimrmm.io>"
 SUMMARY="SlimRMM Agent - Remote Monitoring and Management"
