@@ -947,6 +947,29 @@ def start_websocket():
                     "data": result
                 }
                 ws.send(json.dumps(response))
+            elif action == 'chmod':
+                path = data.get('path')
+                mode = data.get('mode')
+                logging.info(f"Changing permissions of {path} to {mode}")
+                result = chmod_entry(path, mode)
+                response = {
+                    "status": "success" if result.get("success") else "error",
+                    "action": "chmod",
+                    "data": result
+                }
+                ws.send(json.dumps(response))
+            elif action == 'chown':
+                path = data.get('path')
+                owner = data.get('owner')
+                group = data.get('group')
+                logging.info(f"Changing owner of {path} to {owner}:{group}")
+                result = chown_entry(path, owner, group)
+                response = {
+                    "status": "success" if result.get("success") else "error",
+                    "action": "chown",
+                    "data": result
+                }
+                ws.send(json.dumps(response))
             elif action == 'download_file':
                 path = data.get('path')
                 logging.info(f"Downloading file: {path}")
@@ -1419,6 +1442,78 @@ def rename_entry(old_path: str, new_path: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Access denied: {e}"}
     except Exception as e:
         logging.error(f"Error renaming entry: {e}")
+        return {"success": False, "error": str(e)}
+
+def chmod_entry(path: str, mode: str) -> Dict[str, Any]:
+    """Change file/directory permissions with path validation."""
+    try:
+        # Validate path is in allowed directories
+        validated_path = validate_path(path, ALLOWED_FILE_PATHS, check_exists=True)
+
+        # Convert octal string to integer (e.g., "755" -> 0o755)
+        mode_int = int(mode, 8)
+        os.chmod(validated_path, mode_int)
+        return {
+            "success": True,
+            "path": str(validated_path),
+            "mode": mode,
+        }
+    except PathValidationError as e:
+        logging.warning(f"Path validation failed for chmod_entry: {path}")
+        return {"success": False, "error": f"Access denied: {e}"}
+    except ValueError as e:
+        logging.error(f"Invalid mode format: {mode}")
+        return {"success": False, "error": f"Invalid mode format: {mode}"}
+    except Exception as e:
+        logging.error(f"Error changing permissions: {e}")
+        return {"success": False, "error": str(e)}
+
+def chown_entry(path: str, owner: str = None, group: str = None) -> Dict[str, Any]:
+    """Change file/directory owner and/or group with path validation."""
+    try:
+        import pwd
+        import grp
+
+        # Validate path is in allowed directories
+        validated_path = validate_path(path, ALLOWED_FILE_PATHS, check_exists=True)
+
+        # Get current uid/gid
+        stat_info = os.stat(validated_path)
+        uid = stat_info.st_uid
+        gid = stat_info.st_gid
+
+        # Resolve owner to UID
+        if owner:
+            try:
+                uid = int(owner)
+            except ValueError:
+                uid = pwd.getpwnam(owner).pw_uid
+
+        # Resolve group to GID
+        if group:
+            try:
+                gid = int(group)
+            except ValueError:
+                gid = grp.getgrnam(group).gr_gid
+
+        os.chown(validated_path, uid, gid)
+        return {
+            "success": True,
+            "path": str(validated_path),
+            "owner": owner,
+            "group": group,
+        }
+    except PathValidationError as e:
+        logging.warning(f"Path validation failed for chown_entry: {path}")
+        return {"success": False, "error": f"Access denied: {e}"}
+    except KeyError as e:
+        logging.error(f"User or group not found: {e}")
+        return {"success": False, "error": f"User or group not found: {e}"}
+    except PermissionError as e:
+        logging.error(f"Permission denied for chown: {e}")
+        return {"success": False, "error": "Permission denied. Root privileges required."}
+    except Exception as e:
+        logging.error(f"Error changing owner: {e}")
         return {"success": False, "error": str(e)}
 
 def zip_entry(source_path: str, output_zip: str) -> Dict[str, Any]:
