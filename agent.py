@@ -261,12 +261,18 @@ def copy_agent_to_target(target_dir):
             raise
 
 
-def register_agent(installation_key, server_url):
+def register_agent(server_url):
+    """
+    Register the agent with the server.
+
+    Returns:
+        Tuple of (uuid, mtls_data) where mtls_data contains
+        certificate_pem, private_key_pem, and ca_certificate_pem.
+    """
     system = platform.system().lower()
     arch = platform.machine().lower()
     hostname = socket.gethostname()
     data = {
-        "installation_key": installation_key,
         "os": system,
         "arch": arch,
         "hostname": hostname,
@@ -274,15 +280,23 @@ def register_agent(installation_key, server_url):
     }
     try:
         logging.info(f"Registering agent with server: {server_url}")
-        response = requests.post(f"{server_url}/api/v1/agents/register", json=data, timeout=10)
+        response = requests.post(f"{server_url}/api/v1/agents/register", json=data, timeout=30, verify=False)
         response.raise_for_status()
         result = response.json()
         uuid_val = result.get("uuid")
-        api_key = result.get("api_key")
+        mtls_data = result.get("mtls")  # mTLS certificate data
+
         if not uuid_val:
             raise Exception("No UUID returned from server")
+
         logging.info(f"Successfully registered. UUID: {uuid_val}")
-        return uuid_val, api_key
+
+        if mtls_data:
+            logging.info("mTLS certificates received from server")
+        else:
+            logging.warning("No mTLS certificates received - connection will be insecure")
+
+        return uuid_val, mtls_data
     except requests.RequestException as e:
         logging.error(f"Error registering agent with server {server_url}: {e}")
         if hasattr(e, 'response') and e.response is not None:
@@ -290,6 +304,51 @@ def register_agent(installation_key, server_url):
         raise
     except Exception as e:
         logging.error(f"Unexpected error registering agent: {e}")
+        raise
+
+
+def save_mtls_certificates(target_dir, mtls_data):
+    """
+    Save mTLS certificates to the target directory.
+
+    Args:
+        target_dir: Installation directory
+        mtls_data: Dict with certificate_pem, private_key_pem, ca_certificate_pem
+    """
+    if not mtls_data:
+        logging.warning("No mTLS data to save")
+        return
+
+    certs_dir = os.path.join(target_dir, 'certs')
+    os.makedirs(certs_dir, mode=0o700, exist_ok=True)
+
+    cert_path = os.path.join(certs_dir, 'agent.crt')
+    key_path = os.path.join(certs_dir, 'agent.key')
+    ca_path = os.path.join(certs_dir, 'ca.crt')
+
+    try:
+        # Save agent certificate
+        with open(cert_path, 'w') as f:
+            f.write(mtls_data['certificate_pem'])
+        os.chmod(cert_path, 0o644)
+        logging.info(f"Saved agent certificate to {cert_path}")
+
+        # Save private key (restrictive permissions)
+        with open(key_path, 'w') as f:
+            f.write(mtls_data['private_key_pem'])
+        os.chmod(key_path, 0o600)
+        logging.info(f"Saved agent private key to {key_path}")
+
+        # Save CA certificate
+        with open(ca_path, 'w') as f:
+            f.write(mtls_data['ca_certificate_pem'])
+        os.chmod(ca_path, 0o644)
+        logging.info(f"Saved CA certificate to {ca_path}")
+
+        logging.info("mTLS certificates saved successfully")
+
+    except Exception as e:
+        logging.error(f"Error saving mTLS certificates: {e}")
         raise
 
 
@@ -317,10 +376,10 @@ def create_symlink_or_shortcut(target_dir):
         pass
 
 
-def install_service(installation_key, server_url):
+def install_service(server_url):
     if not is_admin():
         logging.error("Installation requires administrator/root privileges")
-        print("❌ You need to run this script as administrator/root.")
+        print("Installation requires administrator/root privileges.")
         sys.exit(1)
 
     system = platform.system()
@@ -331,7 +390,7 @@ def install_service(installation_key, server_url):
     logging.info("Starting osquery installation check")
     if not install_osquery():
         logging.error("osquery installation failed")
-        print("❌ Failed to install osquery. Exiting.")
+        print("Failed to install osquery. Exiting.")
         sys.exit(1)
 
     logging.info("Copying agent files to target directory")
@@ -346,11 +405,17 @@ def install_service(installation_key, server_url):
             target_dir, 'agent.py')
 
     logging.info("Registering agent with server")
-    agent_uuid, api_key = register_agent(installation_key, server_url)
+    agent_uuid, mtls_data = register_agent(server_url)
+
+    # Save mTLS certificates if provided
+    if mtls_data:
+        logging.info("Saving mTLS certificates...")
+        save_mtls_certificates(target_dir, mtls_data)
+
     config = {
         "server": server_url,
-        "api_key": api_key,
-        "uuid": agent_uuid
+        "uuid": agent_uuid,
+        "mtls_enabled": mtls_data is not None,  # Flag to indicate mTLS is configured
     }
     config_path = os.path.join(target_dir, CONFIG_FILENAME)
     try:
@@ -517,24 +582,18 @@ if __name__ == '__main__':
     args = sys.argv
     if '--install' in args:
         try:
-            # Support both --installation-key and --api-key for backwards compatibility
-            if '--installation-key' in args:
-                key_idx = args.index('--installation-key') + 1
-            elif '--api-key' in args:
-                key_idx = args.index('--api-key') + 1
-            else:
-                raise ValueError("Missing installation key argument")
             server_idx = args.index('--server') + 1
-            installation_key = args[key_idx]
             server_url = args[server_idx]
         except (ValueError, IndexError):
             print("SlimRMM Agent - Installation")
             print("")
-            print("Usage: slimrmm-agent --install --installation-key <key> --server <url>")
+            print("Usage: slimrmm-agent --install --server <url>")
+            print("")
+            print("The agent will automatically receive mTLS certificates from the server.")
             sys.exit(1)
         print("SlimRMM Agent - Installing...")
         logging.info("Starting agent installation")
-        install_service(installation_key, server_url)
+        install_service(server_url)
         print("Installation completed.")
         logging.info("Agent installation completed")
     elif '--uninstall' in args:

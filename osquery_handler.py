@@ -46,7 +46,8 @@ def run_osquery_query(query):
 
         cmd = [osquery_binary, '--json', query]
         logging.debug(f"Executing osquery: {' '.join(cmd)}")
-        result = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+        # Use DEVNULL for stderr to prevent error messages from corrupting JSON output
+        result = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
         decoded = result.decode().strip()
 
         # Handle empty results
@@ -56,9 +57,9 @@ def run_osquery_query(query):
         return json.loads(decoded)
 
     except subprocess.CalledProcessError as e:
-        error_output = e.output.decode().strip() if e.output else "Unknown error"
-        logging.error(f"Osquery execution failed: {error_output}")
-        return {"error": error_output}
+        error_msg = f"Osquery execution failed with exit code {e.returncode}"
+        logging.error(error_msg)
+        return {"error": error_msg}
     except json.JSONDecodeError as e:
         logging.error(f"Failed to parse osquery JSON output: {e}")
         return []

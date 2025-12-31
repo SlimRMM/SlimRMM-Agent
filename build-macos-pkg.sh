@@ -73,7 +73,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'unittest', 'email', 'html', 'http', 'xml', 'pydoc'],
+    excludes=['tkinter', 'unittest', 'pydoc'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -210,6 +210,7 @@ INSTALL_DIR="/var/lib/slimrmm"
 LAUNCHD_LABEL="io.slimrmm.agent"
 AGENT_BINARY="${INSTALL_DIR}/slimrmm-agent"
 CONFIG_FILE="${INSTALL_DIR}/.slimrmm_config.json"
+CERTS_DIR="${INSTALL_DIR}/certs"
 
 echo ""
 echo "=============================================="
@@ -220,26 +221,23 @@ echo ""
 
 # Set proper permissions
 chmod 755 "${AGENT_BINARY}"
-chmod 700 "${INSTALL_DIR}/certs"
+chmod 700 "${CERTS_DIR}"
 chmod 755 "${INSTALL_DIR}/log"
 
 # Check for silent installation parameters
-# These can be set via environment variables before running installer:
-# SLIMRMM_SERVER="https://..." SLIMRMM_KEY="..." sudo installer -pkg ...
+# Set via environment variables before running installer:
+# SLIMRMM_SERVER="https://..." sudo installer -pkg SlimRMM-Agent.pkg -target /
 SILENT_SERVER="${SLIMRMM_SERVER:-}"
-SILENT_KEY="${SLIMRMM_KEY:-}"
 
 # Also check for config file passed during installation
 if [ -f "/tmp/slimrmm_install_config.json" ]; then
     SILENT_SERVER=$(python3 -c "import json; print(json.load(open('/tmp/slimrmm_install_config.json')).get('server', ''))" 2>/dev/null)
-    SILENT_KEY=$(python3 -c "import json; print(json.load(open('/tmp/slimrmm_install_config.json')).get('installation_key', ''))" 2>/dev/null)
     rm -f /tmp/slimrmm_install_config.json
 fi
 
-# Function to register agent
+# Function to register agent and save mTLS certificates
 register_agent() {
     local server_url="$1"
-    local install_key="$2"
 
     echo "Registering agent with server: ${server_url}"
 
@@ -248,11 +246,10 @@ register_agent() {
     local os="darwin"
     local arch=$(uname -m)
 
-    # Register with server
-    local response=$(curl -s -X POST "${server_url}/api/v1/agents/register" \
+    # Register with server (no installation key required - mTLS based)
+    local response=$(curl -s -k -X POST "${server_url}/api/v1/agents/register" \
         -H "Content-Type: application/json" \
         -d "{
-            \"installation_key\": \"${install_key}\",
             \"os\": \"${os}\",
             \"arch\": \"${arch}\",
             \"hostname\": \"${hostname}\",
@@ -266,53 +263,68 @@ register_agent() {
 
     # Parse response
     local uuid=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('uuid',''))" 2>/dev/null)
-    local api_key=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('api_key',''))" 2>/dev/null)
     local error=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('detail',''))" 2>/dev/null)
 
-    if [ -z "$uuid" ] || [ -z "$api_key" ]; then
+    if [ -z "$uuid" ]; then
         echo "ERROR: Registration failed - ${error:-Unknown error}"
+        echo "Response: $response"
         return 1
     fi
+
+    # Extract and save mTLS certificates
+    local cert_pem=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mtls',{}).get('certificate_pem',''))" 2>/dev/null)
+    local key_pem=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mtls',{}).get('private_key_pem',''))" 2>/dev/null)
+    local ca_pem=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mtls',{}).get('ca_certificate_pem',''))" 2>/dev/null)
+
+    if [ -z "$cert_pem" ] || [ -z "$key_pem" ] || [ -z "$ca_pem" ]; then
+        echo "ERROR: Server did not return mTLS certificates"
+        return 1
+    fi
+
+    # Save certificates
+    echo "$cert_pem" > "${CERTS_DIR}/client.crt"
+    echo "$key_pem" > "${CERTS_DIR}/client.key"
+    echo "$ca_pem" > "${CERTS_DIR}/ca.crt"
+    chmod 600 "${CERTS_DIR}/client.crt" "${CERTS_DIR}/client.key" "${CERTS_DIR}/ca.crt"
 
     # Save configuration
     cat > "${CONFIG_FILE}" << CONFIGEOF
 {
     "server": "${server_url}",
-    "uuid": "${uuid}",
-    "api_key": "${api_key}"
+    "uuid": "${uuid}"
 }
 CONFIGEOF
     chmod 600 "${CONFIG_FILE}"
 
     echo "Agent registered successfully!"
     echo "  UUID: ${uuid}"
+    echo "  Certificates saved to: ${CERTS_DIR}"
     return 0
 }
 
 # Interactive or silent installation
-if [ -n "$SILENT_SERVER" ] && [ -n "$SILENT_KEY" ]; then
-    # Silent installation with provided parameters
+if [ -n "$SILENT_SERVER" ]; then
+    # Silent installation with provided server URL
     echo "Silent installation mode detected."
-    register_agent "$SILENT_SERVER" "$SILENT_KEY"
+    register_agent "$SILENT_SERVER"
     REGISTRATION_SUCCESS=$?
 else
     # Check if we're in an interactive terminal
     if [ -t 0 ]; then
         # Interactive mode - prompt for configuration
-        echo "Please enter your SlimRMM server details:"
+        echo "Please enter your SlimRMM server URL:"
         echo ""
 
-        read -p "Server URL (e.g., https://rmm.example.com): " SERVER_URL
-        read -p "Installation Key: " INSTALL_KEY
+        read -p "Server URL (e.g., https://rmm.example.com:8800): " SERVER_URL
 
-        if [ -n "$SERVER_URL" ] && [ -n "$INSTALL_KEY" ]; then
-            register_agent "$SERVER_URL" "$INSTALL_KEY"
+        if [ -n "$SERVER_URL" ]; then
+            register_agent "$SERVER_URL"
             REGISTRATION_SUCCESS=$?
         else
             echo ""
-            echo "No server details provided. Skipping registration."
+            echo "No server URL provided. Skipping registration."
             echo "You can register later with:"
-            echo "  sudo ${AGENT_BINARY} --install --installation-key <KEY> --server <URL>"
+            echo "  sudo ${AGENT_BINARY} --install --server <URL>"
             REGISTRATION_SUCCESS=1
         fi
     else
@@ -321,11 +333,11 @@ else
         echo ""
         echo "To configure the agent, either:"
         echo ""
-        echo "1. Run the installer with environment variables:"
-        echo "   SLIMRMM_SERVER=\"https://...\" SLIMRMM_KEY=\"...\" sudo installer -pkg SlimRMM-Agent.pkg -target /"
+        echo "1. Run the installer with environment variable:"
+        echo "   SLIMRMM_SERVER=\"https://...\" sudo installer -pkg SlimRMM-Agent.pkg -target /"
         echo ""
         echo "2. Or configure manually after installation:"
-        echo "   sudo ${AGENT_BINARY} --install --installation-key <KEY> --server <URL>"
+        echo "   sudo ${AGENT_BINARY} --install --server <URL>"
         echo ""
         REGISTRATION_SUCCESS=1
     fi

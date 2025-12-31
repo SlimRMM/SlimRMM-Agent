@@ -15,13 +15,253 @@ import select
 import asyncio
 import os
 import sys
+import ssl
 import tempfile
 from pathlib import Path
-from typing import Set, Dict, Any, Union
+from typing import Set, Dict, Any, Union, Optional
 
 from osquery_handler import run_osquery_query
-from service_utils import uninstall_service, is_admin, uninstall_software
+from service_utils import uninstall_service, is_admin, uninstall_software, get_install_dir
 from config import load_config
+
+
+def get_certificate_serial_number() -> Optional[str]:
+    """
+    Get the serial number from the current agent certificate.
+
+    Returns:
+        Serial number as hex string, or None if certificate doesn't exist.
+    """
+    from cryptography import x509
+
+    install_dir = get_install_dir()
+    cert_path = os.path.join(install_dir, 'certs', 'agent.crt')
+
+    if not os.path.exists(cert_path):
+        return None
+
+    try:
+        with open(cert_path, 'rb') as f:
+            cert_data = f.read()
+        cert = x509.load_pem_x509_certificate(cert_data)
+        return format(cert.serial_number, 'x')
+    except Exception as e:
+        logging.error(f"Error reading certificate serial: {e}")
+        return None
+
+
+def check_certificate_expiry() -> dict:
+    """
+    Check if the agent certificate is expiring soon.
+
+    Returns:
+        Dict with expiry information: days_until_expiry, needs_renewal, is_expired
+    """
+    from cryptography import x509
+    from datetime import datetime, timezone
+
+    install_dir = get_install_dir()
+    cert_path = os.path.join(install_dir, 'certs', 'agent.crt')
+
+    if not os.path.exists(cert_path):
+        return {
+            "has_certificate": False,
+            "needs_renewal": True,
+            "days_until_expiry": 0,
+        }
+
+    try:
+        with open(cert_path, 'rb') as f:
+            cert_data = f.read()
+        cert = x509.load_pem_x509_certificate(cert_data)
+
+        now = datetime.now(timezone.utc)
+        expiry = cert.not_valid_after_utc
+        days_until_expiry = (expiry - now).days
+
+        # Recommend renewal if less than 30 days until expiry
+        needs_renewal = days_until_expiry <= 30
+
+        return {
+            "has_certificate": True,
+            "serial_number": format(cert.serial_number, 'x'),
+            "not_after": expiry.isoformat(),
+            "days_until_expiry": days_until_expiry,
+            "needs_renewal": needs_renewal,
+            "is_expired": days_until_expiry < 0,
+        }
+    except Exception as e:
+        logging.error(f"Error checking certificate expiry: {e}")
+        return {
+            "has_certificate": True,
+            "needs_renewal": True,
+            "days_until_expiry": 0,
+            "error": str(e),
+        }
+
+
+def renew_certificate(server_url: str, agent_uuid: str) -> bool:
+    """
+    Request a new certificate from the server.
+
+    Args:
+        server_url: Server URL (https://...)
+        agent_uuid: Agent UUID
+
+    Returns:
+        True if renewal was successful.
+    """
+    import requests
+
+    install_dir = get_install_dir()
+    cert_path = os.path.join(install_dir, 'certs', 'agent.crt')
+    key_path = os.path.join(install_dir, 'certs', 'agent.key')
+    ca_path = os.path.join(install_dir, 'certs', 'ca.crt')
+
+    current_serial = get_certificate_serial_number()
+    if not current_serial:
+        logging.error("Cannot renew: no current certificate found")
+        return False
+
+    try:
+        logging.info(f"Requesting certificate renewal for agent {agent_uuid}")
+
+        # Use current certificate for mTLS authentication during renewal
+        response = requests.post(
+            f"{server_url}/api/v1/pki/certificates/renew",
+            json={
+                "agent_uuid": agent_uuid,
+                "current_serial_number": current_serial,
+            },
+            cert=(cert_path, key_path),
+            verify=ca_path,
+            timeout=30,
+        )
+
+        if response.status_code != 200:
+            # Try without mTLS verification (for expired certs)
+            logging.warning("mTLS renewal failed, trying without verification...")
+            response = requests.post(
+                f"{server_url}/api/v1/pki/certificates/renew",
+                json={
+                    "agent_uuid": agent_uuid,
+                    "current_serial_number": current_serial,
+                },
+                verify=False,
+                timeout=30,
+            )
+
+        response.raise_for_status()
+        result = response.json()
+
+        # Save new certificates
+        certs_dir = os.path.join(install_dir, 'certs')
+        os.makedirs(certs_dir, mode=0o700, exist_ok=True)
+
+        # Save new agent certificate
+        with open(cert_path, 'w') as f:
+            f.write(result['certificate_pem'])
+        os.chmod(cert_path, 0o644)
+
+        # Save new private key
+        with open(key_path, 'w') as f:
+            f.write(result['private_key_pem'])
+        os.chmod(key_path, 0o600)
+
+        # Save CA certificate (in case it was updated)
+        with open(ca_path, 'w') as f:
+            f.write(result['ca_certificate_pem'])
+        os.chmod(ca_path, 0o644)
+
+        logging.info(f"Certificate renewed successfully. New serial: {result.get('serial_number')}")
+        return True
+
+    except requests.RequestException as e:
+        logging.error(f"Failed to renew certificate: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"Error during certificate renewal: {e}")
+        return False
+
+
+def check_and_renew_certificate_if_needed(server_url: str, agent_uuid: str) -> bool:
+    """
+    Check certificate expiry and renew if needed.
+
+    Should be called on agent startup and periodically.
+
+    Args:
+        server_url: Server URL
+        agent_uuid: Agent UUID
+
+    Returns:
+        True if certificate is valid (either still valid or successfully renewed).
+    """
+    expiry_info = check_certificate_expiry()
+
+    if not expiry_info.get("has_certificate"):
+        logging.warning("No certificate found - agent may need reinstallation")
+        return False
+
+    if expiry_info.get("is_expired"):
+        logging.warning(f"Certificate has EXPIRED! Attempting renewal...")
+        return renew_certificate(server_url, agent_uuid)
+
+    if expiry_info.get("needs_renewal"):
+        days_left = expiry_info.get("days_until_expiry", 0)
+        logging.info(f"Certificate expires in {days_left} days - renewing now...")
+        return renew_certificate(server_url, agent_uuid)
+
+    days_left = expiry_info.get("days_until_expiry", 0)
+    logging.info(f"Certificate valid for {days_left} more days")
+    return True
+
+
+def get_mtls_ssl_context() -> Optional[ssl.SSLContext]:
+    """
+    Create SSL context for mTLS connection if certificates exist.
+
+    Returns:
+        SSLContext configured for mTLS, or None if certificates don't exist.
+    """
+    install_dir = get_install_dir()
+    cert_path = os.path.join(install_dir, 'certs', 'agent.crt')
+    key_path = os.path.join(install_dir, 'certs', 'agent.key')
+    ca_path = os.path.join(install_dir, 'certs', 'ca.crt')
+
+    # Check if all certificate files exist
+    if not all(os.path.exists(p) for p in [cert_path, key_path, ca_path]):
+        logging.info("mTLS certificates not found, using insecure connection")
+        return None
+
+    try:
+        # Create SSL context for client authentication (mTLS)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+        # Load client certificate and key for mTLS
+        ctx.load_cert_chain(
+            certfile=cert_path,
+            keyfile=key_path,
+        )
+
+        # Load CA certificate for server verification
+        ctx.load_verify_locations(cafile=ca_path)
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.check_hostname = False  # Server might use IP or different hostname
+
+        # Security settings
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.set_ciphers("ECDHE+AESGCM:DHE+AESGCM:ECDHE+CHACHA20:DHE+CHACHA20")
+
+        logging.info("mTLS SSL context created successfully")
+        return ctx
+
+    except ssl.SSLError as e:
+        logging.error(f"SSL error creating mTLS context: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Error creating mTLS SSL context: {e}")
+        return None
 
 # Remote Desktop module (optional)
 try:
@@ -111,9 +351,42 @@ def start_websocket():
     config = load_config()
     server = config.get('server')
     agent_uuid = config.get('uuid')
+    mtls_enabled = config.get('mtls_enabled', False)
 
-    ws_url = f"{server.replace('http', 'ws')}/api/v1/ws/agent?uuid={agent_uuid}"
+    # Check and renew certificate if needed (30 days before expiry)
+    if mtls_enabled:
+        logging.info("Checking certificate expiry...")
+        cert_valid = check_and_renew_certificate_if_needed(server, agent_uuid)
+        if not cert_valid:
+            logging.warning("Certificate check/renewal failed - will attempt connection anyway")
+
+    # Determine WebSocket URL (wss for secure, ws for insecure)
+    if server.startswith('https'):
+        ws_url = f"{server.replace('https', 'wss')}/api/v1/ws/agent?uuid={agent_uuid}"
+    else:
+        ws_url = f"{server.replace('http', 'ws')}/api/v1/ws/agent?uuid={agent_uuid}"
+
     logging.info(f"Connecting to WebSocket: {ws_url}")
+
+    # Get mTLS SSL context if certificates exist
+    ssl_context = None
+    sslopt = None
+    if mtls_enabled:
+        ssl_context = get_mtls_ssl_context()
+        if ssl_context:
+            sslopt = {"context": ssl_context}
+            logging.info("Using mTLS for WebSocket connection")
+        else:
+            logging.warning("mTLS enabled but certificates not found, using insecure connection")
+            sslopt = {"cert_reqs": ssl.CERT_NONE}  # Fall back to no verification
+    else:
+        # For non-mTLS connections (development/testing)
+        sslopt = {"cert_reqs": ssl.CERT_NONE}
+        logging.info("mTLS disabled, using insecure connection")
+
+    # Track last certificate check time
+    last_cert_check = [time.time()]  # Use list for mutable closure
+    CERT_CHECK_INTERVAL = 86400  # Check every 24 hours
 
     def send_heartbeat(ws, interval=30):
         while True:
@@ -125,7 +398,18 @@ def start_websocket():
                     "stats": stats
                 })
                 ws.send(heartbeat_msg)
-                logging.info(f"❤️ Sent heartbeat with stats: CPU={stats.get('cpu_percent', 0):.1f}%, Mem={stats.get('memory_percent', 0):.1f}%")
+                logging.debug(f"Sent heartbeat with stats: CPU={stats.get('cpu_percent', 0):.1f}%, Mem={stats.get('memory_percent', 0):.1f}%")
+
+                # Periodic certificate check (every 24 hours)
+                if mtls_enabled and (time.time() - last_cert_check[0]) >= CERT_CHECK_INTERVAL:
+                    logging.info("Performing periodic certificate expiry check...")
+                    cert_valid = check_and_renew_certificate_if_needed(server, agent_uuid)
+                    last_cert_check[0] = time.time()
+                    if cert_valid:
+                        logging.info("Periodic certificate check passed")
+                    else:
+                        logging.warning("Certificate renewal may be needed - will retry on next check")
+
             except Exception as e:
                 logging.error(f"Error sending heartbeat: {e}")
                 break
@@ -586,10 +870,10 @@ def start_websocket():
 
     while True:
         try:
-            ws.run_forever(ping_interval=30, ping_timeout=20)
+            ws.run_forever(ping_interval=30, ping_timeout=20, sslopt=sslopt)
         except Exception as e:
             logging.error(f"WebSocket error: {e}")
-        logging.info("🔄 Reconnecting in 5 seconds...")
+        logging.info("Reconnecting in 5 seconds...")
         time.sleep(5)
 
 # ---------- Hilfsfunktionen ----------
@@ -1140,10 +1424,11 @@ def update_agent(server_url: str = None) -> Dict[str, Any]:
     Update the RMM agent to the latest version.
 
     Downloads the latest agent binary from the server and replaces the current one.
+    Also renews the mTLS certificate to ensure secure connection after update.
     The agent service will be restarted after the update.
     """
     import urllib.request
-    import ssl
+    import ssl as ssl_module
 
     system = platform.system()
     config = load_config()
@@ -1153,6 +1438,18 @@ def update_agent(server_url: str = None) -> Dict[str, Any]:
 
     if not server_url:
         return {"success": False, "error": "No server URL configured"}
+
+    agent_uuid = config.get('uuid', '')
+    mtls_enabled = config.get('mtls_enabled', False)
+
+    # Renew certificate as part of update
+    if mtls_enabled and agent_uuid:
+        logging.info("Renewing certificate as part of agent update...")
+        cert_renewed = renew_certificate(server_url, agent_uuid)
+        if cert_renewed:
+            logging.info("Certificate renewed successfully during update")
+        else:
+            logging.warning("Certificate renewal failed - continuing with update")
 
     try:
         # Determine platform for download
@@ -1169,13 +1466,13 @@ def update_agent(server_url: str = None) -> Dict[str, Any]:
 
         # Find current agent binary location
         if system == 'Darwin':
-            agent_path = Path('/var/lib/rmm/rmm-agent')
+            agent_path = Path('/var/lib/slimrmm/slimrmm-agent')
         elif system == 'Linux':
-            agent_path = Path('/var/lib/rmm/rmm-agent')
+            agent_path = Path('/var/lib/slimrmm/slimrmm-agent')
 
         if not agent_path.exists():
             # Try to find agent in current directory
-            agent_path = Path(sys.executable).parent / 'rmm-agent'
+            agent_path = Path(sys.executable).parent / 'slimrmm-agent'
 
         # Create backup
         backup_path = agent_path.with_suffix('.backup')
@@ -1189,9 +1486,9 @@ def update_agent(server_url: str = None) -> Dict[str, Any]:
         logging.info(f"Downloading agent from {download_url}")
 
         # Create SSL context (allow self-signed for development)
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
+        ssl_ctx = ssl_module.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl_module.CERT_NONE
 
         urllib.request.urlretrieve(download_url, temp_path)
 
