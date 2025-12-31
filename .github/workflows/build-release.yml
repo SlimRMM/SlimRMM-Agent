@@ -12,6 +12,9 @@ on:
 env:
   PYTHON_VERSION: '3.11'
 
+permissions:
+  contents: write
+
 jobs:
   # Determine version and check if release needed
   version:
@@ -25,7 +28,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
       - name: Determine version
         id: version
@@ -186,8 +189,6 @@ jobs:
   release:
     needs: [version, build-amd64, build-arm64]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout code
