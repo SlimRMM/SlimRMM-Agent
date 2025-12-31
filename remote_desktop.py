@@ -55,6 +55,54 @@ except ImportError:
     logging.warning("pyperclip not available - clipboard sync disabled")
 
 
+def has_display_server() -> bool:
+    """
+    Check if a display server (X11 or Wayland) is available on Linux.
+    Returns True on macOS/Windows, checks for display on Linux.
+    """
+    import os
+    import shutil
+
+    system = platform.system()
+
+    # macOS and Windows always have a display
+    if system in ['Darwin', 'Windows']:
+        return True
+
+    # Linux: Check for display server
+    if system == 'Linux':
+        # Check for Wayland
+        wayland_display = os.environ.get('WAYLAND_DISPLAY')
+        if wayland_display:
+            return True
+
+        # Check for X11
+        display = os.environ.get('DISPLAY')
+        if display:
+            # Verify X server is actually running
+            if shutil.which('xset'):
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['xset', 'q'],
+                        capture_output=True,
+                        timeout=2
+                    )
+                    if result.returncode == 0:
+                        return True
+                except Exception:
+                    pass
+            else:
+                # If xset is not available but DISPLAY is set, assume X is running
+                return True
+
+        # No display server found
+        return False
+
+    # Unknown system, assume no display
+    return False
+
+
 # WebRTC Configuration - Public STUN servers
 def get_rtc_configuration():
     """Create RTCConfiguration with STUN servers."""
@@ -477,6 +525,14 @@ def get_monitors() -> Dict[str, Any]:
     if not MSS_AVAILABLE:
         return {"success": False, "error": "mss not available", "monitors": []}
 
+    # Check for display server on Linux
+    if not has_display_server():
+        return {
+            "success": False,
+            "error": "No display server (X11/Wayland) available. Remote desktop requires a graphical environment.",
+            "monitors": []
+        }
+
     try:
         with mss.mss() as sct:
             monitors = []
@@ -499,6 +555,13 @@ def get_monitors() -> Dict[str, Any]:
 
 async def start_remote_desktop(session_id: str, send_callback: Callable) -> Dict[str, Any]:
     """Start a new remote desktop session."""
+    # Check for display server on Linux
+    if not has_display_server():
+        return {
+            "success": False,
+            "error": "No display server (X11/Wayland) available. Remote desktop requires a graphical environment."
+        }
+
     if session_id in active_sessions:
         await active_sessions[session_id].stop()
 
@@ -540,12 +603,14 @@ async def handle_ice_candidate(session_id: str, candidate: Dict) -> Dict[str, An
 
 def check_dependencies() -> Dict[str, bool]:
     """Check which dependencies are available."""
+    display_available = has_display_server()
     return {
         "mss": MSS_AVAILABLE,
         "aiortc": AIORTC_AVAILABLE,
         "pynput": PYNPUT_AVAILABLE,
         "pyperclip": PYPERCLIP_AVAILABLE,
-        "all_required": MSS_AVAILABLE and AIORTC_AVAILABLE,
+        "display_server": display_available,
+        "all_required": MSS_AVAILABLE and AIORTC_AVAILABLE and display_available,
         "full_control": PYNPUT_AVAILABLE,
         "clipboard": PYPERCLIP_AVAILABLE,
     }

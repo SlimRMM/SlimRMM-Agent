@@ -25,6 +25,322 @@ from service_utils import uninstall_service, is_admin, uninstall_software, get_i
 from config import load_config
 
 
+def get_available_updates() -> list:
+    """
+    Get available system updates for the current platform.
+    Returns a list of dicts with 'name', 'version', and 'desc' fields.
+    """
+    system = platform.system()
+    updates = []
+
+    try:
+        if system == 'Linux':
+            updates = _get_linux_updates()
+        elif system == 'Darwin':
+            updates = _get_macos_updates()
+        elif system == 'Windows':
+            updates = _get_windows_updates()
+    except Exception as e:
+        logging.error(f"Error getting available updates: {e}")
+
+    return updates
+
+
+def _get_linux_updates() -> list:
+    """Get available updates on Linux using apt or dnf/yum."""
+    updates = []
+
+    # Try apt (Debian/Ubuntu)
+    if shutil.which('apt'):
+        try:
+            # Update package lists first (may need sudo, so just try)
+            subprocess.run(['apt', 'update'], capture_output=True, timeout=60)
+        except Exception:
+            pass
+
+        try:
+            result = subprocess.run(
+                ['apt', 'list', '--upgradable'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+                for line in lines:
+                    # Skip header line "Listing..."
+                    if line.startswith('Listing') or not line.strip():
+                        continue
+                    # Format: package/suite version arch [upgradable from: old_version]
+                    try:
+                        parts = line.split('/')
+                        if len(parts) >= 2:
+                            pkg_name = parts[0]
+                            rest = parts[1]
+                            version_parts = rest.split()
+                            new_version = version_parts[1] if len(version_parts) > 1 else ''
+                            old_version = ''
+                            if 'upgradable from:' in line:
+                                old_version = line.split('upgradable from:')[1].strip().rstrip(']')
+                            updates.append({
+                                'name': pkg_name,
+                                'version': new_version,
+                                'desc': f"Upgrade from {old_version}" if old_version else "Available update"
+                            })
+                    except Exception as e:
+                        logging.debug(f"Error parsing apt line '{line}': {e}")
+                        continue
+        except subprocess.TimeoutExpired:
+            logging.warning("apt list --upgradable timed out")
+        except Exception as e:
+            logging.error(f"Error running apt: {e}")
+
+    # Try dnf (Fedora/RHEL 8+)
+    elif shutil.which('dnf'):
+        try:
+            result = subprocess.run(
+                ['dnf', 'check-update', '-q'],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            # dnf returns exit code 100 if updates are available, 0 if none
+            if result.returncode in [0, 100]:
+                lines = result.stdout.strip().split('\n')
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    # Format: package.arch  version  repo
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        pkg_name = parts[0].rsplit('.', 1)[0]  # Remove arch suffix
+                        version = parts[1]
+                        repo = parts[2] if len(parts) > 2 else ''
+                        updates.append({
+                            'name': pkg_name,
+                            'version': version,
+                            'desc': f"Available from {repo}" if repo else "Available update"
+                        })
+        except subprocess.TimeoutExpired:
+            logging.warning("dnf check-update timed out")
+        except Exception as e:
+            logging.error(f"Error running dnf: {e}")
+
+    # Try yum (RHEL/CentOS 7)
+    elif shutil.which('yum'):
+        try:
+            result = subprocess.run(
+                ['yum', 'check-update', '-q'],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            # yum returns exit code 100 if updates are available, 0 if none
+            if result.returncode in [0, 100]:
+                lines = result.stdout.strip().split('\n')
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    # Format: package.arch  version  repo
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        pkg_name = parts[0].rsplit('.', 1)[0]  # Remove arch suffix
+                        version = parts[1]
+                        repo = parts[2] if len(parts) > 2 else ''
+                        updates.append({
+                            'name': pkg_name,
+                            'version': version,
+                            'desc': f"Available from {repo}" if repo else "Available update"
+                        })
+        except subprocess.TimeoutExpired:
+            logging.warning("yum check-update timed out")
+        except Exception as e:
+            logging.error(f"Error running yum: {e}")
+
+    return updates
+
+
+def _get_macos_updates() -> list:
+    """Get available updates on macOS using softwareupdate."""
+    updates = []
+
+    try:
+        result = subprocess.run(
+            ['softwareupdate', '-l'],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            current_update = None
+            for line in lines:
+                line = line.strip()
+                if line.startswith('* Label:'):
+                    if current_update:
+                        updates.append(current_update)
+                    label = line.replace('* Label:', '').strip()
+                    current_update = {'name': label, 'version': '', 'desc': ''}
+                elif line.startswith('Title:') and current_update:
+                    current_update['desc'] = line.replace('Title:', '').strip()
+                elif line.startswith('Version:') and current_update:
+                    current_update['version'] = line.replace('Version:', '').strip()
+            if current_update:
+                updates.append(current_update)
+    except subprocess.TimeoutExpired:
+        logging.warning("softwareupdate -l timed out")
+    except Exception as e:
+        logging.error(f"Error running softwareupdate: {e}")
+
+    # Also check Homebrew if available
+    if shutil.which('brew'):
+        try:
+            result = subprocess.run(
+                ['brew', 'outdated', '--json'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                import json as brew_json
+                try:
+                    outdated = brew_json.loads(result.stdout)
+                    if isinstance(outdated, dict):
+                        # Handle formulae
+                        for formula in outdated.get('formulae', []):
+                            name = formula.get('name', '')
+                            current = formula.get('installed_versions', [''])[0] if formula.get('installed_versions') else ''
+                            latest = formula.get('current_version', '')
+                            updates.append({
+                                'name': f"brew:{name}",
+                                'version': latest,
+                                'desc': f"Upgrade from {current}" if current else "Available update"
+                            })
+                        # Handle casks
+                        for cask in outdated.get('casks', []):
+                            name = cask.get('name', '')
+                            current = cask.get('installed_versions', '')
+                            latest = cask.get('current_version', '')
+                            updates.append({
+                                'name': f"brew-cask:{name}",
+                                'version': latest,
+                                'desc': f"Upgrade from {current}" if current else "Available update"
+                            })
+                except Exception as je:
+                    logging.debug(f"Error parsing brew outdated JSON: {je}")
+        except subprocess.TimeoutExpired:
+            logging.warning("brew outdated timed out")
+        except Exception as e:
+            logging.debug(f"Error running brew outdated: {e}")
+
+    return updates
+
+
+# External IP caching
+_external_ip_cache = {
+    'ip': None,
+    'last_fetch': 0
+}
+EXTERNAL_IP_FETCH_INTERVAL = 900  # 15 minutes in seconds
+
+
+def get_external_ip() -> str:
+    """
+    Fetch external IP from ifconfig.io/ip.
+    Caches result for 15 minutes to avoid excessive requests.
+    """
+    import urllib.request
+
+    current_time = time.time()
+
+    # Return cached IP if still valid
+    if (_external_ip_cache['ip'] and
+        (current_time - _external_ip_cache['last_fetch']) < EXTERNAL_IP_FETCH_INTERVAL):
+        return _external_ip_cache['ip']
+
+    try:
+        # Use ifconfig.io/ip to get external IP
+        req = urllib.request.Request(
+            'https://ifconfig.io/ip',
+            headers={'User-Agent': 'SlimRMM-Agent/1.0'}
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            external_ip = response.read().decode('utf-8').strip()
+
+        # Validate IP format (basic check)
+        if external_ip and ('.' in external_ip or ':' in external_ip):
+            _external_ip_cache['ip'] = external_ip
+            _external_ip_cache['last_fetch'] = current_time
+            logging.debug(f"Fetched external IP: {external_ip}")
+            return external_ip
+
+    except Exception as e:
+        logging.debug(f"Failed to fetch external IP: {e}")
+
+    # Return cached IP even if expired, or None
+    return _external_ip_cache.get('ip')
+
+
+def _get_windows_updates() -> list:
+    """Get available updates on Windows using PowerShell/COM."""
+    updates = []
+
+    try:
+        # Use PowerShell to query Windows Update
+        ps_script = '''
+$UpdateSession = New-Object -ComObject Microsoft.Update.Session
+$UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
+try {
+    $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and Type='Software'")
+    foreach($Update in $SearchResult.Updates) {
+        [PSCustomObject]@{
+            Title = $Update.Title
+            KB = if($Update.KBArticleIDs.Count -gt 0) { "KB" + $Update.KBArticleIDs[0] } else { "" }
+            Description = $Update.Description
+        }
+    }
+} catch {
+    # Silently fail if Windows Update service is not available
+}
+'''
+        result = subprocess.run(
+            ['powershell', '-NoProfile', '-Command', ps_script],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # Parse PowerShell output
+            lines = result.stdout.strip().split('\n')
+            current_update = {}
+            for line in lines:
+                line = line.strip()
+                if line.startswith('Title'):
+                    if current_update and current_update.get('Title'):
+                        updates.append({
+                            'name': current_update.get('Title', ''),
+                            'version': current_update.get('KB', ''),
+                            'desc': current_update.get('Description', '')[:200] if current_update.get('Description') else ''
+                        })
+                    current_update = {}
+                if ':' in line:
+                    key, _, value = line.partition(':')
+                    current_update[key.strip()] = value.strip()
+            # Don't forget last one
+            if current_update and current_update.get('Title'):
+                updates.append({
+                    'name': current_update.get('Title', ''),
+                    'version': current_update.get('KB', ''),
+                    'desc': current_update.get('Description', '')[:200] if current_update.get('Description') else ''
+                })
+    except subprocess.TimeoutExpired:
+        logging.warning("Windows Update query timed out")
+    except Exception as e:
+        logging.error(f"Error querying Windows Updates: {e}")
+
+    return updates
+
+
 def get_certificate_serial_number() -> Optional[str]:
     """
     Get the serial number from the current agent certificate.
@@ -393,12 +709,17 @@ def start_websocket():
             try:
                 # Include system stats with heartbeat
                 stats = get_system_stats()
+
+                # Fetch external IP (cached for 15 minutes)
+                external_ip = get_external_ip()
+
                 heartbeat_msg = json.dumps({
                     "action": "heartbeat",
-                    "stats": stats
+                    "stats": stats,
+                    "external_ip": external_ip
                 })
                 ws.send(heartbeat_msg)
-                logging.debug(f"Sent heartbeat with stats: CPU={stats.get('cpu_percent', 0):.1f}%, Mem={stats.get('memory_percent', 0):.1f}%")
+                logging.debug(f"Sent heartbeat with stats: CPU={stats.get('cpu_percent', 0):.1f}%, Mem={stats.get('memory_percent', 0):.1f}%, ExtIP={external_ip}")
 
                 # Periodic certificate check (every 24 hours)
                 if mtls_enabled and (time.time() - last_cert_check[0]) >= CERT_CHECK_INTERVAL:
@@ -423,12 +744,19 @@ def start_websocket():
 
             if action == 'run_osquery':
                 query = data.get('query')
+                scan_type = data.get('scan_type')
                 request_id = data.get('request_id')  # Important: Pass back the request_id
-                result = run_osquery_query(query)
+
+                # Special handling for updates - use platform-specific commands instead of osquery
+                if scan_type == 'updates':
+                    result = get_available_updates()
+                else:
+                    result = run_osquery_query(query)
+
                 response = {
                     "status": "success",
                     "action": "run_osquery",
-                    "scan_type": data.get('scan_type'),
+                    "scan_type": scan_type,
                     "request_id": request_id,  # Include request_id in response
                     "data": result
                 }
@@ -927,6 +1255,51 @@ def execute_custom_command(command: str) -> Union[str, Dict[str, Any]]:
         logging.error(f"Error running custom command: {e}")
         return {"error": str(e)}
 
+def find_available_shell():
+    """
+    Find the best available shell based on platform.
+    - Linux: bash > zsh > sh
+    - macOS: zsh (default on macOS)
+    - Windows: PowerShell
+    """
+    import shutil
+
+    system = platform.system()
+
+    if system == 'Windows':
+        # Windows uses PowerShell
+        powershell = shutil.which('powershell.exe') or shutil.which('pwsh.exe')
+        if powershell:
+            return powershell
+        # Fallback to cmd
+        return shutil.which('cmd.exe') or 'cmd.exe'
+
+    if system == 'Darwin':
+        # macOS default is zsh
+        if os.path.exists('/bin/zsh'):
+            return '/bin/zsh'
+        # Check SHELL env as backup
+        env_shell = os.environ.get('SHELL')
+        if env_shell and os.path.exists(env_shell):
+            return env_shell
+        return '/bin/sh'
+
+    # Linux: prefer bash > zsh > sh
+    if system == 'Linux':
+        # First check SHELL environment variable
+        env_shell = os.environ.get('SHELL')
+        if env_shell and os.path.exists(env_shell):
+            return env_shell
+
+        # Try shells in order of preference: bash, zsh, sh
+        shells = ['/bin/bash', '/usr/bin/bash', '/bin/zsh', '/usr/bin/zsh', '/bin/sh', '/usr/bin/sh']
+        for shell in shells:
+            if os.path.exists(shell):
+                return shell
+
+    # Fallback to sh (should always exist)
+    return '/bin/sh'
+
 def start_terminal(ws):
     global terminal_process, terminal_running, terminal_thread, master_fd
     if terminal_running:
@@ -936,7 +1309,8 @@ def start_terminal(ws):
     if system in ['Linux', 'Darwin']:
         import pty
         master_fd, slave_fd = pty.openpty()
-        shell = os.environ.get('SHELL', '/bin/zsh')
+        shell = find_available_shell()
+        logging.info(f"Starting terminal with shell: {shell}")
         cwd = '/root' if os.path.exists('/root') else os.path.expanduser('~')
         terminal_process = subprocess.Popen(
             [shell],
@@ -1264,8 +1638,11 @@ def handle_upload_chunk_new(
 def get_system_stats() -> Dict[str, Any]:
     """
     Get current CPU and memory usage statistics using osquery.
+    Works on Linux, macOS, and Windows.
     """
     from osquery_handler import run_osquery_query
+
+    system = platform.system()
 
     try:
         # Get total physical memory and CPU cores from system_info
@@ -1278,29 +1655,101 @@ def get_system_stats() -> Dict[str, Any]:
             memory_total = int(sys_info[0].get("physical_memory", 0))
             cpu_cores = int(sys_info[0].get("cpu_logical_cores", 1)) or 1
 
-        # Get memory usage from virtual_memory_info (values in pages, page_size = 4096 bytes)
+        # Get memory usage - platform specific
         memory_used = 0
         memory_percent = 0.0
-        page_size = 4096  # macOS/Linux page size
 
-        vm_info = run_osquery_query("SELECT free, active, inactive, wired FROM virtual_memory_info;")
-        if vm_info and not isinstance(vm_info, dict) and len(vm_info) > 0:
-            row = vm_info[0]
-            # Used memory = active + wired pages
-            active_pages = int(row.get("active", 0))
-            wired_pages = int(row.get("wired", 0))
-            memory_used = (active_pages + wired_pages) * page_size
-            if memory_total > 0:
-                memory_percent = (memory_used / memory_total) * 100.0
+        if system == 'Darwin':
+            # macOS: Use virtual_memory_info (values in pages)
+            page_size = 4096
+            vm_info = run_osquery_query("SELECT free, active, inactive, wired FROM virtual_memory_info;")
+            if vm_info and not isinstance(vm_info, dict) and len(vm_info) > 0:
+                row = vm_info[0]
+                active_pages = int(row.get("active", 0))
+                wired_pages = int(row.get("wired", 0))
+                memory_used = (active_pages + wired_pages) * page_size
+                if memory_total > 0:
+                    memory_percent = (memory_used / memory_total) * 100.0
+        elif system == 'Linux':
+            # Linux: Try osquery memory_info table first
+            mem_info = run_osquery_query("SELECT memory_total, memory_free, buffers, cached FROM memory_info;")
+            if mem_info and not isinstance(mem_info, dict) and len(mem_info) > 0:
+                row = mem_info[0]
+                mem_total = int(row.get("memory_total", 0))
+                mem_free = int(row.get("memory_free", 0))
+                buffers = int(row.get("buffers", 0))
+                cached = int(row.get("cached", 0))
+                # Used = Total - Free - Buffers - Cached
+                memory_used = mem_total - mem_free - buffers - cached
+                memory_total = mem_total
+                if memory_total > 0:
+                    memory_percent = (memory_used / memory_total) * 100.0
 
-        # Get CPU load average (1 minute) as percentage approximation
+            # Fallback: Read directly from /proc/meminfo if osquery failed or returned 0
+            if memory_percent == 0 and os.path.exists('/proc/meminfo'):
+                try:
+                    with open('/proc/meminfo', 'r') as f:
+                        meminfo = {}
+                        for line in f:
+                            parts = line.split(':')
+                            if len(parts) == 2:
+                                key = parts[0].strip()
+                                # Values are in kB, convert to bytes
+                                value = int(parts[1].strip().split()[0]) * 1024
+                                meminfo[key] = value
+
+                        mem_total = meminfo.get('MemTotal', 0)
+                        mem_free = meminfo.get('MemFree', 0)
+                        buffers = meminfo.get('Buffers', 0)
+                        cached = meminfo.get('Cached', 0)
+
+                        memory_used = mem_total - mem_free - buffers - cached
+                        memory_total = mem_total
+                        if memory_total > 0:
+                            memory_percent = (memory_used / memory_total) * 100.0
+                            logging.debug(f"Linux memory from /proc/meminfo: {memory_percent:.1f}%")
+                except Exception as e:
+                    logging.error(f"Error reading /proc/meminfo: {e}")
+        elif system == 'Windows':
+            # Windows: Try WMI for memory info (more reliable than memory_info table)
+            mem_info = run_osquery_query(
+                "SELECT TotalVisibleMemorySize, FreePhysicalMemory FROM wmi_raw "
+                "WHERE class = 'Win32_OperatingSystem' AND namespace = '\\\\root\\\\cimv2';"
+            )
+            if mem_info and not isinstance(mem_info, dict) and len(mem_info) > 0:
+                row = mem_info[0]
+                # WMI returns values in KB
+                mem_total = int(row.get("TotalVisibleMemorySize", 0)) * 1024
+                mem_free = int(row.get("FreePhysicalMemory", 0)) * 1024
+                if mem_total > 0:
+                    memory_used = mem_total - mem_free
+                    memory_total = mem_total
+                    memory_percent = (memory_used / memory_total) * 100.0
+
+            # Fallback: Use system_info if WMI query failed
+            if memory_percent == 0 and memory_total > 0:
+                mem_available = run_osquery_query("SELECT available_physical_memory FROM system_info;")
+                if mem_available and not isinstance(mem_available, dict) and len(mem_available) > 0:
+                    avail = int(mem_available[0].get("available_physical_memory", 0))
+                    if avail > 0:
+                        memory_used = memory_total - avail
+                        memory_percent = (memory_used / memory_total) * 100.0
+
+        # Get CPU usage - platform specific
         cpu_percent = 0.0
-        load_result = run_osquery_query("SELECT average FROM load_average WHERE period = '1m';")
 
-        if load_result and not isinstance(load_result, dict) and len(load_result) > 0:
-            load_avg = float(load_result[0].get("average", 0))
-            # Convert load average to percentage (load / cores * 100)
-            cpu_percent = min((load_avg / cpu_cores) * 100.0, 100.0)
+        if system in ['Darwin', 'Linux']:
+            # Use load average on macOS/Linux
+            load_result = run_osquery_query("SELECT average FROM load_average WHERE period = '1m';")
+            if load_result and not isinstance(load_result, dict) and len(load_result) > 0:
+                load_avg = float(load_result[0].get("average", 0))
+                cpu_percent = min((load_avg / cpu_cores) * 100.0, 100.0)
+        elif system == 'Windows':
+            # Windows: Use WMI for CPU usage
+            cpu_result = run_osquery_query("SELECT percent_idle_time FROM wmi_cpu_speed LIMIT 1;")
+            if cpu_result and not isinstance(cpu_result, dict) and len(cpu_result) > 0:
+                idle = float(cpu_result[0].get("percent_idle_time", 100))
+                cpu_percent = max(0, 100 - idle)
 
         return {
             "cpu_percent": round(cpu_percent, 1),

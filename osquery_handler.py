@@ -46,9 +46,20 @@ def run_osquery_query(query):
 
         cmd = [osquery_binary, '--json', query]
         logging.debug(f"Executing osquery: {' '.join(cmd)}")
-        # Use DEVNULL for stderr to prevent error messages from corrupting JSON output
-        result = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-        decoded = result.decode().strip()
+
+        # Capture both stdout and stderr for better error diagnosis
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+        if result.returncode != 0:
+            # Log the actual error from stderr
+            stderr_msg = result.stderr.strip() if result.stderr else "No error message"
+            error_msg = f"Osquery execution failed (exit code {result.returncode}): {stderr_msg}"
+            logging.error(error_msg)
+            # Log the query that failed for debugging
+            logging.debug(f"Failed query: {query[:200]}...")  # Log first 200 chars
+            return {"error": error_msg}
+
+        decoded = result.stdout.strip()
 
         # Handle empty results
         if not decoded:
@@ -56,8 +67,8 @@ def run_osquery_query(query):
 
         return json.loads(decoded)
 
-    except subprocess.CalledProcessError as e:
-        error_msg = f"Osquery execution failed with exit code {e.returncode}"
+    except subprocess.TimeoutExpired:
+        error_msg = "Osquery execution timed out after 60 seconds"
         logging.error(error_msg)
         return {"error": error_msg}
     except json.JSONDecodeError as e:
