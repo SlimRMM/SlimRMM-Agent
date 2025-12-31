@@ -237,14 +237,14 @@ $wxsContent = @"
                         Wait="yes" />
       </Component>
 
-      <Component Id="LogDirectory" Guid="*">
+      <Component Id="LogDirectory" Guid="A1B2C3D4-E5F6-7890-ABCD-EF1234567890">
         <CreateFolder Directory="LogFolder">
           <Permission User="SYSTEM" GenericAll="yes" />
           <Permission User="Administrators" GenericAll="yes" />
         </CreateFolder>
       </Component>
 
-      <Component Id="CertsDirectory" Guid="*">
+      <Component Id="CertsDirectory" Guid="B2C3D4E5-F678-90AB-CDEF-123456789ABC">
         <CreateFolder Directory="CertsFolder">
           <Permission User="SYSTEM" GenericAll="yes" />
           <Permission User="Administrators" GenericAll="yes" />
