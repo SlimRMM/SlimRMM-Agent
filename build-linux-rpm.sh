@@ -223,12 +223,19 @@ systemctl daemon-reload
 
 # Check for silent installation parameters
 SILENT_SERVER="\${SLIMRMM_SERVER:-}"
-SILENT_KEY="\${SLIMRMM_KEY:-}"
+
+# Also check for config file passed during installation
+if [ -f "/tmp/slimrmm_install_config.json" ]; then
+    if command -v python3 &> /dev/null; then
+        SILENT_SERVER=\$(python3 -c "import json; print(json.load(open('/tmp/slimrmm_install_config.json')).get('server', ''))" 2>/dev/null)
+    fi
+    rm -f /tmp/slimrmm_install_config.json
+fi
 
 CONFIG_FILE="${INSTALL_DIR}/.slimrmm_config.json"
 REGISTRATION_SUCCESS=1
 
-if [ -n "\$SILENT_SERVER" ] && [ -n "\$SILENT_KEY" ]; then
+if [ -n "\$SILENT_SERVER" ]; then
     echo "Silent installation mode detected."
     echo "Registering agent with server: \${SILENT_SERVER}"
 
@@ -238,10 +245,9 @@ if [ -n "\$SILENT_SERVER" ] && [ -n "\$SILENT_KEY" ]; then
     [ "\$arch" = "x86_64" ] && arch="amd64"
     [ "\$arch" = "aarch64" ] && arch="arm64"
 
-    response=\$(curl -s -X POST "\${SILENT_SERVER}/api/v1/agents/register" \\
+    response=\$(curl -s -k -X POST "\${SILENT_SERVER}/api/v1/agents/register" \\
         -H "Content-Type: application/json" \\
         -d "{
-            \"installation_key\": \"\${SILENT_KEY}\",
             \"os\": \"\${os}\",
             \"arch\": \"\${arch}\",
             \"hostname\": \"\${hostname}\",
@@ -251,20 +257,36 @@ if [ -n "\$SILENT_SERVER" ] && [ -n "\$SILENT_KEY" ]; then
     if [ -n "\$response" ]; then
         if command -v python3 &> /dev/null; then
             uuid=\$(echo "\$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('uuid',''))" 2>/dev/null)
-            api_key=\$(echo "\$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('api_key',''))" 2>/dev/null)
+            cert_pem=\$(echo "\$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mtls',{}).get('certificate_pem',''))" 2>/dev/null)
+            key_pem=\$(echo "\$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mtls',{}).get('private_key_pem',''))" 2>/dev/null)
+            ca_pem=\$(echo "\$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mtls',{}).get('ca_certificate_pem',''))" 2>/dev/null)
         fi
 
-        if [ -n "\$uuid" ] && [ -n "\$api_key" ]; then
+        if [ -n "\$uuid" ]; then
+            # Save mTLS certificates
+            if [ -n "\$cert_pem" ] && [ -n "\$key_pem" ] && [ -n "\$ca_pem" ]; then
+                echo "\$cert_pem" > "${INSTALL_DIR}/certs/agent.crt"
+                echo "\$key_pem" > "${INSTALL_DIR}/certs/agent.key"
+                echo "\$ca_pem" > "${INSTALL_DIR}/certs/ca.crt"
+                chmod 644 "${INSTALL_DIR}/certs/agent.crt"
+                chmod 600 "${INSTALL_DIR}/certs/agent.key"
+                chmod 644 "${INSTALL_DIR}/certs/ca.crt"
+                echo "mTLS certificates saved."
+            fi
+
             cat > "\${CONFIG_FILE}" << CONFIGEOF
 {
     "server": "\${SILENT_SERVER}",
     "uuid": "\${uuid}",
-    "api_key": "\${api_key}"
+    "mtls_enabled": true
 }
 CONFIGEOF
             chmod 600 "\${CONFIG_FILE}"
             echo "Agent registered successfully! UUID: \${uuid}"
             REGISTRATION_SUCCESS=0
+        else
+            echo "ERROR: Registration failed"
+            echo "Response: \$response"
         fi
     fi
 elif [ -f "\${CONFIG_FILE}" ]; then
@@ -274,7 +296,10 @@ else
     echo ""
     echo "No configuration found."
     echo "To configure, run:"
-    echo "  sudo slimrmm-agent --install --installation-key YOUR_KEY --server https://your-server.com"
+    echo "  sudo slimrmm-agent --install --server https://your-server.com:8800"
+    echo ""
+    echo "Or reinstall with environment variable:"
+    echo "  SLIMRMM_SERVER=\"https://...\" sudo rpm -i slimrmm-agent-*.rpm"
     echo ""
 fi
 
@@ -349,6 +374,10 @@ echo ""
 echo "To install:"
 echo "  sudo rpm -i ${RPM_FILE}"
 echo ""
-echo "Silent installation:"
-echo "  SLIMRMM_SERVER=\"https://...\" SLIMRMM_KEY=\"...\" sudo rpm -i ${RPM_FILE}"
+echo "Silent installation with auto-registration:"
+echo "  SLIMRMM_SERVER=\"http://your-server:8800\" sudo rpm -i ${RPM_FILE}"
+echo ""
+echo "Or create config file before installing:"
+echo "  echo '{\"server\": \"http://your-server:8800\"}' | sudo tee /tmp/slimrmm_install_config.json"
+echo "  sudo rpm -i ${RPM_FILE}"
 echo ""
