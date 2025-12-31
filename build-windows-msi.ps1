@@ -236,21 +236,26 @@ $wxsContent = @"
                         Remove="uninstall"
                         Wait="yes" />
       </Component>
-
-      <Component Id="LogDirectory" Guid="A1B2C3D4-E5F6-7890-ABCD-EF1234567890">
-        <CreateFolder Directory="LogFolder">
-          <Permission User="SYSTEM" GenericAll="yes" />
-          <Permission User="Administrators" GenericAll="yes" />
-        </CreateFolder>
-      </Component>
-
-      <Component Id="CertsDirectory" Guid="B2C3D4E5-F678-90AB-CDEF-123456789ABC">
-        <CreateFolder Directory="CertsFolder">
-          <Permission User="SYSTEM" GenericAll="yes" />
-          <Permission User="Administrators" GenericAll="yes" />
-        </CreateFolder>
-      </Component>
     </ComponentGroup>
+
+    <!-- Directory components in their own directories -->
+    <DirectoryRef Id="LogFolder">
+      <Component Id="LogDirectory" Guid="A1B2C3D4-E5F6-7890-ABCD-EF1234567890">
+        <CreateFolder>
+          <Permission User="SYSTEM" GenericAll="yes" />
+          <Permission User="Administrators" GenericAll="yes" />
+        </CreateFolder>
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="CertsFolder">
+      <Component Id="CertsDirectory" Guid="B2C3D4E5-F678-90AB-CDEF-123456789ABC">
+        <CreateFolder>
+          <Permission User="SYSTEM" GenericAll="yes" />
+          <Permission User="Administrators" GenericAll="yes" />
+        </CreateFolder>
+      </Component>
+    </DirectoryRef>
 
     <!-- Custom Actions for Registration (mTLS based - no installation key required) -->
     <CustomAction Id="SetRegistrationCmd"
@@ -277,6 +282,8 @@ $wxsContent = @"
     <!-- Features -->
     <Feature Id="ProductFeature" Title="$AppName" Level="1">
       <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="LogDirectory" />
+      <ComponentRef Id="CertsDirectory" />
     </Feature>
 
     <!-- UI -->
