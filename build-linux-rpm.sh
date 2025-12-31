@@ -303,6 +303,36 @@ else
     echo ""
 fi
 
+# Install osquery if not present
+if ! command -v osqueryi &> /dev/null; then
+    echo ""
+    echo "Installing osquery for system monitoring..."
+    echo ""
+
+    # Detect package manager and install osquery
+    if command -v dnf &> /dev/null; then
+        # Fedora/RHEL 8+
+        curl -fsSL https://pkg.osquery.io/rpm/GPG > /etc/pki/rpm-gpg/RPM-GPG-KEY-osquery 2>/dev/null || true
+        dnf config-manager --add-repo https://pkg.osquery.io/rpm/osquery-s3-rpm.repo 2>/dev/null || true
+        dnf install -y osquery 2>/dev/null || {
+            echo "WARNING: Failed to install osquery. Please install manually."
+        }
+    elif command -v yum &> /dev/null; then
+        # RHEL 7/CentOS
+        curl -fsSL https://pkg.osquery.io/rpm/GPG > /etc/pki/rpm-gpg/RPM-GPG-KEY-osquery 2>/dev/null || true
+        yum-config-manager --add-repo https://pkg.osquery.io/rpm/osquery-s3-rpm.repo 2>/dev/null || true
+        yum install -y osquery 2>/dev/null || {
+            echo "WARNING: Failed to install osquery. Please install manually."
+        }
+    fi
+
+    if command -v osqueryi &> /dev/null; then
+        echo "osquery installed successfully."
+    fi
+else
+    echo "osquery is already installed."
+fi
+
 if [ "\$REGISTRATION_SUCCESS" -eq 0 ]; then
     systemctl enable ${SYSTEMD_SERVICE}
     systemctl start ${SYSTEMD_SERVICE}
@@ -312,9 +342,14 @@ else
 fi
 
 echo ""
-echo "Installation complete!"
+echo "=============================================="
+echo "  Installation Complete"
+echo "=============================================="
+echo ""
 echo "Agent binary: ${INSTALL_DIR}/slimrmm-agent"
-echo "Service: systemctl status ${SYSTEMD_SERVICE}"
+echo "Config file:  ${INSTALL_DIR}/.slimrmm_config.json"
+echo "Log files:    ${INSTALL_DIR}/log/"
+echo "Service:      systemctl status ${SYSTEMD_SERVICE}"
 echo ""
 
 %preun

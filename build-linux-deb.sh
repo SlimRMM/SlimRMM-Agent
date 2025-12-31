@@ -156,6 +156,8 @@ Priority: optional
 Architecture: ${ARCH}
 Installed-Size: ${INSTALLED_SIZE}
 Maintainer: ${MAINTAINER}
+Depends: curl
+Recommends: osquery
 Description: ${DESCRIPTION}
  SlimRMM Agent provides remote monitoring and management
  capabilities for Linux systems. Features include:
@@ -164,6 +166,9 @@ Description: ${DESCRIPTION}
  - Software inventory
  - File management
  - Remote desktop support
+ .
+ Note: osquery is recommended for full functionality.
+ Install it from: https://osquery.io/downloads
 CONTROL
 
 # Create preinst script
@@ -367,6 +372,38 @@ if [ "$REGISTRATION_SUCCESS" -eq 0 ]; then
 else
     echo "Agent installed but not started (no configuration)."
     echo "Configure and start manually when ready."
+fi
+
+# Install osquery if not present
+if ! command -v osqueryi &> /dev/null; then
+    echo ""
+    echo "Installing osquery for system monitoring..."
+    echo ""
+
+    # Add osquery repository
+    if [ ! -f /usr/share/keyrings/osquery.gpg ]; then
+        curl -fsSL https://pkg.osquery.io/deb/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/osquery.gpg 2>/dev/null || true
+    fi
+
+    if [ ! -f /etc/apt/sources.list.d/osquery.list ]; then
+        echo 'deb [signed-by=/usr/share/keyrings/osquery.gpg] https://pkg.osquery.io/deb deb main' > /etc/apt/sources.list.d/osquery.list
+    fi
+
+    # Install osquery
+    apt-get update -qq
+    apt-get install -y osquery || {
+        echo ""
+        echo "WARNING: Failed to install osquery automatically."
+        echo "Please install manually:"
+        echo "  sudo apt update && sudo apt install osquery"
+        echo ""
+    }
+
+    if command -v osqueryi &> /dev/null; then
+        echo "osquery installed successfully."
+    fi
+else
+    echo "osquery is already installed."
 fi
 
 echo ""

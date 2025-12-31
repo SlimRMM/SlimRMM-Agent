@@ -120,7 +120,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'unittest', 'email', 'html', 'http', 'xml', 'pydoc'],
+    excludes=['tkinter', 'unittest', 'pydoc'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -187,7 +187,6 @@ $wxsContent = @"
 
     <!-- Properties -->
     <Property Id="SLIMRMM_SERVER" Secure="yes" />
-    <Property Id="SLIMRMM_KEY" Secure="yes" />
     <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
 
@@ -249,10 +248,10 @@ $wxsContent = @"
       </Component>
     </ComponentGroup>
 
-    <!-- Custom Actions for Registration -->
+    <!-- Custom Actions for Registration (mTLS based - no installation key required) -->
     <CustomAction Id="SetRegistrationCmd"
                   Property="RegisterAgent"
-                  Value="&quot;[INSTALLFOLDER]slimrmm-agent.exe&quot; --install --server &quot;[SLIMRMM_SERVER]&quot; --installation-key &quot;[SLIMRMM_KEY]&quot;"
+                  Value="&quot;[INSTALLFOLDER]slimrmm-agent.exe&quot; --install --server &quot;[SLIMRMM_SERVER]&quot;"
                   Execute="immediate" />
 
     <CustomAction Id="RegisterAgent"
@@ -264,10 +263,10 @@ $wxsContent = @"
 
     <InstallExecuteSequence>
       <Custom Action="SetRegistrationCmd" After="InstallFiles">
-        SLIMRMM_SERVER AND SLIMRMM_KEY
+        SLIMRMM_SERVER
       </Custom>
       <Custom Action="RegisterAgent" After="SetRegistrationCmd">
-        SLIMRMM_SERVER AND SLIMRMM_KEY
+        SLIMRMM_SERVER
       </Custom>
     </InstallExecuteSequence>
 
@@ -348,6 +347,8 @@ Write-Host ""
 Write-Host "  Command line:"
 Write-Host "    msiexec /i SlimRMM-Agent-$Version-$Arch.msi /qn"
 Write-Host ""
-Write-Host "  Silent with registration:"
-Write-Host "    msiexec /i SlimRMM-Agent-$Version-$Arch.msi /qn SLIMRMM_SERVER=`"https://...`" SLIMRMM_KEY=`"...`""
+Write-Host "  Silent with registration (mTLS - no key required):"
+Write-Host "    msiexec /i SlimRMM-Agent-$Version-$Arch.msi /qn SLIMRMM_SERVER=`"https://your-server:8800`""
+Write-Host ""
+Write-Host "Note: Install osquery from https://osquery.io/downloads for full functionality."
 Write-Host ""
