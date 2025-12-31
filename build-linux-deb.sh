@@ -237,12 +237,18 @@ systemctl daemon-reload
 
 # Check for silent installation parameters
 SILENT_SERVER="${SLIMRMM_SERVER:-}"
-SILENT_KEY="${SLIMRMM_KEY:-}"
 
-# Function to register agent
+# Also check for config file passed during installation
+if [ -f "/tmp/slimrmm_install_config.json" ]; then
+    if command -v python3 &> /dev/null; then
+        SILENT_SERVER=$(python3 -c "import json; print(json.load(open('/tmp/slimrmm_install_config.json')).get('server', ''))" 2>/dev/null)
+    fi
+    rm -f /tmp/slimrmm_install_config.json
+fi
+
+# Function to register agent with mTLS certificates
 register_agent() {
     local server_url="$1"
-    local install_key="$2"
 
     echo "Registering agent with server: ${server_url}"
 
@@ -253,15 +259,14 @@ register_agent() {
     [ "$arch" = "x86_64" ] && arch="amd64"
     [ "$arch" = "aarch64" ] && arch="arm64"
 
-    # Register with server
-    local response=$(curl -s -X POST "${server_url}/api/v1/agents/register" \
+    # Register with server (mTLS based - no installation key required)
+    local response=$(curl -s -k -X POST "${server_url}/api/v1/agents/register" \
         -H "Content-Type: application/json" \
         -d "{
-            \"installation_key\": \"${install_key}\",
             \"os\": \"${os}\",
             \"arch\": \"${arch}\",
             \"hostname\": \"${hostname}\",
-            \"agent_version\": \"1.0.0\"
+            \"agent_version\": \"1.0.4\"
         }" 2>/dev/null)
 
     if [ -z "$response" ]; then
@@ -269,21 +274,42 @@ register_agent() {
         return 1
     fi
 
-    # Parse response (requires python3 or jq)
+    # Parse response
     local uuid=""
-    local api_key=""
+    local error=""
+    local cert_pem=""
+    local key_pem=""
+    local ca_pem=""
 
     if command -v python3 &> /dev/null; then
         uuid=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('uuid',''))" 2>/dev/null)
-        api_key=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('api_key',''))" 2>/dev/null)
+        error=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('detail',''))" 2>/dev/null)
+        cert_pem=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mtls',{}).get('certificate_pem',''))" 2>/dev/null)
+        key_pem=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mtls',{}).get('private_key_pem',''))" 2>/dev/null)
+        ca_pem=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('mtls',{}).get('ca_certificate_pem',''))" 2>/dev/null)
     elif command -v jq &> /dev/null; then
         uuid=$(echo "$response" | jq -r '.uuid // empty' 2>/dev/null)
-        api_key=$(echo "$response" | jq -r '.api_key // empty' 2>/dev/null)
+        error=$(echo "$response" | jq -r '.detail // empty' 2>/dev/null)
+        cert_pem=$(echo "$response" | jq -r '.mtls.certificate_pem // empty' 2>/dev/null)
+        key_pem=$(echo "$response" | jq -r '.mtls.private_key_pem // empty' 2>/dev/null)
+        ca_pem=$(echo "$response" | jq -r '.mtls.ca_certificate_pem // empty' 2>/dev/null)
     fi
 
-    if [ -z "$uuid" ] || [ -z "$api_key" ]; then
-        echo "ERROR: Registration failed"
+    if [ -z "$uuid" ]; then
+        echo "ERROR: Registration failed - ${error:-Unknown error}"
+        echo "Response: $response"
         return 1
+    fi
+
+    # Save mTLS certificates
+    if [ -n "$cert_pem" ] && [ -n "$key_pem" ] && [ -n "$ca_pem" ]; then
+        echo "$cert_pem" > "${INSTALL_DIR}/certs/agent.crt"
+        echo "$key_pem" > "${INSTALL_DIR}/certs/agent.key"
+        echo "$ca_pem" > "${INSTALL_DIR}/certs/ca.crt"
+        chmod 644 "${INSTALL_DIR}/certs/agent.crt"
+        chmod 600 "${INSTALL_DIR}/certs/agent.key"
+        chmod 644 "${INSTALL_DIR}/certs/ca.crt"
+        echo "mTLS certificates saved."
     fi
 
     # Save configuration
@@ -291,22 +317,23 @@ register_agent() {
 {
     "server": "${server_url}",
     "uuid": "${uuid}",
-    "api_key": "${api_key}"
+    "mtls_enabled": true
 }
 CONFIGEOF
     chmod 600 "${CONFIG_FILE}"
 
     echo "Agent registered successfully!"
     echo "  UUID: ${uuid}"
+    echo "  Certificates: ${INSTALL_DIR}/certs/"
     return 0
 }
 
 # Interactive or silent installation
 REGISTRATION_SUCCESS=1
 
-if [ -n "$SILENT_SERVER" ] && [ -n "$SILENT_KEY" ]; then
+if [ -n "$SILENT_SERVER" ]; then
     echo "Silent installation mode detected."
-    register_agent "$SILENT_SERVER" "$SILENT_KEY"
+    register_agent "$SILENT_SERVER"
     REGISTRATION_SUCCESS=$?
 elif [ -f "${CONFIG_FILE}" ]; then
     echo "Existing configuration found."
@@ -316,10 +343,10 @@ else
     echo "No configuration found."
     echo ""
     echo "To configure the agent, run:"
-    echo "  sudo slimrmm-agent --install --installation-key YOUR_KEY --server https://your-server.com"
+    echo "  sudo slimrmm-agent --install --server https://your-server.com:8800"
     echo ""
-    echo "Or reinstall with environment variables:"
-    echo "  SLIMRMM_SERVER=\"https://...\" SLIMRMM_KEY=\"...\" sudo dpkg -i slimrmm-agent_*.deb"
+    echo "Or reinstall with environment variable:"
+    echo "  SLIMRMM_SERVER=\"https://...\" sudo dpkg -i slimrmm-agent_*.deb"
     echo ""
 fi
 
@@ -416,6 +443,10 @@ echo ""
 echo "To install:"
 echo "  sudo dpkg -i ${DEB_FILE}"
 echo ""
-echo "Silent installation:"
-echo "  SLIMRMM_SERVER=\"https://...\" SLIMRMM_KEY=\"...\" sudo dpkg -i ${DEB_FILE}"
+echo "Silent installation with auto-registration:"
+echo "  SLIMRMM_SERVER=\"http://your-server:8800\" sudo dpkg -i ${DEB_FILE}"
+echo ""
+echo "Or create config file before installing:"
+echo "  echo '{\"server\": \"http://your-server:8800\"}' | sudo tee /tmp/slimrmm_install_config.json"
+echo "  sudo dpkg -i ${DEB_FILE}"
 echo ""
