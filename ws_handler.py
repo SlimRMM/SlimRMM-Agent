@@ -1516,11 +1516,16 @@ def chown_entry(path: str, owner: str = None, group: str = None) -> Dict[str, An
         logging.error(f"Error changing owner: {e}")
         return {"success": False, "error": str(e)}
 
-def zip_entry(source_path: str, output_zip: str) -> Dict[str, Any]:
+def zip_entry(source_path: str, output_zip: str = None) -> Dict[str, Any]:
     """Create a ZIP archive with path validation."""
     try:
-        # Validate both paths
+        # Validate source path
         validated_source = validate_path(source_path, ALLOWED_FILE_PATHS, check_exists=True)
+
+        # Generate output path if not provided
+        if not output_zip:
+            output_zip = str(validated_source) + '.zip'
+
         validated_output = validate_path(output_zip, ALLOWED_FILE_PATHS)
 
         with zipfile.ZipFile(validated_output, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -1542,15 +1547,21 @@ def zip_entry(source_path: str, output_zip: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-def unzip_entry(zip_path: str, extract_to: str) -> Dict[str, Any]:
+def unzip_entry(zip_path: str, extract_to: str = None) -> Dict[str, Any]:
     """
     Extract a ZIP archive safely with ZIP-Slip prevention.
 
     Uses the secure ZIP handler to validate all archive members.
     """
     try:
-        # Validate both paths
+        # Validate zip path
         validated_zip = validate_path(zip_path, ALLOWED_FILE_PATHS, check_exists=True)
+
+        # Generate extraction path if not provided (same directory as zip, folder name = zip name without extension)
+        if not extract_to:
+            zip_name = validated_zip.stem  # filename without extension
+            extract_to = str(validated_zip.parent / zip_name)
+
         validated_extract = validate_path(extract_to, ALLOWED_FILE_PATHS)
 
         # Use secure extraction
