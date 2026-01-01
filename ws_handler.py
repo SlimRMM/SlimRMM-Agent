@@ -11,6 +11,8 @@ import stat
 import pwd
 import time
 import grp
+import signal
+from datetime import datetime, timezone
 import select
 import asyncio
 import os
@@ -46,8 +48,94 @@ def get_available_updates() -> list:
     return updates
 
 
+# Kernel package patterns for categorization
+KERNEL_PATTERNS = [
+    'linux-image-',
+    'linux-headers-',
+    'linux-firmware',
+    'linux-modules-',
+    'linux-libc-dev',
+    'linux-tools-',
+    'linux-cloud-tools-',
+    'linux-buildinfo-',
+    'kernel',
+    'dkms',
+]
+
+
+def _categorize_package(pkg_name: str, repository: str) -> str:
+    """
+    Categorize a package as security, kernel, or standard.
+
+    Args:
+        pkg_name: Package name
+        repository: Repository/suite name (e.g., 'jammy-security', 'bookworm-security')
+
+    Returns:
+        Category string: 'security', 'kernel', or 'standard'
+    """
+    # Check for kernel packages first (even if from security repo)
+    for pattern in KERNEL_PATTERNS:
+        if pkg_name.startswith(pattern) or pattern in pkg_name.lower():
+            return 'kernel'
+
+    # Check for security updates based on repository
+    # Patterns cover:
+    # - Ubuntu: jammy-security, focal-security, security.ubuntu.com
+    # - Debian: bookworm-security, bullseye-security, debian-security, debian/updates
+    repo_lower = repository.lower() if repository else ''
+    security_patterns = [
+        '-security',      # Ubuntu/Debian: jammy-security, bookworm-security
+        'security.',      # Ubuntu: security.ubuntu.com
+        'updates-security',
+        'debian-security', # Debian: deb.debian.org/debian-security
+        '/debian-security',
+        'debian/updates',  # Old Debian security naming (Stretch and earlier)
+    ]
+    if any(sec in repo_lower for sec in security_patterns):
+        return 'security'
+
+    return 'standard'
+
+
+def _get_apt_package_info(pkg_name: str) -> dict:
+    """
+    Get package repository info using apt-cache policy.
+
+    Returns dict with 'repository' key.
+    """
+    try:
+        result = subprocess.run(
+            ['apt-cache', 'policy', pkg_name],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            # Parse the candidate line and repository
+            lines = result.stdout.split('\n')
+            for i, line in enumerate(lines):
+                if 'Candidate:' in line:
+                    # Look for the repository info (lines after ***)
+                    for j in range(i + 1, min(i + 10, len(lines))):
+                        if '***' in lines[j] or (lines[j].strip().startswith('500') or lines[j].strip().startswith('100')):
+                            # Next line often contains repo URL
+                            if j + 1 < len(lines):
+                                repo_line = lines[j + 1].strip()
+                                # Extract repository name (e.g., jammy-security, focal-updates)
+                                parts = repo_line.split()
+                                for part in parts:
+                                    if '-security' in part or '-updates' in part or 'main' in part:
+                                        return {'repository': part}
+                    break
+    except Exception as e:
+        logging.debug(f"Error getting apt-cache policy for {pkg_name}: {e}")
+
+    return {'repository': ''}
+
+
 def _get_linux_updates() -> list:
-    """Get available updates on Linux using apt or dnf/yum."""
+    """Get available updates on Linux with categorization (security/kernel/standard)."""
     updates = []
 
     # Try apt (Debian/Ubuntu)
@@ -72,19 +160,32 @@ def _get_linux_updates() -> list:
                     if line.startswith('Listing') or not line.strip():
                         continue
                     # Format: package/suite version arch [upgradable from: old_version]
+                    # Example: curl/jammy-security 7.81.0-1ubuntu1.18 amd64 [upgradable from: 7.81.0-1ubuntu1.17]
                     try:
                         parts = line.split('/')
                         if len(parts) >= 2:
                             pkg_name = parts[0]
                             rest = parts[1]
-                            version_parts = rest.split()
-                            new_version = version_parts[1] if len(version_parts) > 1 else ''
+
+                            # Extract suite (repository) from the second part
+                            # Format: suite version arch [upgradable from: old_version]
+                            suite_parts = rest.split()
+                            suite = suite_parts[0] if suite_parts else ''
+                            new_version = suite_parts[1] if len(suite_parts) > 1 else ''
+
                             old_version = ''
                             if 'upgradable from:' in line:
                                 old_version = line.split('upgradable from:')[1].strip().rstrip(']')
+
+                            # Categorize the package
+                            category = _categorize_package(pkg_name, suite)
+
                             updates.append({
                                 'name': pkg_name,
                                 'version': new_version,
+                                'current_version': old_version,
+                                'category': category,
+                                'repository': suite,
                                 'desc': f"Upgrade from {old_version}" if old_version else "Available update"
                             })
                     except Exception as e:
@@ -98,6 +199,25 @@ def _get_linux_updates() -> list:
     # Try dnf (Fedora/RHEL 8+)
     elif shutil.which('dnf'):
         try:
+            # First get security updates
+            security_pkgs = set()
+            try:
+                sec_result = subprocess.run(
+                    ['dnf', 'check-update', '--security', '-q'],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                if sec_result.returncode in [0, 100]:
+                    for line in sec_result.stdout.strip().split('\n'):
+                        if line.strip():
+                            parts = line.split()
+                            if parts:
+                                pkg = parts[0].rsplit('.', 1)[0]
+                                security_pkgs.add(pkg)
+            except Exception:
+                pass
+
             result = subprocess.run(
                 ['dnf', 'check-update', '-q'],
                 capture_output=True,
@@ -113,12 +233,23 @@ def _get_linux_updates() -> list:
                     # Format: package.arch  version  repo
                     parts = line.split()
                     if len(parts) >= 2:
-                        pkg_name = parts[0].rsplit('.', 1)[0]  # Remove arch suffix
+                        pkg_full = parts[0]
+                        pkg_name = pkg_full.rsplit('.', 1)[0]  # Remove arch suffix
                         version = parts[1]
                         repo = parts[2] if len(parts) > 2 else ''
+
+                        # Categorize
+                        if pkg_name in security_pkgs:
+                            category = 'security'
+                        else:
+                            category = _categorize_package(pkg_name, repo)
+
                         updates.append({
                             'name': pkg_name,
                             'version': version,
+                            'current_version': '',
+                            'category': category,
+                            'repository': repo,
                             'desc': f"Available from {repo}" if repo else "Available update"
                         })
         except subprocess.TimeoutExpired:
@@ -129,6 +260,25 @@ def _get_linux_updates() -> list:
     # Try yum (RHEL/CentOS 7)
     elif shutil.which('yum'):
         try:
+            # First get security updates
+            security_pkgs = set()
+            try:
+                sec_result = subprocess.run(
+                    ['yum', 'check-update', '--security', '-q'],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                if sec_result.returncode in [0, 100]:
+                    for line in sec_result.stdout.strip().split('\n'):
+                        if line.strip():
+                            parts = line.split()
+                            if parts:
+                                pkg = parts[0].rsplit('.', 1)[0]
+                                security_pkgs.add(pkg)
+            except Exception:
+                pass
+
             result = subprocess.run(
                 ['yum', 'check-update', '-q'],
                 capture_output=True,
@@ -144,12 +294,23 @@ def _get_linux_updates() -> list:
                     # Format: package.arch  version  repo
                     parts = line.split()
                     if len(parts) >= 2:
-                        pkg_name = parts[0].rsplit('.', 1)[0]  # Remove arch suffix
+                        pkg_full = parts[0]
+                        pkg_name = pkg_full.rsplit('.', 1)[0]  # Remove arch suffix
                         version = parts[1]
                         repo = parts[2] if len(parts) > 2 else ''
+
+                        # Categorize
+                        if pkg_name in security_pkgs:
+                            category = 'security'
+                        else:
+                            category = _categorize_package(pkg_name, repo)
+
                         updates.append({
                             'name': pkg_name,
                             'version': version,
+                            'current_version': '',
+                            'category': category,
+                            'repository': repo,
                             'desc': f"Available from {repo}" if repo else "Available update"
                         })
         except subprocess.TimeoutExpired:
@@ -242,6 +403,165 @@ _external_ip_cache = {
     'last_fetch': 0
 }
 EXTERNAL_IP_FETCH_INTERVAL = 900  # 15 minutes in seconds
+
+
+def execute_script_with_timeout(
+    script_content: str,
+    script_type: str,
+    timeout_seconds: int,
+) -> Dict[str, Any]:
+    """
+    Execute a script with reliable timeout enforcement.
+
+    Uses process groups and SIGKILL to ensure the script is terminated
+    even if it spawns child processes.
+
+    Note: The agent runs as root, so all scripts execute with root privileges.
+
+    Args:
+        script_content: The script content to execute
+        script_type: Type of script (bash, zsh, powershell)
+        timeout_seconds: Maximum execution time before kill
+
+    Returns:
+        Dict with status, exit_code, output, error_output, started_at,
+        completed_at, duration_ms
+    """
+    started_at = datetime.now(timezone.utc)
+    start_time_ms = time.time() * 1000
+
+    # Determine shell based on script_type and platform
+    system = platform.system()
+
+    if script_type == 'powershell':
+        if system == 'Windows':
+            shell_cmd = ['powershell.exe', '-ExecutionPolicy', 'Bypass', '-File']
+            script_ext = '.ps1'
+        else:
+            # PowerShell Core on Linux/macOS
+            shell_cmd = ['pwsh', '-File']
+            script_ext = '.ps1'
+    elif script_type == 'zsh':
+        shell_cmd = ['/bin/zsh']
+        script_ext = '.zsh'
+    else:  # bash
+        shell_cmd = ['/bin/bash']
+        script_ext = '.sh'
+
+    # Create temp script file
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            suffix=script_ext,
+            delete=False,
+            encoding='utf-8'
+        ) as script_file:
+            script_file.write(script_content)
+            script_path = script_file.name
+
+        # Make script executable (Unix)
+        if system != 'Windows':
+            os.chmod(script_path, 0o755)
+
+        # Build command
+        cmd = shell_cmd + [script_path]
+
+        logging.info(f"Executing script: {' '.join(cmd)} (timeout={timeout_seconds}s)")
+
+        # Execute with process group for reliable kill
+        process = None
+        try:
+            if system == 'Windows':
+                # Windows: use CREATE_NEW_PROCESS_GROUP
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    text=True,
+                )
+            else:
+                # Unix: use preexec_fn to create new process group
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    preexec_fn=os.setsid,  # Create new session/process group
+                )
+
+            try:
+                stdout, stderr = process.communicate(timeout=timeout_seconds)
+                exit_code = process.returncode
+                status = 'completed' if exit_code == 0 else 'failed'
+
+            except subprocess.TimeoutExpired:
+                logging.warning(f"Script timeout after {timeout_seconds}s, killing process group")
+
+                # Kill the entire process group
+                if system == 'Windows':
+                    # Windows: use taskkill to kill process tree
+                    subprocess.run(
+                        ['taskkill', '/F', '/T', '/PID', str(process.pid)],
+                        capture_output=True
+                    )
+                else:
+                    # Unix: send SIGTERM to process group, then SIGKILL
+                    try:
+                        pgid = os.getpgid(process.pid)
+                        os.killpg(pgid, signal.SIGTERM)
+                        time.sleep(0.5)  # Give it 500ms to terminate gracefully
+                        os.killpg(pgid, signal.SIGKILL)  # Force kill
+                    except (OSError, ProcessLookupError):
+                        pass  # Process already dead
+
+                process.kill()  # Also try direct kill
+                stdout, stderr = process.communicate()
+                exit_code = -1
+                status = 'timeout'
+                stderr = (stderr or '') + f'\n[Script timed out after {timeout_seconds} seconds and was killed]'
+
+        except Exception as e:
+            logging.error(f"Error executing script: {e}")
+            stdout = ''
+            stderr = str(e)
+            exit_code = -1
+            status = 'failed'
+
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
+
+        completed_at = datetime.now(timezone.utc)
+        duration_ms = int(time.time() * 1000 - start_time_ms)
+
+        return {
+            'status': status,
+            'exit_code': exit_code,
+            'output': stdout[:100000] if stdout else '',  # Limit output size
+            'error_output': stderr[:100000] if stderr else '',
+            'started_at': started_at.isoformat(),
+            'completed_at': completed_at.isoformat(),
+            'duration_ms': duration_ms,
+        }
+
+    except Exception as e:
+        logging.error(f"Failed to create/execute script: {e}")
+        completed_at = datetime.now(timezone.utc)
+        duration_ms = int(time.time() * 1000 - start_time_ms)
+
+        return {
+            'status': 'failed',
+            'exit_code': -1,
+            'output': '',
+            'error_output': str(e),
+            'started_at': started_at.isoformat(),
+            'completed_at': completed_at.isoformat(),
+            'duration_ms': duration_ms,
+        }
 
 
 def get_external_ip() -> str:
@@ -339,6 +659,292 @@ try {
         logging.error(f"Error querying Windows Updates: {e}")
 
     return updates
+
+
+def execute_patch_installation(
+    patches: list,
+    categories: list,
+    reboot_config: dict,
+    timeout_seconds: int = 3600,
+) -> dict:
+    """
+    Execute patch installation based on policy configuration.
+
+    Args:
+        patches: List of patches to install (from backend)
+        categories: Categories to install ['security', 'kernel', 'standard', 'all']
+        reboot_config: Reboot configuration {enabled, condition, delay_minutes, notify_user}
+        timeout_seconds: Timeout for the entire operation
+
+    Returns:
+        dict with status, patches_installed, patches_failed, output, error_output, reboot_required, duration_ms
+    """
+    start_time = datetime.now(timezone.utc)
+    system = platform.system()
+
+    result = {
+        "status": "completed",
+        "patches_installed": [],
+        "patches_failed": [],
+        "output": "",
+        "error_output": "",
+        "reboot_required": False,
+        "reboot_scheduled_at": None,
+        "duration_ms": 0,
+    }
+
+    try:
+        if system == "Linux":
+            result = _execute_linux_patches(patches, categories, reboot_config, timeout_seconds)
+        elif system == "Darwin":
+            # macOS patching not yet implemented
+            result["status"] = "completed"
+            result["output"] = "macOS patching not yet implemented"
+        elif system == "Windows":
+            # Windows patching not yet implemented
+            result["status"] = "completed"
+            result["output"] = "Windows patching not yet implemented"
+        else:
+            result["status"] = "failed"
+            result["error_output"] = f"Unsupported platform: {system}"
+    except Exception as e:
+        result["status"] = "failed"
+        result["error_output"] = str(e)
+        logging.error(f"Patch installation error: {e}")
+
+    end_time = datetime.now(timezone.utc)
+    result["duration_ms"] = int((end_time - start_time).total_seconds() * 1000)
+
+    return result
+
+
+def _execute_linux_patches(
+    patches: list,
+    categories: list,
+    reboot_config: dict,
+    timeout_seconds: int,
+) -> dict:
+    """Execute patches on Linux using apt/dnf/yum."""
+    result = {
+        "status": "completed",
+        "patches_installed": [],
+        "patches_failed": [],
+        "output": "",
+        "error_output": "",
+        "reboot_required": False,
+        "reboot_scheduled_at": None,
+    }
+
+    # Filter patches by category if not 'all'
+    if "all" not in categories:
+        patches = [p for p in patches if p.get("category") in categories]
+
+    if not patches:
+        result["output"] = "No patches to install matching specified categories"
+        return result
+
+    package_names = [p["name"] for p in patches]
+    logging.info(f"Installing {len(package_names)} packages: {package_names[:10]}...")
+
+    # Determine package manager
+    if shutil.which('apt'):
+        result = _execute_apt_patches(package_names, timeout_seconds)
+    elif shutil.which('dnf'):
+        result = _execute_dnf_patches(package_names, timeout_seconds)
+    elif shutil.which('yum'):
+        result = _execute_yum_patches(package_names, timeout_seconds)
+    else:
+        result["status"] = "failed"
+        result["error_output"] = "No supported package manager found (apt, dnf, yum)"
+        return result
+
+    # Check if reboot is required
+    if os.path.exists("/var/run/reboot-required"):
+        result["reboot_required"] = True
+
+        if reboot_config.get("enabled"):
+            condition = reboot_config.get("condition", "if_required")
+            delay_minutes = reboot_config.get("delay_minutes", 5)
+
+            should_reboot = False
+            if condition == "always":
+                should_reboot = True
+            elif condition == "kernel_only":
+                # Check if any kernel packages were installed
+                kernel_installed = any(
+                    any(kp in pkg for kp in KERNEL_PATTERNS)
+                    for pkg in result["patches_installed"]
+                )
+                should_reboot = kernel_installed
+            elif condition == "if_required":
+                should_reboot = result["reboot_required"]
+
+            if should_reboot:
+                try:
+                    # Schedule reboot
+                    subprocess.run(["shutdown", "-r", f"+{delay_minutes}"], timeout=10)
+                    reboot_time = datetime.now(timezone.utc)
+                    from datetime import timedelta
+                    result["reboot_scheduled_at"] = (reboot_time + timedelta(minutes=delay_minutes)).isoformat()
+                    logging.info(f"Reboot scheduled in {delay_minutes} minutes")
+                except Exception as e:
+                    logging.error(f"Failed to schedule reboot: {e}")
+                    result["error_output"] += f"\nFailed to schedule reboot: {e}"
+
+    return result
+
+
+def _execute_apt_patches(package_names: list, timeout_seconds: int) -> dict:
+    """Execute patches using apt."""
+    result = {
+        "status": "completed",
+        "patches_installed": [],
+        "patches_failed": [],
+        "output": "",
+        "error_output": "",
+        "reboot_required": False,
+    }
+
+    try:
+        # Update package lists first
+        logging.info("Running apt update...")
+        update_proc = subprocess.run(
+            ["apt", "update"],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        result["output"] += update_proc.stdout
+
+        # Install packages
+        logging.info(f"Installing packages with apt: {len(package_names)} packages")
+        cmd = ["apt", "install", "-y"] + package_names
+        install_proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds
+        )
+
+        result["output"] += install_proc.stdout
+        result["error_output"] = install_proc.stderr
+
+        if install_proc.returncode == 0:
+            result["patches_installed"] = [{"name": pkg} for pkg in package_names]
+        else:
+            # Try to determine which packages failed
+            for pkg in package_names:
+                # Check if package was installed
+                check = subprocess.run(
+                    ["dpkg", "-l", pkg],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if check.returncode == 0 and "ii" in check.stdout:
+                    result["patches_installed"].append({"name": pkg})
+                else:
+                    result["patches_failed"].append({"name": pkg, "error": "Installation failed"})
+
+            if result["patches_failed"]:
+                result["status"] = "failed" if not result["patches_installed"] else "completed"
+
+    except subprocess.TimeoutExpired:
+        result["status"] = "failed"
+        result["error_output"] = f"Timeout after {timeout_seconds} seconds"
+    except Exception as e:
+        result["status"] = "failed"
+        result["error_output"] = str(e)
+
+    return result
+
+
+def _execute_dnf_patches(package_names: list, timeout_seconds: int) -> dict:
+    """Execute patches using dnf."""
+    result = {
+        "status": "completed",
+        "patches_installed": [],
+        "patches_failed": [],
+        "output": "",
+        "error_output": "",
+        "reboot_required": False,
+    }
+
+    try:
+        logging.info(f"Installing packages with dnf: {len(package_names)} packages")
+        cmd = ["dnf", "install", "-y"] + package_names
+        install_proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds
+        )
+
+        result["output"] = install_proc.stdout
+        result["error_output"] = install_proc.stderr
+
+        if install_proc.returncode == 0:
+            result["patches_installed"] = [{"name": pkg} for pkg in package_names]
+        else:
+            result["status"] = "failed"
+            result["patches_failed"] = [{"name": pkg, "error": "Installation failed"} for pkg in package_names]
+
+        # Check for kernel updates requiring reboot
+        if "kernel" in result["output"].lower():
+            result["reboot_required"] = True
+
+    except subprocess.TimeoutExpired:
+        result["status"] = "failed"
+        result["error_output"] = f"Timeout after {timeout_seconds} seconds"
+    except Exception as e:
+        result["status"] = "failed"
+        result["error_output"] = str(e)
+
+    return result
+
+
+def _execute_yum_patches(package_names: list, timeout_seconds: int) -> dict:
+    """Execute patches using yum."""
+    result = {
+        "status": "completed",
+        "patches_installed": [],
+        "patches_failed": [],
+        "output": "",
+        "error_output": "",
+        "reboot_required": False,
+    }
+
+    try:
+        logging.info(f"Installing packages with yum: {len(package_names)} packages")
+        cmd = ["yum", "install", "-y"] + package_names
+        install_proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds
+        )
+
+        result["output"] = install_proc.stdout
+        result["error_output"] = install_proc.stderr
+
+        if install_proc.returncode == 0:
+            result["patches_installed"] = [{"name": pkg} for pkg in package_names]
+        else:
+            result["status"] = "failed"
+            result["patches_failed"] = [{"name": pkg, "error": "Installation failed"} for pkg in package_names]
+
+        # Check for kernel updates requiring reboot
+        if "kernel" in result["output"].lower():
+            result["reboot_required"] = True
+
+    except subprocess.TimeoutExpired:
+        result["status"] = "failed"
+        result["error_output"] = f"Timeout after {timeout_seconds} seconds"
+    except Exception as e:
+        result["status"] = "failed"
+        result["error_output"] = str(e)
+
+    return result
 
 
 def get_certificate_serial_number() -> Optional[str]:
@@ -807,6 +1413,116 @@ def start_websocket():
                     "data": result
                 }
                 ws.send(json.dumps(response))
+            elif action == 'execute_script':
+                # Execute a script from the scripts feature
+                # Note: Agent runs as root, so all scripts execute with root privileges
+                execution_id = data.get('execution_id')
+                script_name = data.get('script_name')
+                script_type = data.get('script_type', 'bash')
+                script_content = data.get('script_content')
+                timeout_seconds = data.get('timeout_seconds', 300)
+
+                logging.info(f"Executing script '{script_name}' (execution_id={execution_id}, type={script_type}, timeout={timeout_seconds}s)")
+
+                # Execute in a separate thread to not block WebSocket
+                def execute_and_respond():
+                    try:
+                        result = execute_script_with_timeout(
+                            script_content=script_content,
+                            script_type=script_type,
+                            timeout_seconds=timeout_seconds,
+                        )
+
+                        response = {
+                            "action": "script_execution_result",
+                            "execution_id": execution_id,
+                            "status": result['status'],
+                            "exit_code": result['exit_code'],
+                            "output": result['output'],
+                            "error_output": result['error_output'],
+                            "started_at": result['started_at'],
+                            "completed_at": result['completed_at'],
+                            "duration_ms": result['duration_ms'],
+                        }
+
+                        ws.send(json.dumps(response))
+                        logging.info(f"Script execution complete: {result['status']} (exit_code={result['exit_code']})")
+
+                    except Exception as e:
+                        logging.error(f"Script execution failed: {e}")
+                        error_response = {
+                            "action": "script_execution_result",
+                            "execution_id": execution_id,
+                            "status": "failed",
+                            "exit_code": -1,
+                            "output": "",
+                            "error_output": str(e),
+                            "started_at": datetime.now(timezone.utc).isoformat(),
+                            "completed_at": datetime.now(timezone.utc).isoformat(),
+                            "duration_ms": 0,
+                        }
+                        ws.send(json.dumps(error_response))
+
+                # Start execution thread
+                exec_thread = threading.Thread(target=execute_and_respond, daemon=True)
+                exec_thread.start()
+
+            elif action == 'execute_patches':
+                # Execute patches from policy-based patch management
+                execution_id = data.get('execution_id')
+                policy_id = data.get('policy_id')
+                patches = data.get('patches', [])
+                categories = data.get('categories', ['all'])
+                reboot_config = data.get('reboot_config', {})
+                timeout_seconds = data.get('timeout_seconds', 3600)
+
+                logging.info(f"Executing patches (execution_id={execution_id}, policy_id={policy_id}, patches={len(patches)}, categories={categories})")
+
+                # Execute in a separate thread to not block WebSocket
+                def execute_patches_and_respond():
+                    try:
+                        result = execute_patch_installation(
+                            patches=patches,
+                            categories=categories,
+                            reboot_config=reboot_config,
+                            timeout_seconds=timeout_seconds,
+                        )
+
+                        response = {
+                            "action": "patch_execution_result",
+                            "execution_id": execution_id,
+                            "status": result['status'],
+                            "patches_installed": result['patches_installed'],
+                            "patches_failed": result['patches_failed'],
+                            "output": result['output'],
+                            "error_output": result['error_output'],
+                            "reboot_required": result['reboot_required'],
+                            "reboot_scheduled_at": result.get('reboot_scheduled_at'),
+                            "duration_ms": result['duration_ms'],
+                        }
+
+                        ws.send(json.dumps(response))
+                        logging.info(f"Patch execution complete: {result['status']} (installed={len(result['patches_installed'])}, failed={len(result['patches_failed'])})")
+
+                    except Exception as e:
+                        logging.error(f"Patch execution failed: {e}")
+                        error_response = {
+                            "action": "patch_execution_result",
+                            "execution_id": execution_id,
+                            "status": "failed",
+                            "patches_installed": [],
+                            "patches_failed": [{"name": "unknown", "error": str(e)}],
+                            "output": "",
+                            "error_output": str(e),
+                            "reboot_required": False,
+                            "duration_ms": 0,
+                        }
+                        ws.send(json.dumps(error_response))
+
+                # Start execution thread
+                patch_exec_thread = threading.Thread(target=execute_patches_and_respond, daemon=True)
+                patch_exec_thread.start()
+
             elif action == 'start_terminal':
                 if terminal_running:
                     logging.warning("Terminal already running. Attempting to stop and restart.. ")
