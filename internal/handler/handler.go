@@ -99,7 +99,8 @@ func (h *Handler) Connect(ctx context.Context) error {
 	case "http":
 		u.Scheme = "ws"
 	}
-	u.Path = "/api/v1/agents/ws"
+	u.Path = "/api/v1/ws/agent"
+	u.RawQuery = "uuid=" + h.cfg.GetUUID()
 
 	dialer := websocket.Dialer{
 		TLSClientConfig:  h.tlsConfig,
@@ -107,7 +108,6 @@ func (h *Handler) Connect(ctx context.Context) error {
 	}
 
 	headers := http.Header{}
-	headers.Set("X-Agent-UUID", h.cfg.GetUUID())
 
 	h.logger.Info("connecting to server", "url", u.String())
 
