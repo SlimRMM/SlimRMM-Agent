@@ -1,36 +1,35 @@
 # SlimRMM Agent v2.0
 
-Lightweight, secure Remote Monitoring & Management agent rewritten in Go.
-
-> **Note**: This is v2.0 of the SlimRMM Agent. The previous Python implementation has been archived to [SlimRMM-Agent-Python](https://github.com/SlimRMM/SlimRMM-Agent-Python).
+Lightweight, secure Remote Monitoring & Management agent written in Go.
 
 ## Features
 
 - **Cross-Platform**: Linux, macOS, Windows
-- **Secure**: mTLS, command whitelisting, path validation
+- **Secure**: mTLS authentication, path validation
 - **Lightweight**: ~10 MB binary, ~20 MB RAM
 - **Real-time**: WebSocket-based communication
 - **Monitoring**: CPU, memory, disk, network stats
 - **Management**: Remote commands, file operations, software inventory
+- **Auto-Update**: Automatic updates from GitHub releases with rollback
 
 ## Installation
 
 ### Linux (DEB)
 
 ```bash
-# With auto-registration
-SLIMRMM_SERVER="https://your-server.com" SLIMRMM_KEY="your-key" \
-  sudo dpkg -i slimrmm-agent_*.deb
+SLIMRMM_SERVER="https://your-server.com" sudo dpkg -i slimrmm-agent_*.deb
+```
 
-# Manual registration
-sudo dpkg -i slimrmm-agent_*.deb
-sudo slimrmm-agent --install --server https://your-server.com --key your-key
+### Linux (RPM)
+
+```bash
+SLIMRMM_SERVER="https://your-server.com" sudo rpm -i slimrmm-agent_*.rpm
 ```
 
 ### macOS (PKG)
 
 ```bash
-sudo installer -pkg slimrmm-agent_*.pkg -target /
+sudo installer -pkg SlimRMM-Agent_*.pkg -target /
 sudo slimrmm-agent --install --server https://your-server.com
 ```
 
@@ -52,7 +51,7 @@ go build -o slimrmm-agent ./cmd/slimrmm-agent
 ### Production
 
 ```bash
-VERSION=1.0.0
+VERSION=2.0.0
 COMMIT=$(git rev-parse --short HEAD)
 DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -130,10 +129,10 @@ internal/
 ├── monitor/           # System monitoring
 ├── service/           # Service management
 ├── installer/         # Registration
+├── updater/           # Auto-update from GitHub
 ├── osquery/           # osquery integration
 └── security/
     ├── mtls/          # mTLS certificates
-    ├── sandbox/       # Command whitelisting
     ├── pathval/       # Path validation
     └── archive/       # ZIP security
 pkg/version/           # Version info
@@ -142,7 +141,6 @@ pkg/version/           # Version info
 ## Security
 
 - **mTLS**: Mutual TLS authentication
-- **Command Whitelist**: Only approved commands
 - **Path Validation**: Prevents directory traversal
 - **ZIP-Slip Prevention**: Safe archive extraction
 - **Least Privilege**: Minimal required permissions

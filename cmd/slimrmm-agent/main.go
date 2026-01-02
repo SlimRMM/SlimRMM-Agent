@@ -27,7 +27,6 @@ func main() {
 		install     = flag.Bool("install", false, "Install the agent")
 		uninstall   = flag.Bool("uninstall", false, "Uninstall the agent")
 		serverURL   = flag.String("server", "", "Server URL for registration")
-		regKey      = flag.String("key", "", "Registration key")
 		debug       = flag.Bool("debug", false, "Enable debug logging")
 	)
 	flag.Parse()
@@ -54,7 +53,7 @@ func main() {
 
 	// Handle install/uninstall
 	if *install {
-		if err := runInstall(*serverURL, *regKey, paths, logger); err != nil {
+		if err := runInstall(*serverURL, paths, logger); err != nil {
 			logger.Error("installation failed", "error", err)
 			os.Exit(1)
 		}
@@ -164,16 +163,13 @@ func run(paths config.Paths, logger *slog.Logger) error {
 	}
 }
 
-func runInstall(serverURL, regKey string, paths config.Paths, logger *slog.Logger) error {
+func runInstall(serverURL string, paths config.Paths, logger *slog.Logger) error {
 	logger.Info("installing SlimRMM Agent")
 
 	// Check for required parameters
 	if serverURL == "" {
 		// Try environment variable
 		serverURL = os.Getenv("SLIMRMM_SERVER")
-	}
-	if regKey == "" {
-		regKey = os.Getenv("SLIMRMM_KEY")
 	}
 
 	if serverURL == "" {
