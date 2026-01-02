@@ -1,87 +1,52 @@
-# SlimRMM Agent - Git Ignore File
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
+# Binaries
+*.exe
+*.dll
 *.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+*.dylib
+slimrmm-agent
+slimrmm-agent-*
 
-# Virtual environments
-venv/
-ENV/
-env/
-.venv/
+# Test binary, built with `go test -c`
+*.test
 
-# PyInstaller
-*.manifest
-*.spec
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
-*~
-.project
-.pydevproject
-.settings/
-
-# OS files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Logs
-*.log
-log/
-
-# Configuration (contains sensitive data)
-.slimrmm_config.json
-.rmm_config.json
-config.json
-
-# Certificates (sensitive)
-certs/
-*.crt
-*.key
-*.pem
-*.p12
-*.pfx
 
 # Build artifacts
 dist/
-dist-linux/
-dist-macos/
-*.pkg
+*.tar.gz
+*.zip
 *.deb
 *.rpm
+*.pkg
 
-# osquery binary (large file)
-osqueryi
-osqueryd
+# macOS
+.DS_Store
 
-# Test files
-.coverage
-htmlcov/
-.tox/
-.pytest_cache/
+# Certificates (keep sample)
+certs/
+*.pem
+*.crt
+*.key
+
+# Config files (keep sample)
+config.yaml
+*.env
+
+# Logs
+*.log
+/var/

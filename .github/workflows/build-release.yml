@@ -1,369 +1,195 @@
-name: Build and Release Agent
+name: Build and Release
 
 on:
   push:
-    branches:
-      - main
-    paths-ignore:
-      - '*.md'
-      - 'docs/**'
-      - '.gitignore'
-
-env:
-  PYTHON_VERSION: '3.11'
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
-  # Determine version and check if release needed
-  version:
+  test:
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      should_release: ${{ steps.version.outputs.should_release }}
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.out
+          fail_ci_if_error: false
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          VERSION=${GITHUB_REF_NAME:-dev}
+          COMMIT=${GITHUB_SHA::8}
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then
+            EXT=".exe"
+          fi
+
+          go build -ldflags "-s -w \
+            -X github.com/kiefernetworks/slimrmm-agent/pkg/version.Version=$VERSION \
+            -X github.com/kiefernetworks/slimrmm-agent/pkg/version.GitCommit=$COMMIT \
+            -X github.com/kiefernetworks/slimrmm-agent/pkg/version.BuildDate=$DATE" \
+            -o slimrmm-agent-${{ matrix.goos }}-${{ matrix.goarch }}${EXT} \
+            ./cmd/slimrmm-agent
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: slimrmm-agent-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: slimrmm-agent-*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
 
-      - name: Determine version
-        id: version
-        run: |
-          # Get current version from build script
-          CURRENT_VERSION=$(grep -oP "VERSION=\"\K[0-9]+\.[0-9]+\.[0-9]+" build-linux-deb.sh || echo "1.0.0")
-          echo "Current version in script: ${CURRENT_VERSION}"
-
-          # Get latest release tag
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          LATEST_VERSION=${LATEST_TAG#v}
-          LATEST_VERSION=${LATEST_VERSION%%-*}  # Remove any suffix like -timestamp
-          echo "Latest release version: ${LATEST_VERSION}"
-
-          # Parse versions
-          IFS='.' read -r CUR_MAJOR CUR_MINOR CUR_PATCH <<< "$CURRENT_VERSION"
-          IFS='.' read -r LAT_MAJOR LAT_MINOR LAT_PATCH <<< "$LATEST_VERSION"
-
-          # Compare and determine new version
-          if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ] || \
-             [ "$CUR_MAJOR" -lt "$LAT_MAJOR" ] || \
-             ([ "$CUR_MAJOR" -eq "$LAT_MAJOR" ] && [ "$CUR_MINOR" -lt "$LAT_MINOR" ]) || \
-             ([ "$CUR_MAJOR" -eq "$LAT_MAJOR" ] && [ "$CUR_MINOR" -eq "$LAT_MINOR" ] && [ "$CUR_PATCH" -le "$LAT_PATCH" ]); then
-            # Increment patch version
-            NEW_PATCH=$((LAT_PATCH + 1))
-            NEW_VERSION="${LAT_MAJOR}.${LAT_MINOR}.${NEW_PATCH}"
-            echo "Auto-incrementing version to: ${NEW_VERSION}"
-          else
-            NEW_VERSION="${CURRENT_VERSION}"
-            echo "Using version from script: ${NEW_VERSION}"
-          fi
-
-          echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
-          echo "should_release=true" >> $GITHUB_OUTPUT
-
-      - name: Update version in build scripts
-        run: |
-          NEW_VERSION="${{ steps.version.outputs.version }}"
-
-          # Update DEB build script
-          sed -i "s/VERSION=\"[0-9]*\.[0-9]*\.[0-9]*\"/VERSION=\"${NEW_VERSION}\"/" build-linux-deb.sh
-
-          # Update RPM build script
-          sed -i "s/VERSION=\"\${1:-[0-9]*\.[0-9]*\.[0-9]*}\"/VERSION=\"\${1:-${NEW_VERSION}}\"/" build-linux-rpm.sh
-
-          # Update agent version in registration
-          sed -i "s/agent_version\": \"[0-9]*\.[0-9]*\.[0-9]*\"/agent_version\": \"${NEW_VERSION}\"/" build-linux-deb.sh
-          sed -i "s/agent_version\": \"[0-9]*\.[0-9]*\.[0-9]*\"/agent_version\": \"${NEW_VERSION}\"/" build-linux-rpm.sh
-
-          echo "Updated build scripts to version ${NEW_VERSION}"
-
-      - name: Commit version bump
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-
-          if git diff --quiet; then
-            echo "No version changes to commit"
-          else
-            git add build-linux-deb.sh build-linux-rpm.sh
-            git commit -m "Bump version to ${{ steps.version.outputs.version }} [skip ci]"
-            git push
-          fi
-
-  # Build for amd64 natively
-  build-amd64:
-    needs: version
-    if: needs.version.outputs.should_release == 'true'
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          ref: main  # Get latest with version bump
-
-      - name: Pull latest changes
-        run: git pull origin main
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-
-      - name: Build DEB package
-        run: |
-          chmod +x build-linux-deb.sh
-          ./build-linux-deb.sh ${{ needs.version.outputs.version }}
-
-      - name: Build RPM package
-        run: |
-          chmod +x build-linux-rpm.sh
-          ./build-linux-rpm.sh ${{ needs.version.outputs.version }}
-        continue-on-error: true
-
-      - name: Upload DEB artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: deb-amd64
-          path: dist/*.deb
-
-      - name: Upload RPM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: rpm-amd64
-          path: dist/*.rpm
-          if-no-files-found: ignore
-
-  # Build for arm64 using QEMU emulation
-  build-arm64:
-    needs: version
-    if: needs.version.outputs.should_release == 'true'
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Pull latest changes
-        run: git pull origin main
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Build in arm64 container
-        uses: uraimo/run-on-arch-action@v2
-        with:
-          arch: aarch64
-          distro: ubuntu22.04
-          githubToken: ${{ github.token }}
-          install: |
-            apt-get update
-            apt-get install -y python3 python3-pip python3-venv
-          run: |
-            python3 -m pip install --upgrade pip
-            pip3 install -r requirements.txt
-            pip3 install pyinstaller
-            chmod +x build-linux-deb.sh
-            ./build-linux-deb.sh ${{ needs.version.outputs.version }}
-
-      - name: Upload DEB artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: deb-arm64
-          path: dist/*.deb
-
-  # Build for Windows
-  build-windows:
-    needs: version
-    if: needs.version.outputs.should_release == 'true'
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Pull latest changes
-        run: git pull origin main
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller pywin32
-
-      - name: Install WiX Toolset
-        shell: pwsh
-        run: |
-          # Download and install WiX Toolset v3
-          Invoke-WebRequest -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip" -OutFile "wix.zip"
-          Expand-Archive -Path "wix.zip" -DestinationPath "C:\wix"
-          echo "C:\wix" | Out-File -FilePath $env:GITHUB_PATH -Append
-          $env:WIX = "C:\wix\"
-          echo "WIX=C:\wix\" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Download osquery for bundling
-        shell: pwsh
-        run: |
-          # Download osquery MSI for bundling
-          $osqueryVersion = "5.12.1"
-          Invoke-WebRequest -Uri "https://pkg.osquery.io/windows/osquery-$osqueryVersion.msi" -OutFile "osquery.msi"
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Move-Item osquery.msi dist/osquery-installer.msi
-
-      - name: Update version in PowerShell script
-        shell: pwsh
-        run: |
-          $version = "${{ needs.version.outputs.version }}"
-          (Get-Content build-windows-msi.ps1) -replace 'Version = "1\.0\.0"', "Version = `"$version`"" | Set-Content build-windows-msi.ps1
-
-      - name: Build Windows MSI
-        shell: pwsh
-        run: |
-          $env:WIX = "C:\wix\"
-          .\build-windows-msi.ps1 -Version ${{ needs.version.outputs.version }}
-
-      - name: Upload MSI artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: msi-x64
-          path: dist/*.msi
-
-  # Build for macOS (Apple Silicon)
-  build-macos:
-    needs: version
-    if: needs.version.outputs.should_release == 'true'
-    runs-on: macos-14  # Apple Silicon runner
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Pull latest changes
-        run: git pull origin main
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-
-      - name: Build macOS PKG
-        run: |
-          chmod +x build-macos-pkg.sh
-          ./build-macos-pkg.sh ${{ needs.version.outputs.version }}
-
-      - name: Upload PKG artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pkg-arm64
-          path: dist/*.pkg
-
-  # Create GitHub Release
-  release:
-    needs: [version, build-amd64, build-arm64, build-windows, build-macos]
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+          go-version: '1.22'
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: dist
+          merge-multiple: true
 
-      - name: Prepare release files
-        run: |
-          mkdir -p release
-          find artifacts -name "*.deb" -exec cp {} release/ \;
-          find artifacts -name "*.rpm" -exec cp {} release/ \; 2>/dev/null || true
-          find artifacts -name "*.msi" -exec cp {} release/ \; 2>/dev/null || true
-          find artifacts -name "*.pkg" -exec cp {} release/ \; 2>/dev/null || true
-          ls -la release/
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
         with:
-          tag_name: v${{ needs.version.outputs.version }}
-          name: SlimRMM Agent v${{ needs.version.outputs.version }}
-          body: |
-            ## SlimRMM Agent v${{ needs.version.outputs.version }}
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-            Automated build from commit `${{ github.sha }}`
+  build-deb:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-            ### Downloads
+      - name: Download Linux AMD64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: slimrmm-agent-linux-amd64
+          path: .
 
-            | Platform | Architecture | File |
-            |----------|--------------|------|
-            | Debian/Ubuntu | amd64 (x86_64) | `slimrmm-agent_${{ needs.version.outputs.version }}_amd64.deb` |
-            | Debian/Ubuntu | arm64 (aarch64) | `slimrmm-agent_${{ needs.version.outputs.version }}_arm64.deb` |
-            | macOS | arm64 (Apple Silicon) | `SlimRMM-Agent-${{ needs.version.outputs.version }}-arm64.pkg` |
-            | Windows | x64 | `SlimRMM-Agent-${{ needs.version.outputs.version }}-x64.msi` |
+      - name: Build DEB package
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
 
-            ### Installation
+          mkdir -p pkg/usr/local/bin
+          mkdir -p pkg/etc/systemd/system
+          mkdir -p pkg/var/lib/slimrmm/{certs,log}
+          mkdir -p pkg/DEBIAN
 
-            **Linux (Debian/Ubuntu):**
-            ```bash
-            # Download and install - osquery will be installed automatically
-            wget https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.version }}/slimrmm-agent_${{ needs.version.outputs.version }}_amd64.deb
-            sudo dpkg -i slimrmm-agent_*.deb
+          cp slimrmm-agent-linux-amd64 pkg/usr/local/bin/slimrmm-agent
+          chmod +x pkg/usr/local/bin/slimrmm-agent
+          cp build/linux/slimrmm-agent.service pkg/etc/systemd/system/
 
-            # Silent install with auto-registration
-            SLIMRMM_SERVER="https://your-rmm-server:8800" sudo dpkg -i slimrmm-agent_*.deb
-            ```
+          cat > pkg/DEBIAN/control << EOF
+          Package: slimrmm-agent
+          Version: ${VERSION}
+          Section: admin
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Kiefer Networks <info@slimrmm.io>
+          Description: SlimRMM Remote Monitoring & Management Agent
+          EOF
 
-            **macOS (Apple Silicon):**
-            ```bash
-            # Interactive installation
-            sudo installer -pkg SlimRMM-Agent-${{ needs.version.outputs.version }}-arm64.pkg -target /
+          cp build/linux/postinstall.sh pkg/DEBIAN/postinst
+          cp build/linux/preremove.sh pkg/DEBIAN/prerm
+          chmod +x pkg/DEBIAN/postinst pkg/DEBIAN/prerm
 
-            # Silent installation with registration
-            SLIMRMM_SERVER="https://your-rmm-server:8800" sudo installer -pkg SlimRMM-Agent-${{ needs.version.outputs.version }}-arm64.pkg -target /
-            ```
+          dpkg-deb --build pkg slimrmm-agent_${VERSION}_amd64.deb
 
-            **Windows:**
-            ```powershell
-            # Interactive installation
-            msiexec /i SlimRMM-Agent-${{ needs.version.outputs.version }}-x64.msi
+      - name: Upload DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: slimrmm-agent-deb
+          path: '*.deb'
 
-            # Silent installation with registration
-            msiexec /i SlimRMM-Agent-${{ needs.version.outputs.version }}-x64.msi /qn SLIMRMM_SERVER="https://your-rmm-server:8800"
+  build-macos-pkg:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
 
-            # Note: Install osquery separately from https://osquery.io/downloads
-            ```
+      - name: Download macOS ARM64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: slimrmm-agent-darwin-arm64
+          path: .
 
-            ### Changes
+      - name: Build PKG
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
 
-            ```
-            ${{ github.event.head_commit.message }}
-            ```
-          draft: false
-          prerelease: false
-          files: release/*
+          mkdir -p pkg/usr/local/bin
+          mkdir -p pkg/Library/LaunchDaemons
+
+          cp slimrmm-agent-darwin-arm64 pkg/usr/local/bin/slimrmm-agent
+          chmod +x pkg/usr/local/bin/slimrmm-agent
+          cp build/macos/io.slimrmm.agent.plist pkg/Library/LaunchDaemons/
+
+          pkgbuild --root pkg \
+            --identifier io.slimrmm.agent \
+            --version ${VERSION} \
+            --install-location / \
+            slimrmm-agent_${VERSION}_darwin_arm64.pkg
+
+      - name: Upload PKG
+        uses: actions/upload-artifact@v4
+        with:
+          name: slimrmm-agent-pkg
+          path: '*.pkg'

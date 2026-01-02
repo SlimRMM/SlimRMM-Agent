@@ -1,0 +1,27 @@
+[Unit]
+Description=SlimRMM Remote Monitoring & Management Agent
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/slimrmm-agent
+WorkingDirectory=/var/lib/slimrmm
+Restart=always
+RestartSec=10
+User=root
+Group=root
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/lib/slimrmm
+
+# Logging
+StandardOutput=append:/var/lib/slimrmm/log/agent.log
+StandardError=append:/var/lib/slimrmm/log/agent.log
+
+[Install]
+WantedBy=multi-user.target
