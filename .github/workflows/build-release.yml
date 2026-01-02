@@ -229,17 +229,40 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME#v}
 
-          mkdir -p pkg/usr/local/bin
+          # Use /opt/slimrmm for binary (avoids system volume restrictions)
+          mkdir -p pkg/opt/slimrmm/bin
           mkdir -p pkg/Library/LaunchDaemons
+          mkdir -p pkg/var/lib/slimrmm/{certs,log}
 
-          cp slimrmm-agent-darwin-arm64 pkg/usr/local/bin/slimrmm-agent
-          chmod +x pkg/usr/local/bin/slimrmm-agent
-          cp build/macos/io.slimrmm.agent.plist pkg/Library/LaunchDaemons/
+          cp slimrmm-agent-darwin-arm64 pkg/opt/slimrmm/bin/slimrmm-agent
+          chmod +x pkg/opt/slimrmm/bin/slimrmm-agent
+
+          # Update plist to use new path
+          sed 's|/usr/local/bin/slimrmm-agent|/opt/slimrmm/bin/slimrmm-agent|g' \
+            build/macos/io.slimrmm.agent.plist > pkg/Library/LaunchDaemons/io.slimrmm.agent.plist
+
+          # Create symlink script for postinstall
+          mkdir -p scripts
+          cat > scripts/postinstall << 'SCRIPT'
+          #!/bin/bash
+          ln -sf /opt/slimrmm/bin/slimrmm-agent /usr/local/bin/slimrmm-agent 2>/dev/null || true
+          launchctl load /Library/LaunchDaemons/io.slimrmm.agent.plist 2>/dev/null || true
+          exit 0
+          SCRIPT
+          chmod +x scripts/postinstall
+
+          cat > scripts/preinstall << 'SCRIPT'
+          #!/bin/bash
+          launchctl unload /Library/LaunchDaemons/io.slimrmm.agent.plist 2>/dev/null || true
+          exit 0
+          SCRIPT
+          chmod +x scripts/preinstall
 
           pkgbuild --root pkg \
             --identifier io.slimrmm.agent \
             --version ${VERSION} \
             --install-location / \
+            --scripts scripts \
             slimrmm-agent_${VERSION}_darwin_arm64.pkg
 
       - name: Upload PKG to Release

@@ -55,7 +55,9 @@ func DefaultPaths() Paths {
 	switch runtime.GOOS {
 	case "windows":
 		baseDir = filepath.Join(os.Getenv("ProgramFiles"), "SlimRMM")
-	default: // linux, darwin
+	case "darwin":
+		baseDir = "/opt/slimrmm"
+	default: // linux
 		baseDir = "/var/lib/slimrmm"
 	}
 
