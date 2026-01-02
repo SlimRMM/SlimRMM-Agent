@@ -172,55 +172,38 @@ jobs:
           name: slimrmm-agent-linux-amd64
           path: .
 
-      - name: Install RPM tools
-        run: sudo apt-get update && sudo apt-get install -y rpm
+      - name: Install FPM
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby ruby-dev rubygems build-essential rpm
+          sudo gem install --no-document fpm
 
       - name: Build RPM package
         run: |
           VERSION=${GITHUB_REF_NAME#v}
 
-          mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-          mkdir -p rpmbuild/BUILDROOT/slimrmm-agent-${VERSION}-1.x86_64/usr/local/bin
-          mkdir -p rpmbuild/BUILDROOT/slimrmm-agent-${VERSION}-1.x86_64/etc/systemd/system
-          mkdir -p rpmbuild/BUILDROOT/slimrmm-agent-${VERSION}-1.x86_64/var/lib/slimrmm/{certs,log}
+          mkdir -p pkg/usr/local/bin
+          mkdir -p pkg/etc/systemd/system
+          mkdir -p pkg/var/lib/slimrmm/{certs,log}
 
-          cp slimrmm-agent-linux-amd64 rpmbuild/BUILDROOT/slimrmm-agent-${VERSION}-1.x86_64/usr/local/bin/slimrmm-agent
-          chmod +x rpmbuild/BUILDROOT/slimrmm-agent-${VERSION}-1.x86_64/usr/local/bin/slimrmm-agent
-          cp build/linux/slimrmm-agent.service rpmbuild/BUILDROOT/slimrmm-agent-${VERSION}-1.x86_64/etc/systemd/system/
+          cp slimrmm-agent-linux-amd64 pkg/usr/local/bin/slimrmm-agent
+          chmod +x pkg/usr/local/bin/slimrmm-agent
+          cp build/linux/slimrmm-agent.service pkg/etc/systemd/system/
 
-          cat > rpmbuild/SPECS/slimrmm-agent.spec << EOF
-          Name: slimrmm-agent
-          Version: ${VERSION}
-          Release: 1
-          Summary: SlimRMM Remote Monitoring & Management Agent
-          License: Proprietary
-          URL: https://slimrmm.io
-          BuildArch: x86_64
+          fpm -s dir -t rpm \
+            -n slimrmm-agent \
+            -v ${VERSION} \
+            -a x86_64 \
+            --description "SlimRMM Remote Monitoring & Management Agent" \
+            --url "https://slimrmm.io" \
+            --maintainer "Kiefer Networks <info@slimrmm.io>" \
+            --license "Proprietary" \
+            --after-install build/linux/postinstall.sh \
+            --before-remove build/linux/preremove.sh \
+            -C pkg \
+            .
 
-          %description
-          SlimRMM Remote Monitoring & Management Agent
-
-          %install
-          cp -r %{_builddir}/../BUILDROOT/slimrmm-agent-${VERSION}-1.x86_64/* %{buildroot}/
-
-          %files
-          /usr/local/bin/slimrmm-agent
-          /etc/systemd/system/slimrmm-agent.service
-          %dir /var/lib/slimrmm
-          %dir /var/lib/slimrmm/certs
-          %dir /var/lib/slimrmm/log
-
-          %post
-          systemctl daemon-reload
-          systemctl enable slimrmm-agent || true
-
-          %preun
-          systemctl stop slimrmm-agent || true
-          systemctl disable slimrmm-agent || true
-          EOF
-
-          rpmbuild --define "_topdir $(pwd)/rpmbuild" -bb rpmbuild/SPECS/slimrmm-agent.spec
-          cp rpmbuild/RPMS/x86_64/*.rpm slimrmm-agent_${VERSION}_amd64.rpm
+          mv *.rpm slimrmm-agent_${VERSION}_amd64.rpm
 
       - name: Upload RPM to Release
         uses: softprops/action-gh-release@v1
