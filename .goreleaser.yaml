@@ -95,8 +95,8 @@ nfpms:
 
 release:
   github:
-    owner: kiefernetworks
-    name: slimrmm-agent
+    owner: SlimRMM
+    name: SlimRMM-Agent
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"
