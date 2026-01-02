@@ -229,10 +229,9 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME#v}
 
-          # Use /opt/slimrmm for binary (avoids system volume restrictions)
-          mkdir -p pkg/opt/slimrmm/bin
+          # Use /opt/slimrmm for everything on macOS
+          mkdir -p pkg/opt/slimrmm/{bin,certs,log}
           mkdir -p pkg/Library/LaunchDaemons
-          mkdir -p pkg/var/lib/slimrmm/{certs,log}
 
           cp slimrmm-agent-darwin-arm64 pkg/opt/slimrmm/bin/slimrmm-agent
           chmod +x pkg/opt/slimrmm/bin/slimrmm-agent

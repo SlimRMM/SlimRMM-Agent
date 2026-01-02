@@ -19,13 +19,13 @@ import (
 
 // RegistrationRequest is sent to the server to register the agent.
 type RegistrationRequest struct {
-	Hostname     string `json:"hostname"`
-	OS           string `json:"os"`
-	Platform     string `json:"platform"`
-	Kernel       string `json:"kernel"`
-	Architecture string `json:"architecture"`
-	AgentVersion string `json:"agent_version"`
-	ExternalIP   string `json:"external_ip,omitempty"`
+	Hostname        string `json:"hostname"`
+	OS              string `json:"os"`
+	Platform        string `json:"platform"`
+	Kernel          string `json:"kernel"`
+	Arch            string `json:"arch"`
+	AgentVersion    string `json:"agent_version"`
+	ExternalIP      string `json:"external_ip,omitempty"`
 	RegistrationKey string `json:"registration_key,omitempty"`
 }
 
@@ -54,7 +54,7 @@ func Register(serverURL string, regKey string, paths config.Paths) (*config.Conf
 		OS:              stats.OS,
 		Platform:        stats.Platform,
 		Kernel:          stats.Kernel,
-		Architecture:    version.Get().Arch,
+		Arch:            version.Get().Arch,
 		AgentVersion:    version.Get().Version,
 		ExternalIP:      stats.ExternalIP,
 		RegistrationKey: regKey,
