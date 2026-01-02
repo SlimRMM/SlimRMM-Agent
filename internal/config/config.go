@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 )
 
 const (
@@ -20,9 +21,12 @@ const (
 
 // Config holds the agent configuration.
 type Config struct {
-	Server      string `json:"server"`
-	UUID        string `json:"uuid"`
-	MTLSEnabled bool   `json:"mtls_enabled"`
+	Server         string `json:"server"`
+	UUID           string `json:"uuid"`
+	MTLSEnabled    bool   `json:"mtls_enabled"`
+	InstallDate    string `json:"install_date,omitempty"`
+	LastConnection string `json:"last_connection,omitempty"`
+	LastHeartbeat  string `json:"last_heartbeat,omitempty"`
 
 	mu       sync.RWMutex
 	filePath string
@@ -50,10 +54,8 @@ func DefaultPaths() Paths {
 
 	switch runtime.GOOS {
 	case "windows":
-		baseDir = filepath.Join(os.Getenv("ProgramData"), "SlimRMM")
-	case "darwin":
-		baseDir = "/Library/Application Support/SlimRMM"
-	default: // linux
+		baseDir = filepath.Join(os.Getenv("ProgramFiles"), "SlimRMM")
+	default: // linux, darwin
 		baseDir = "/var/lib/slimrmm"
 	}
 
@@ -148,11 +150,47 @@ func (c *Config) IsMTLSEnabled() bool {
 	return c.MTLSEnabled
 }
 
+// GetInstallDate returns the installation date.
+func (c *Config) GetInstallDate() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.InstallDate
+}
+
+// GetLastConnection returns the last connection time.
+func (c *Config) GetLastConnection() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.LastConnection
+}
+
+// SetLastConnection updates the last connection time.
+func (c *Config) SetLastConnection(t string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.LastConnection = t
+}
+
+// GetLastHeartbeat returns the last heartbeat time.
+func (c *Config) GetLastHeartbeat() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.LastHeartbeat
+}
+
+// SetLastHeartbeat updates the last heartbeat time.
+func (c *Config) SetLastHeartbeat(t string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.LastHeartbeat = t
+}
+
 // New creates a new configuration with the given server.
 func New(server string, paths Paths) *Config {
 	return &Config{
 		Server:      server,
 		MTLSEnabled: true,
+		InstallDate: time.Now().UTC().Format(time.RFC3339),
 		filePath:    paths.ConfigFile,
 	}
 }

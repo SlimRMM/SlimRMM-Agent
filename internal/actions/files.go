@@ -8,9 +8,10 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
-	"github.com/kiefernetworks/slimrmm-agent/internal/security/pathval"
+	"github.com/slimrmm/slimrmm-agent/internal/security/pathval"
 )
 
 // FileInfo contains information about a file or directory.
@@ -77,8 +78,15 @@ func ListDirectory(path string) (*ListDirResult, error) {
 			}
 		}
 
-		// Get owner/group (platform-specific)
-		fi.Owner, fi.Group = getFileOwnership(info)
+		// Get owner/group on Unix
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			if u, err := user.LookupId(strconv.Itoa(int(stat.Uid))); err == nil {
+				fi.Owner = u.Username
+			}
+			if g, err := user.LookupGroupId(strconv.Itoa(int(stat.Gid))); err == nil {
+				fi.Group = g.Name
+			}
+		}
 
 		result.Files = append(result.Files, fi)
 	}
@@ -288,8 +296,14 @@ func GetFileInfo(path string) (*FileInfo, error) {
 		}
 	}
 
-	// Get owner/group (platform-specific)
-	fi.Owner, fi.Group = getFileOwnership(info)
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		if u, err := user.LookupId(strconv.Itoa(int(stat.Uid))); err == nil {
+			fi.Owner = u.Username
+		}
+		if g, err := user.LookupGroupId(strconv.Itoa(int(stat.Gid))); err == nil {
+			fi.Group = g.Name
+		}
+	}
 
 	return fi, nil
 }

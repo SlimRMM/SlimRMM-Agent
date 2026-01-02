@@ -1,4 +1,4 @@
-module github.com/kiefernetworks/slimrmm-agent
+module github.com/slimrmm/slimrmm-agent
 
 go 1.22
 

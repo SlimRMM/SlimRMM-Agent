@@ -20,11 +20,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kiefernetworks/slimrmm-agent/pkg/version"
+	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
 
 const (
-	GitHubAPIURL    = "https://api.github.com/repos/SlimRMM/SlimRMM-Agent/releases/latest"
+	GitHubAPIURL    = "https://api.github.com/repos/slimrmm/slimrmm-agent/releases/latest"
 	UpdateCheckInterval = 1 * time.Hour
 	MaxDownloadSize = 100 * 1024 * 1024 // 100 MB
 	HealthCheckTimeout = 30 * time.Second
@@ -651,7 +651,7 @@ func (u *Updater) StartBackgroundUpdater(ctx context.Context) {
 
 // GetChecksumFromRelease fetches the checksum for a release asset.
 func (u *Updater) GetChecksumFromRelease(ctx context.Context, version string) (map[string]string, error) {
-	checksumURL := fmt.Sprintf("https://github.com/SlimRMM/SlimRMM-Agent/releases/download/v%s/checksums.txt", version)
+	checksumURL := fmt.Sprintf("https://github.com/slimrmm/slimrmm-agent/releases/download/v%s/checksums.txt", version)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", checksumURL, nil)
 	if err != nil {

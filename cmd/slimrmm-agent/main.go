@@ -13,21 +13,24 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kiefernetworks/slimrmm-agent/internal/config"
-	"github.com/kiefernetworks/slimrmm-agent/internal/handler"
-	"github.com/kiefernetworks/slimrmm-agent/internal/installer"
-	"github.com/kiefernetworks/slimrmm-agent/internal/security/mtls"
-	"github.com/kiefernetworks/slimrmm-agent/internal/updater"
-	"github.com/kiefernetworks/slimrmm-agent/pkg/version"
+	"github.com/slimrmm/slimrmm-agent/internal/config"
+	"github.com/slimrmm/slimrmm-agent/internal/handler"
+	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
+	"github.com/slimrmm/slimrmm-agent/internal/service"
+	"github.com/slimrmm/slimrmm-agent/internal/updater"
+	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
 
 func main() {
 	// Parse command line flags
 	var (
 		showVersion = flag.Bool("version", false, "Show version information")
+		showInfo    = flag.Bool("info", false, "Show detailed agent information")
+		doUpdate    = flag.Bool("update", false, "Check for and install updates")
 		install     = flag.Bool("install", false, "Install the agent")
 		uninstall   = flag.Bool("uninstall", false, "Uninstall the agent")
 		serverURL   = flag.String("server", "", "Server URL for registration")
+		regKey      = flag.String("key", "", "Registration key")
 		debug       = flag.Bool("debug", false, "Enable debug logging")
 	)
 	flag.Parse()
@@ -35,6 +38,18 @@ func main() {
 	// Show version
 	if *showVersion {
 		fmt.Println(version.Get().String())
+		os.Exit(0)
+	}
+
+	// Show detailed info
+	if *showInfo {
+		runShowInfo()
+		os.Exit(0)
+	}
+
+	// Run update
+	if *doUpdate {
+		runUpdate()
 		os.Exit(0)
 	}
 
@@ -54,7 +69,7 @@ func main() {
 
 	// Handle install/uninstall
 	if *install {
-		if err := runInstall(*serverURL, paths, logger); err != nil {
+		if err := runInstall(*serverURL, *regKey, paths, logger); err != nil {
 			logger.Error("installation failed", "error", err)
 			os.Exit(1)
 		}
@@ -114,10 +129,6 @@ func run(paths config.Paths, logger *slog.Logger) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start background updater (checks for updates every hour)
-	u := updater.New(logger)
-	u.StartBackgroundUpdater(ctx)
-
 	// Handle signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -164,13 +175,16 @@ func run(paths config.Paths, logger *slog.Logger) error {
 	}
 }
 
-func runInstall(serverURL string, paths config.Paths, logger *slog.Logger) error {
+func runInstall(serverURL, regKey string, paths config.Paths, logger *slog.Logger) error {
 	logger.Info("installing SlimRMM Agent")
 
 	// Check for required parameters
 	if serverURL == "" {
 		// Try environment variable
 		serverURL = os.Getenv("SLIMRMM_SERVER")
+	}
+	if regKey == "" {
+		regKey = os.Getenv("SLIMRMM_KEY")
 	}
 
 	if serverURL == "" {
@@ -182,13 +196,20 @@ func runInstall(serverURL string, paths config.Paths, logger *slog.Logger) error
 		return fmt.Errorf("creating directories: %w", err)
 	}
 
-	// Register with server and get UUID + certificates
-	cfg, err := installer.Register(serverURL, "", paths)
-	if err != nil {
-		return fmt.Errorf("registration failed: %w", err)
+	// Create configuration
+	cfg := config.New(serverURL, paths)
+
+	// TODO: Register with server and get UUID + certificates
+	// This will be implemented in the registration module
+
+	// Save configuration
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("saving config: %w", err)
 	}
 
-	logger.Info("installation complete", "config", paths.ConfigFile, "uuid", cfg.GetUUID())
+	// TODO: Install service (systemd/launchd/windows service)
+
+	logger.Info("installation complete", "config", paths.ConfigFile)
 	return nil
 }
 
@@ -213,4 +234,68 @@ func runUninstall(paths config.Paths, logger *slog.Logger) error {
 
 	logger.Info("uninstallation complete")
 	return nil
+}
+
+func runShowInfo() {
+	paths := config.DefaultPaths()
+
+	// Try to load configuration
+	cfg, err := config.Load(paths.ConfigFile)
+	if err != nil {
+		// Show version info even if config is missing
+		v := version.Get()
+		fmt.Println("SlimRMM Agent Information")
+		fmt.Println("=========================")
+		fmt.Printf("Version:         %s\n", v.Version)
+		fmt.Printf("Git Commit:      %s\n", v.GitCommit)
+		fmt.Printf("Build Date:      %s\n", v.BuildDate)
+		fmt.Println()
+		fmt.Printf("Config Status:   Not installed or config not found\n")
+		fmt.Printf("Config Path:     %s\n", paths.ConfigFile)
+		return
+	}
+
+	// Get and print full info
+	info := service.GetAgentInfo(cfg)
+	info.PrintInfo()
+}
+
+func runUpdate() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	u := updater.New(logger)
+	ctx := context.Background()
+
+	fmt.Println("Checking for updates...")
+	info, err := u.CheckForUpdate(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to check for updates: %v\n", err)
+		os.Exit(1)
+	}
+
+	if info == nil {
+		fmt.Printf("Already running the latest version (%s)\n", version.Get().Version)
+		return
+	}
+
+	fmt.Printf("Update available: %s -> %s\n", version.Get().Version, info.Version)
+	fmt.Println("Downloading and installing update...")
+
+	result, err := u.PerformUpdate(ctx, info)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if result.Success {
+		fmt.Println("Update completed successfully!")
+		if result.RestartNeeded {
+			fmt.Println("Service restart required.")
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "Update failed: %s\n", result.Error)
+		os.Exit(1)
+	}
 }

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kiefernetworks/slimrmm-agent/internal/security/pathval"
+	"github.com/slimrmm/slimrmm-agent/internal/security/pathval"
 )
 
 const (

@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kiefernetworks/slimrmm-agent/internal/actions"
-	"github.com/kiefernetworks/slimrmm-agent/internal/osquery"
-	"github.com/kiefernetworks/slimrmm-agent/internal/security/archive"
+	"github.com/slimrmm/slimrmm-agent/internal/actions"
+	"github.com/slimrmm/slimrmm-agent/internal/osquery"
+	"github.com/slimrmm/slimrmm-agent/internal/security/archive"
 )
 
 // registerAllHandlers registers all action handlers.

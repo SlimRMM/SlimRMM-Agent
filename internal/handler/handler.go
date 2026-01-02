@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/kiefernetworks/slimrmm-agent/internal/actions"
-	"github.com/kiefernetworks/slimrmm-agent/internal/config"
-	"github.com/kiefernetworks/slimrmm-agent/internal/monitor"
+	"github.com/slimrmm/slimrmm-agent/internal/actions"
+	"github.com/slimrmm/slimrmm-agent/internal/config"
+	"github.com/slimrmm/slimrmm-agent/internal/monitor"
 )
 
 const (

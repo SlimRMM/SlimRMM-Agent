@@ -3,7 +3,6 @@ package installer
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -11,10 +10,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kiefernetworks/slimrmm-agent/internal/config"
-	"github.com/kiefernetworks/slimrmm-agent/internal/monitor"
-	"github.com/kiefernetworks/slimrmm-agent/internal/security/mtls"
-	"github.com/kiefernetworks/slimrmm-agent/pkg/version"
+	"github.com/slimrmm/slimrmm-agent/internal/config"
+	"github.com/slimrmm/slimrmm-agent/internal/monitor"
+	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
+	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
 
 // RegistrationRequest is sent to the server to register the agent.
@@ -23,45 +22,41 @@ type RegistrationRequest struct {
 	OS           string `json:"os"`
 	Platform     string `json:"platform"`
 	Kernel       string `json:"kernel"`
-	Arch         string `json:"arch"`
+	Architecture string `json:"architecture"`
 	AgentVersion string `json:"agent_version"`
 	ExternalIP   string `json:"external_ip,omitempty"`
-}
-
-// MTLSCerts contains the mTLS certificates from the server.
-type MTLSCerts struct {
-	CertificatePEM   string `json:"certificate_pem"`
-	PrivateKeyPEM    string `json:"private_key_pem"`
-	CACertificatePEM string `json:"ca_certificate_pem"`
+	RegistrationKey string `json:"registration_key,omitempty"`
 }
 
 // RegistrationResponse is received from the server after registration.
 type RegistrationResponse struct {
-	UUID    string    `json:"uuid"`
-	MTLS    MTLSCerts `json:"mtls"`
-	Message string    `json:"message,omitempty"`
-	Error   string    `json:"error,omitempty"`
+	UUID       string `json:"uuid"`
+	CACert     string `json:"ca_cert,omitempty"`
+	ClientCert string `json:"client_cert,omitempty"`
+	ClientKey  string `json:"client_key,omitempty"`
+	Message    string `json:"message,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 // Register registers the agent with the server.
 func Register(serverURL string, regKey string, paths config.Paths) (*config.Config, error) {
 	// Gather system information
 	mon := monitor.New()
-	ctx := context.Background()
-	stats, err := mon.GetStats(ctx)
+	stats, err := mon.GetStats(nil)
 	if err != nil {
 		return nil, fmt.Errorf("gathering system info: %w", err)
 	}
 
 	// Create registration request
 	req := RegistrationRequest{
-		Hostname:     stats.Hostname,
-		OS:           stats.OS,
-		Platform:     stats.Platform,
-		Kernel:       stats.Kernel,
-		Arch:         version.Get().Arch,
-		AgentVersion: version.Get().Version,
-		ExternalIP:   stats.ExternalIP,
+		Hostname:        stats.Hostname,
+		OS:              stats.OS,
+		Platform:        stats.Platform,
+		Kernel:          stats.Kernel,
+		Architecture:    version.Get().Arch,
+		AgentVersion:    version.Get().Version,
+		ExternalIP:      stats.ExternalIP,
+		RegistrationKey: regKey,
 	}
 
 	reqBody, err := json.Marshal(req)
@@ -117,8 +112,7 @@ func Register(serverURL string, regKey string, paths config.Paths) (*config.Conf
 	}
 
 	// Save certificates if provided
-	hasCerts := regResp.MTLS.CACertificatePEM != "" && regResp.MTLS.CertificatePEM != "" && regResp.MTLS.PrivateKeyPEM != ""
-	if hasCerts {
+	if regResp.CACert != "" && regResp.ClientCert != "" && regResp.ClientKey != "" {
 		certPaths := mtls.CertPaths{
 			CACert:     paths.CACert,
 			ClientCert: paths.ClientCert,
@@ -126,9 +120,9 @@ func Register(serverURL string, regKey string, paths config.Paths) (*config.Conf
 		}
 
 		if err := mtls.SaveCertificates(certPaths,
-			[]byte(regResp.MTLS.CACertificatePEM),
-			[]byte(regResp.MTLS.CertificatePEM),
-			[]byte(regResp.MTLS.PrivateKeyPEM),
+			[]byte(regResp.CACert),
+			[]byte(regResp.ClientCert),
+			[]byte(regResp.ClientKey),
 		); err != nil {
 			return nil, fmt.Errorf("saving certificates: %w", err)
 		}
@@ -138,7 +132,7 @@ func Register(serverURL string, regKey string, paths config.Paths) (*config.Conf
 	cfg := config.New(serverURL, paths)
 	cfg.SetUUID(regResp.UUID)
 
-	if hasCerts {
+	if regResp.CACert != "" {
 		// Enable mTLS if certificates were provided
 		cfg.MTLSEnabled = true
 	}
