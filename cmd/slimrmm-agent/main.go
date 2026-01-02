@@ -15,6 +15,7 @@ import (
 
 	"github.com/kiefernetworks/slimrmm-agent/internal/config"
 	"github.com/kiefernetworks/slimrmm-agent/internal/handler"
+	"github.com/kiefernetworks/slimrmm-agent/internal/installer"
 	"github.com/kiefernetworks/slimrmm-agent/internal/security/mtls"
 	"github.com/kiefernetworks/slimrmm-agent/internal/updater"
 	"github.com/kiefernetworks/slimrmm-agent/pkg/version"
@@ -181,20 +182,13 @@ func runInstall(serverURL string, paths config.Paths, logger *slog.Logger) error
 		return fmt.Errorf("creating directories: %w", err)
 	}
 
-	// Create configuration
-	cfg := config.New(serverURL, paths)
-
-	// TODO: Register with server and get UUID + certificates
-	// This will be implemented in the registration module
-
-	// Save configuration
-	if err := cfg.Save(); err != nil {
-		return fmt.Errorf("saving config: %w", err)
+	// Register with server and get UUID + certificates
+	cfg, err := installer.Register(serverURL, "", paths)
+	if err != nil {
+		return fmt.Errorf("registration failed: %w", err)
 	}
 
-	// TODO: Install service (systemd/launchd/windows service)
-
-	logger.Info("installation complete", "config", paths.ConfigFile)
+	logger.Info("installation complete", "config", paths.ConfigFile, "uuid", cfg.GetUUID())
 	return nil
 }
 

@@ -22,20 +22,24 @@ type RegistrationRequest struct {
 	OS           string `json:"os"`
 	Platform     string `json:"platform"`
 	Kernel       string `json:"kernel"`
-	Architecture string `json:"architecture"`
+	Arch         string `json:"arch"`
 	AgentVersion string `json:"agent_version"`
 	ExternalIP   string `json:"external_ip,omitempty"`
-	RegistrationKey string `json:"registration_key,omitempty"`
+}
+
+// MTLSCerts contains the mTLS certificates from the server.
+type MTLSCerts struct {
+	CertificatePEM   string `json:"certificate_pem"`
+	PrivateKeyPEM    string `json:"private_key_pem"`
+	CACertificatePEM string `json:"ca_certificate_pem"`
 }
 
 // RegistrationResponse is received from the server after registration.
 type RegistrationResponse struct {
-	UUID       string `json:"uuid"`
-	CACert     string `json:"ca_cert,omitempty"`
-	ClientCert string `json:"client_cert,omitempty"`
-	ClientKey  string `json:"client_key,omitempty"`
-	Message    string `json:"message,omitempty"`
-	Error      string `json:"error,omitempty"`
+	UUID    string    `json:"uuid"`
+	MTLS    MTLSCerts `json:"mtls"`
+	Message string    `json:"message,omitempty"`
+	Error   string    `json:"error,omitempty"`
 }
 
 // Register registers the agent with the server.
@@ -49,14 +53,13 @@ func Register(serverURL string, regKey string, paths config.Paths) (*config.Conf
 
 	// Create registration request
 	req := RegistrationRequest{
-		Hostname:        stats.Hostname,
-		OS:              stats.OS,
-		Platform:        stats.Platform,
-		Kernel:          stats.Kernel,
-		Architecture:    version.Get().Arch,
-		AgentVersion:    version.Get().Version,
-		ExternalIP:      stats.ExternalIP,
-		RegistrationKey: regKey,
+		Hostname:     stats.Hostname,
+		OS:           stats.OS,
+		Platform:     stats.Platform,
+		Kernel:       stats.Kernel,
+		Arch:         version.Get().Arch,
+		AgentVersion: version.Get().Version,
+		ExternalIP:   stats.ExternalIP,
 	}
 
 	reqBody, err := json.Marshal(req)
@@ -112,7 +115,8 @@ func Register(serverURL string, regKey string, paths config.Paths) (*config.Conf
 	}
 
 	// Save certificates if provided
-	if regResp.CACert != "" && regResp.ClientCert != "" && regResp.ClientKey != "" {
+	hasCerts := regResp.MTLS.CACertificatePEM != "" && regResp.MTLS.CertificatePEM != "" && regResp.MTLS.PrivateKeyPEM != ""
+	if hasCerts {
 		certPaths := mtls.CertPaths{
 			CACert:     paths.CACert,
 			ClientCert: paths.ClientCert,
@@ -120,9 +124,9 @@ func Register(serverURL string, regKey string, paths config.Paths) (*config.Conf
 		}
 
 		if err := mtls.SaveCertificates(certPaths,
-			[]byte(regResp.CACert),
-			[]byte(regResp.ClientCert),
-			[]byte(regResp.ClientKey),
+			[]byte(regResp.MTLS.CACertificatePEM),
+			[]byte(regResp.MTLS.CertificatePEM),
+			[]byte(regResp.MTLS.PrivateKeyPEM),
 		); err != nil {
 			return nil, fmt.Errorf("saving certificates: %w", err)
 		}
@@ -132,7 +136,7 @@ func Register(serverURL string, regKey string, paths config.Paths) (*config.Conf
 	cfg := config.New(serverURL, paths)
 	cfg.SetUUID(regResp.UUID)
 
-	if regResp.CACert != "" {
+	if hasCerts {
 		// Enable mTLS if certificates were provided
 		cfg.MTLSEnabled = true
 	}
