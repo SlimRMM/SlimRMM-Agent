@@ -372,8 +372,38 @@ def create_symlink_or_shortcut(target_dir):
             logging.error(f"Error creating symlink {target_bin} -> {agent_binary}: {e}")
             raise
     elif system == 'Windows':
-        logging.info("Windows shortcut creation not implemented")
-        pass
+        # Create Start Menu shortcut for the agent
+        try:
+            import subprocess
+
+            # Determine agent executable path
+            if getattr(sys, 'frozen', False):
+                agent_exe = os.path.join(target_dir, 'agent.exe')
+            else:
+                agent_exe = os.path.join(target_dir, 'agent.py')
+
+            # Get Start Menu path
+            start_menu = os.path.join(os.environ.get('PROGRAMDATA', 'C:\\ProgramData'),
+                                      'Microsoft', 'Windows', 'Start Menu', 'Programs')
+            shortcut_path = os.path.join(start_menu, 'SlimRMM Agent.lnk')
+
+            # Create shortcut using PowerShell
+            ps_script = f'''
+$WScriptShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WScriptShell.CreateShortcut("{shortcut_path}")
+$Shortcut.TargetPath = "{agent_exe}"
+$Shortcut.WorkingDirectory = "{target_dir}"
+$Shortcut.Description = "SlimRMM Remote Management Agent"
+$Shortcut.Save()
+'''
+            result = subprocess.run(['powershell', '-Command', ps_script],
+                                    capture_output=True, text=True)
+            if result.returncode == 0:
+                logging.info(f"Created Windows shortcut at {shortcut_path}")
+            else:
+                logging.warning(f"Failed to create Windows shortcut: {result.stderr}")
+        except Exception as e:
+            logging.warning(f"Could not create Windows shortcut: {e}")
 
 
 def install_service(server_url):

@@ -122,12 +122,12 @@ jobs:
       - name: Build DEB package
         run: |
           chmod +x build-linux-deb.sh
-          ./build-linux-deb.sh
+          ./build-linux-deb.sh ${{ needs.version.outputs.version }}
 
       - name: Build RPM package
         run: |
           chmod +x build-linux-rpm.sh
-          ./build-linux-rpm.sh
+          ./build-linux-rpm.sh ${{ needs.version.outputs.version }}
         continue-on-error: true
 
       - name: Upload DEB artifact
@@ -177,7 +177,7 @@ jobs:
             pip3 install -r requirements.txt
             pip3 install pyinstaller
             chmod +x build-linux-deb.sh
-            ./build-linux-deb.sh
+            ./build-linux-deb.sh ${{ needs.version.outputs.version }}
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
@@ -248,9 +248,46 @@ jobs:
           name: msi-x64
           path: dist/*.msi
 
+  # Build for macOS (Apple Silicon)
+  build-macos:
+    needs: version
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: macos-14  # Apple Silicon runner
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Pull latest changes
+        run: git pull origin main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build macOS PKG
+        run: |
+          chmod +x build-macos-pkg.sh
+          ./build-macos-pkg.sh ${{ needs.version.outputs.version }}
+
+      - name: Upload PKG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-arm64
+          path: dist/*.pkg
+
   # Create GitHub Release
   release:
-    needs: [version, build-amd64, build-arm64, build-windows]
+    needs: [version, build-amd64, build-arm64, build-windows, build-macos]
     runs-on: ubuntu-latest
 
     steps:
@@ -268,6 +305,7 @@ jobs:
           find artifacts -name "*.deb" -exec cp {} release/ \;
           find artifacts -name "*.rpm" -exec cp {} release/ \; 2>/dev/null || true
           find artifacts -name "*.msi" -exec cp {} release/ \; 2>/dev/null || true
+          find artifacts -name "*.pkg" -exec cp {} release/ \; 2>/dev/null || true
           ls -la release/
 
       - name: Create Release
@@ -286,6 +324,7 @@ jobs:
             |----------|--------------|------|
             | Debian/Ubuntu | amd64 (x86_64) | `slimrmm-agent_${{ needs.version.outputs.version }}_amd64.deb` |
             | Debian/Ubuntu | arm64 (aarch64) | `slimrmm-agent_${{ needs.version.outputs.version }}_arm64.deb` |
+            | macOS | arm64 (Apple Silicon) | `SlimRMM-Agent-${{ needs.version.outputs.version }}-arm64.pkg` |
             | Windows | x64 | `SlimRMM-Agent-${{ needs.version.outputs.version }}-x64.msi` |
 
             ### Installation
@@ -298,6 +337,15 @@ jobs:
 
             # Silent install with auto-registration
             SLIMRMM_SERVER="https://your-rmm-server:8800" sudo dpkg -i slimrmm-agent_*.deb
+            ```
+
+            **macOS (Apple Silicon):**
+            ```bash
+            # Interactive installation
+            sudo installer -pkg SlimRMM-Agent-${{ needs.version.outputs.version }}-arm64.pkg -target /
+
+            # Silent installation with registration
+            SLIMRMM_SERVER="https://your-rmm-server:8800" sudo installer -pkg SlimRMM-Agent-${{ needs.version.outputs.version }}-arm64.pkg -target /
             ```
 
             **Windows:**

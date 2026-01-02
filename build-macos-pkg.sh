@@ -253,7 +253,7 @@ register_agent() {
             \"os\": \"${os}\",
             \"arch\": \"${arch}\",
             \"hostname\": \"${hostname}\",
-            \"agent_version\": \"1.0.0\"
+            \"agent_version\": \"VERSION_PLACEHOLDER\"
         }" 2>/dev/null)
 
     if [ -z "$response" ]; then
@@ -396,6 +396,9 @@ POSTINSTALL
 
 chmod +x "${SCRIPTS_DIR}/preinstall"
 chmod +x "${SCRIPTS_DIR}/postinstall"
+
+# Replace version placeholder in postinstall
+sed -i '' "s/VERSION_PLACEHOLDER/${VERSION}/g" "${SCRIPTS_DIR}/postinstall"
 
 # Build the PKG
 echo "[6/7] Building PKG installer..."

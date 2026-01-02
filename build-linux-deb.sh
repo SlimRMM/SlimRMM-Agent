@@ -271,7 +271,7 @@ register_agent() {
             \"os\": \"${os}\",
             \"arch\": \"${arch}\",
             \"hostname\": \"${hostname}\",
-            \"agent_version\": \"1.0.4\"
+            \"agent_version\": \"${VERSION}\"
         }" 2>/dev/null)
 
     if [ -z "$response" ]; then
@@ -419,6 +419,8 @@ echo ""
 
 exit 0
 POSTINST
+# Replace version placeholder in postinst
+sed -i "s/\${VERSION}/${VERSION}/g" "${DEB_ROOT}/DEBIAN/postinst"
 chmod 755 "${DEB_ROOT}/DEBIAN/postinst"
 
 # Create prerm script
