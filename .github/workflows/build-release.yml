@@ -106,25 +106,34 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME#v}
 
-          mkdir -p pkg/usr/local/bin
-          mkdir -p pkg/Library/LaunchDaemons
-          mkdir -p pkg/var/lib/slimrmm/{certs,log}
+          # Create payload structure (macOS-compatible paths)
+          mkdir -p payload/usr/local/bin
+          mkdir -p payload/Library/LaunchDaemons
+          mkdir -p payload/Library/Application\ Support/SlimRMM/{certs,log}
 
-          cp ${{ matrix.artifact }} pkg/usr/local/bin/slimrmm-agent
-          chmod +x pkg/usr/local/bin/slimrmm-agent
-          cp build/macos/io.slimrmm.agent.plist pkg/Library/LaunchDaemons/
+          cp ${{ matrix.artifact }} payload/usr/local/bin/slimrmm-agent
+          chmod +x payload/usr/local/bin/slimrmm-agent
+          cp build/macos/io.slimrmm.agent.plist payload/Library/LaunchDaemons/
 
           # Create postinstall script
           mkdir -p scripts
           cat > scripts/postinstall << 'SCRIPT'
           #!/bin/bash
-          mkdir -p /var/lib/slimrmm/{certs,log}
-          chmod 700 /var/lib/slimrmm/certs
-          launchctl load /Library/LaunchDaemons/io.slimrmm.agent.plist || true
+          chmod 700 "/Library/Application Support/SlimRMM/certs"
+          launchctl bootout system/io.slimrmm.agent 2>/dev/null || true
+          launchctl bootstrap system /Library/LaunchDaemons/io.slimrmm.agent.plist || true
           SCRIPT
           chmod +x scripts/postinstall
 
-          pkgbuild --root pkg \
+          # Create preinstall script to stop existing service
+          cat > scripts/preinstall << 'SCRIPT'
+          #!/bin/bash
+          launchctl bootout system/io.slimrmm.agent 2>/dev/null || true
+          exit 0
+          SCRIPT
+          chmod +x scripts/preinstall
+
+          pkgbuild --root payload \
             --identifier io.slimrmm.agent \
             --version ${VERSION} \
             --install-location / \
