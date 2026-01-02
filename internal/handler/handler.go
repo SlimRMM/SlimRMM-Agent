@@ -27,11 +27,17 @@ const (
 	maxMessageSize = 10 * 1024 * 1024 // 10 MB
 )
 
-// Message represents a WebSocket message.
+// Message represents a WebSocket message from the backend.
+// The backend sends all fields at root level, not inside a "data" object.
 type Message struct {
 	Action    string          `json:"action"`
 	RequestID string          `json:"request_id,omitempty"`
+	ScanType  string          `json:"scan_type,omitempty"`
+	Query     string          `json:"query,omitempty"`
 	Data      json.RawMessage `json:"data,omitempty"`
+	// Additional fields used by various actions
+	// We store the raw message to extract action-specific fields
+	Raw json.RawMessage `json:"-"`
 }
 
 // Response represents a WebSocket response.
@@ -41,6 +47,29 @@ type Response struct {
 	Success   bool        `json:"success"`
 	Data      interface{} `json:"data,omitempty"`
 	Error     string      `json:"error,omitempty"`
+}
+
+// HeartbeatMessage is the format expected by the backend.
+type HeartbeatMessage struct {
+	Action     string         `json:"action"`
+	Stats      HeartbeatStats `json:"stats"`
+	ExternalIP string         `json:"external_ip,omitempty"`
+}
+
+// HeartbeatStats contains the stats in the format expected by the backend.
+type HeartbeatStats struct {
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemoryPercent float64 `json:"memory_percent"`
+	MemoryUsed    uint64  `json:"memory_used"`
+	MemoryTotal   uint64  `json:"memory_total"`
+}
+
+// OsqueryResponse is the format expected by the backend for osquery results.
+type OsqueryResponse struct {
+	Action    string      `json:"action"`
+	ScanType  string      `json:"scan_type"`
+	Data      interface{} `json:"data"`
+	RequestID string      `json:"request_id,omitempty"`
 }
 
 // ActionHandler is a function that handles a specific action.
@@ -237,7 +266,7 @@ func (h *Handler) heartbeatPump(ctx context.Context) error {
 	}
 }
 
-// sendHeartbeat sends a heartbeat message.
+// sendHeartbeat sends a heartbeat message in the format expected by the backend.
 func (h *Handler) sendHeartbeat(ctx context.Context) {
 	stats, err := h.monitor.GetStats(ctx)
 	if err != nil {
@@ -245,11 +274,19 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 		return
 	}
 
-	h.Send(Response{
-		Action:  "heartbeat",
-		Success: true,
-		Data:    stats,
-	})
+	// Format heartbeat in the structure expected by the backend
+	heartbeat := HeartbeatMessage{
+		Action: "heartbeat",
+		Stats: HeartbeatStats{
+			CPUPercent:    stats.CPU.UsagePercent,
+			MemoryPercent: stats.Memory.UsedPercent,
+			MemoryUsed:    stats.Memory.Used,
+			MemoryTotal:   stats.Memory.Total,
+		},
+		ExternalIP: stats.ExternalIP,
+	}
+
+	h.SendRaw(heartbeat)
 }
 
 // handleMessage processes an incoming message.
@@ -259,8 +296,10 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		h.logger.Error("parsing message", "error", err)
 		return
 	}
+	// Store raw message for handlers that need to parse additional fields
+	msg.Raw = data
 
-	h.logger.Debug("received message", "action", msg.Action, "request_id", msg.RequestID)
+	h.logger.Debug("received message", "action", msg.Action, "request_id", msg.RequestID, "scan_type", msg.ScanType)
 
 	handler, ok := h.handlers[msg.Action]
 	if !ok {
@@ -274,7 +313,34 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		return
 	}
 
-	result, err := handler(ctx, msg.Data)
+	// For run_osquery, pass the raw message as the handler needs scan_type and query from root
+	var handlerData json.RawMessage
+	if msg.Action == "run_osquery" {
+		handlerData = msg.Raw
+	} else if len(msg.Data) > 0 {
+		handlerData = msg.Data
+	} else {
+		// If no data field, pass the raw message so handlers can parse root-level fields
+		handlerData = msg.Raw
+	}
+
+	result, err := handler(ctx, handlerData)
+
+	// For run_osquery, use the OsqueryResponse format expected by the backend
+	if msg.Action == "run_osquery" {
+		osqResp := OsqueryResponse{
+			Action:    "run_osquery",
+			ScanType:  msg.ScanType,
+			Data:      result,
+			RequestID: msg.RequestID,
+		}
+		if err != nil {
+			osqResp.Data = map[string]string{"error": err.Error()}
+		}
+		h.SendRaw(osqResp)
+		return
+	}
+
 	resp := Response{
 		Action:    msg.Action,
 		RequestID: msg.RequestID,
@@ -293,6 +359,21 @@ func (h *Handler) Send(resp Response) {
 	data, err := json.Marshal(resp)
 	if err != nil {
 		h.logger.Error("marshaling response", "error", err)
+		return
+	}
+
+	select {
+	case h.sendCh <- data:
+	default:
+		h.logger.Warn("send channel full, dropping message")
+	}
+}
+
+// SendRaw sends any message to the server without wrapping.
+func (h *Handler) SendRaw(msg interface{}) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		h.logger.Error("marshaling message", "error", err)
 		return
 	}
 

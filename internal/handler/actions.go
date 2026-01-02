@@ -11,7 +11,6 @@ import (
 	"github.com/kiefernetworks/slimrmm-agent/internal/actions"
 	"github.com/kiefernetworks/slimrmm-agent/internal/osquery"
 	"github.com/kiefernetworks/slimrmm-agent/internal/security/archive"
-	"github.com/kiefernetworks/slimrmm-agent/internal/updater"
 )
 
 // registerAllHandlers registers all action handlers.
@@ -66,8 +65,6 @@ func (h *Handler) registerHandlers() {
 
 	// Agent update
 	h.handlers["update_agent"] = h.handleUpdateAgent
-	h.handlers["check_update"] = h.handleCheckUpdate
-	h.handlers["perform_update"] = h.handlePerformUpdate
 }
 
 // Command handlers
@@ -92,9 +89,11 @@ func (h *Handler) handleCustomCommand(ctx context.Context, data json.RawMessage)
 }
 
 type executeScriptRequest struct {
-	ScriptType string `json:"script_type"`
-	Script     string `json:"script"`
-	Timeout    int    `json:"timeout,omitempty"`
+	ExecutionID    string `json:"execution_id"`
+	ScriptName     string `json:"script_name"`
+	ScriptType     string `json:"script_type"`
+	ScriptContent  string `json:"script_content"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
 func (h *Handler) handleExecuteScript(ctx context.Context, data json.RawMessage) (interface{}, error) {
@@ -103,12 +102,50 @@ func (h *Handler) handleExecuteScript(ctx context.Context, data json.RawMessage)
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	timeout := time.Duration(req.Timeout) * time.Second
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
 	if timeout == 0 {
 		timeout = actions.DefaultCommandTimeout
 	}
 
-	return actions.ExecuteScript(ctx, req.ScriptType, req.Script, timeout)
+	startedAt := time.Now()
+	result, err := actions.ExecuteScript(ctx, req.ScriptType, req.ScriptContent, timeout)
+	completedAt := time.Now()
+	durationMs := completedAt.Sub(startedAt).Milliseconds()
+
+	// Build response in format expected by backend
+	response := map[string]interface{}{
+		"execution_id": req.ExecutionID,
+		"started_at":   startedAt.UTC().Format(time.RFC3339),
+		"completed_at": completedAt.UTC().Format(time.RFC3339),
+		"duration_ms":  durationMs,
+	}
+
+	if err != nil {
+		response["status"] = "failed"
+		response["exit_code"] = -1
+		response["error_output"] = err.Error()
+		response["output"] = ""
+	} else if result != nil {
+		response["status"] = "completed"
+		response["exit_code"] = result.ExitCode
+		response["output"] = result.Stdout
+		response["error_output"] = result.Stderr
+	}
+
+	// Send as script_execution_result action
+	h.SendRaw(map[string]interface{}{
+		"action":       "script_execution_result",
+		"execution_id": req.ExecutionID,
+		"status":       response["status"],
+		"exit_code":    response["exit_code"],
+		"output":       response["output"],
+		"error_output": response["error_output"],
+		"started_at":   response["started_at"],
+		"completed_at": response["completed_at"],
+		"duration_ms":  response["duration_ms"],
+	})
+
+	return response, nil
 }
 
 // File operation handlers
@@ -281,14 +318,26 @@ func (h *Handler) handleGetAvailableUpdates(ctx context.Context, data json.RawMe
 // osquery handlers
 
 type runOsqueryRequest struct {
-	Query   string `json:"query"`
-	Timeout int    `json:"timeout,omitempty"`
+	Query    string `json:"query"`
+	ScanType string `json:"scan_type,omitempty"`
+	Timeout  int    `json:"timeout,omitempty"`
 }
 
 func (h *Handler) handleRunOsquery(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req runOsqueryRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Handle updates scan type specially (agent-side, no SQL)
+	if req.ScanType == "updates" || (req.Query == "" && req.ScanType == "") {
+		// If no query provided or scan_type is updates, use internal update checker
+		return actions.GetAvailableUpdates(ctx)
+	}
+
+	// If query is empty but scan_type is set, we can't run osquery
+	if req.Query == "" {
+		return []interface{}{}, nil
 	}
 
 	client := osquery.New()
@@ -471,9 +520,24 @@ func (h *Handler) handleCancelShutdown(ctx context.Context, data json.RawMessage
 	return map[string]string{"status": "shutdown_cancelled"}, nil
 }
 
+type rebootConfig struct {
+	Enabled      bool   `json:"enabled"`
+	Condition    string `json:"condition"`
+	DelayMinutes int    `json:"delay_minutes"`
+	NotifyUser   bool   `json:"notify_user"`
+}
+
 type executePatchesRequest struct {
-	Categories []string `json:"categories,omitempty"`
-	Reboot     bool     `json:"reboot,omitempty"`
+	ExecutionID    string       `json:"execution_id"`
+	PolicyID       string       `json:"policy_id"`
+	Patches        []struct {
+		Name     string `json:"name"`
+		Version  string `json:"version"`
+		Category string `json:"category"`
+	} `json:"patches"`
+	Categories     []string     `json:"categories,omitempty"`
+	RebootConfig   rebootConfig `json:"reboot_config"`
+	TimeoutSeconds int          `json:"timeout_seconds,omitempty"`
 }
 
 func (h *Handler) handleExecutePatches(ctx context.Context, data json.RawMessage) (interface{}, error) {
@@ -482,7 +546,36 @@ func (h *Handler) handleExecutePatches(ctx context.Context, data json.RawMessage
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	return actions.ExecutePatches(ctx, req.Categories, req.Reboot)
+	startedAt := time.Now()
+	result, err := actions.ExecutePatches(ctx, req.Categories, req.RebootConfig.Enabled)
+	completedAt := time.Now()
+	durationMs := completedAt.Sub(startedAt).Milliseconds()
+
+	// Build response in format expected by backend
+	response := map[string]interface{}{
+		"action":       "patch_execution_result",
+		"execution_id": req.ExecutionID,
+		"duration_ms":  durationMs,
+	}
+
+	if err != nil {
+		response["status"] = "failed"
+		response["error_output"] = err.Error()
+		response["output"] = ""
+		response["patches_installed"] = []string{}
+		response["patches_failed"] = []string{}
+	} else if result != nil {
+		response["status"] = "completed"
+		response["output"] = result.Stdout
+		response["error_output"] = result.Stderr
+		// For now, we don't track individual patches
+		response["patches_installed"] = []string{}
+		response["patches_failed"] = []string{}
+		response["reboot_required"] = req.RebootConfig.Enabled
+	}
+
+	h.SendRaw(response)
+	return response, nil
 }
 
 type uninstallSoftwareRequest struct {
@@ -612,54 +705,4 @@ func (h *Handler) handleUpdateAgent(ctx context.Context, data json.RawMessage) (
 		"hash":    result.Hash,
 		"message": "agent update downloaded, restart required",
 	}, nil
-}
-
-// handleCheckUpdate checks for available updates from GitHub.
-func (h *Handler) handleCheckUpdate(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	u := updater.New(h.logger)
-	info, err := u.CheckForUpdate(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if info == nil {
-		return map[string]interface{}{
-			"update_available": false,
-			"message":          "already on latest version",
-		}, nil
-	}
-
-	return map[string]interface{}{
-		"update_available": true,
-		"version":          info.Version,
-		"download_url":     info.DownloadURL,
-		"asset_name":       info.AssetName,
-		"size":             info.Size,
-	}, nil
-}
-
-// handlePerformUpdate performs the update with rollback support.
-func (h *Handler) handlePerformUpdate(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	u := updater.New(h.logger)
-
-	// First check if update is available
-	info, err := u.CheckForUpdate(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("checking for update: %w", err)
-	}
-
-	if info == nil {
-		return map[string]interface{}{
-			"success": true,
-			"message": "already on latest version",
-		}, nil
-	}
-
-	// Perform the update
-	result, err := u.PerformUpdate(ctx, info)
-	if err != nil {
-		return result, err
-	}
-
-	return result, nil
 }
