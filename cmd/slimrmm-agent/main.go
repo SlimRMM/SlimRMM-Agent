@@ -16,6 +16,7 @@ import (
 	"github.com/kiefernetworks/slimrmm-agent/internal/config"
 	"github.com/kiefernetworks/slimrmm-agent/internal/handler"
 	"github.com/kiefernetworks/slimrmm-agent/internal/security/mtls"
+	"github.com/kiefernetworks/slimrmm-agent/internal/updater"
 	"github.com/kiefernetworks/slimrmm-agent/pkg/version"
 )
 
@@ -112,6 +113,10 @@ func run(paths config.Paths, logger *slog.Logger) error {
 	// Setup context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Start background updater (checks for updates every hour)
+	u := updater.New(logger)
+	u.StartBackgroundUpdater(ctx)
 
 	// Handle signals
 	sigCh := make(chan os.Signal, 1)

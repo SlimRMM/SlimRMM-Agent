@@ -9,8 +9,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-
-	"github.com/kiefernetworks/slimrmm-agent/internal/security/sandbox"
 )
 
 const (
@@ -36,13 +34,8 @@ type ScriptResult struct {
 	Duration   int64  `json:"duration_ms"`
 }
 
-// ExecuteCommand executes a whitelisted command.
+// ExecuteCommand executes a command (like Python agent - no restrictions).
 func ExecuteCommand(ctx context.Context, command string, timeout time.Duration) (*CommandResult, error) {
-	// Validate command against whitelist
-	if err := sandbox.ValidateCommand(command); err != nil {
-		return nil, fmt.Errorf("command validation failed: %w", err)
-	}
-
 	if timeout == 0 {
 		timeout = DefaultCommandTimeout
 	}

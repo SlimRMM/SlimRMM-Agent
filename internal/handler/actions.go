@@ -11,6 +11,7 @@ import (
 	"github.com/kiefernetworks/slimrmm-agent/internal/actions"
 	"github.com/kiefernetworks/slimrmm-agent/internal/osquery"
 	"github.com/kiefernetworks/slimrmm-agent/internal/security/archive"
+	"github.com/kiefernetworks/slimrmm-agent/internal/updater"
 )
 
 // registerAllHandlers registers all action handlers.
@@ -65,6 +66,8 @@ func (h *Handler) registerHandlers() {
 
 	// Agent update
 	h.handlers["update_agent"] = h.handleUpdateAgent
+	h.handlers["check_update"] = h.handleCheckUpdate
+	h.handlers["perform_update"] = h.handlePerformUpdate
 }
 
 // Command handlers
@@ -609,4 +612,54 @@ func (h *Handler) handleUpdateAgent(ctx context.Context, data json.RawMessage) (
 		"hash":    result.Hash,
 		"message": "agent update downloaded, restart required",
 	}, nil
+}
+
+// handleCheckUpdate checks for available updates from GitHub.
+func (h *Handler) handleCheckUpdate(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	u := updater.New(h.logger)
+	info, err := u.CheckForUpdate(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if info == nil {
+		return map[string]interface{}{
+			"update_available": false,
+			"message":          "already on latest version",
+		}, nil
+	}
+
+	return map[string]interface{}{
+		"update_available": true,
+		"version":          info.Version,
+		"download_url":     info.DownloadURL,
+		"asset_name":       info.AssetName,
+		"size":             info.Size,
+	}, nil
+}
+
+// handlePerformUpdate performs the update with rollback support.
+func (h *Handler) handlePerformUpdate(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	u := updater.New(h.logger)
+
+	// First check if update is available
+	info, err := u.CheckForUpdate(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("checking for update: %w", err)
+	}
+
+	if info == nil {
+		return map[string]interface{}{
+			"success": true,
+			"message": "already on latest version",
+		}, nil
+	}
+
+	// Perform the update
+	result, err := u.PerformUpdate(ctx, info)
+	if err != nil {
+		return result, err
+	}
+
+	return result, nil
 }
