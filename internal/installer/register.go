@@ -3,6 +3,7 @@ package installer
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -42,7 +43,7 @@ type RegistrationResponse struct {
 func Register(serverURL string, regKey string, paths config.Paths) (*config.Config, error) {
 	// Gather system information
 	mon := monitor.New()
-	stats, err := mon.GetStats(nil)
+	stats, err := mon.GetStats(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("gathering system info: %w", err)
 	}
