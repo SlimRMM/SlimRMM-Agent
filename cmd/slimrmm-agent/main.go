@@ -15,6 +15,7 @@ import (
 
 	"github.com/slimrmm/slimrmm-agent/internal/config"
 	"github.com/slimrmm/slimrmm-agent/internal/handler"
+	"github.com/slimrmm/slimrmm-agent/internal/installer"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
@@ -196,19 +197,14 @@ func runInstall(serverURL, regKey string, paths config.Paths, logger *slog.Logge
 		return fmt.Errorf("creating directories: %w", err)
 	}
 
-	// Create configuration
-	cfg := config.New(serverURL, paths)
-
-	// TODO: Register with server and get UUID + certificates
-	// This will be implemented in the registration module
-
-	// Save configuration
-	if err := cfg.Save(); err != nil {
-		return fmt.Errorf("saving config: %w", err)
+	// Register with server and get UUID + certificates
+	logger.Info("registering with server", "url", serverURL)
+	cfg, err := installer.Register(serverURL, regKey, paths)
+	if err != nil {
+		return fmt.Errorf("registration failed: %w", err)
 	}
 
-	// TODO: Install service (systemd/launchd/windows service)
-
+	logger.Info("registration successful", "uuid", cfg.GetUUID())
 	logger.Info("installation complete", "config", paths.ConfigFile)
 	return nil
 }
