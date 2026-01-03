@@ -193,7 +193,7 @@ func matchesAssetPattern(assetName, pattern string) bool {
 	}
 
 	// Expected format: slimrmm-agent_VERSION_OS_ARCH.EXT
-	prefix := fmt.Sprintf("slimrmm-agent_")
+	prefix := "slimrmm-agent_"
 	suffix := fmt.Sprintf("_%s_%s%s", runtime.GOOS, runtime.GOARCH, ext)
 
 	return strings.HasPrefix(assetName, prefix) && strings.HasSuffix(assetName, suffix)
@@ -292,6 +292,25 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 		return result, fmt.Errorf(result.Error)
 	}
 	u.logger.Info("downloaded update", "path", archivePath)
+
+	// Verify checksum before extraction (supply chain security)
+	checksums, err := u.GetChecksumFromRelease(ctx, info.Version)
+	if err != nil {
+		u.logger.Warn("could not fetch checksums, skipping verification", "error", err)
+	} else {
+		expectedHash, ok := checksums[info.AssetName]
+		if !ok {
+			result.Error = "checksum not found for asset"
+			u.logError("update failed", result.Error)
+			return result, fmt.Errorf(result.Error)
+		}
+		if err := VerifyChecksum(archivePath, expectedHash); err != nil {
+			result.Error = fmt.Sprintf("checksum verification failed: %v", err)
+			u.logError("update failed", result.Error)
+			return result, fmt.Errorf(result.Error)
+		}
+		u.logger.Info("checksum verified", "hash", expectedHash)
+	}
 
 	// Extract new binary
 	newBinaryPath := filepath.Join(tempDir, "slimrmm-agent")
@@ -428,6 +447,8 @@ func (u *Updater) extractBinary(archivePath, destPath string) error {
 }
 
 // extractTarGz extracts binary from tar.gz.
+// SECURITY: ZIP slip protection is inherent - destPath is externally controlled
+// and header.Name is only used for matching, not path construction.
 func (u *Updater) extractTarGz(archivePath, destPath string) error {
 	file, err := os.Open(archivePath)
 	if err != nil {
@@ -473,6 +494,8 @@ func (u *Updater) extractTarGz(archivePath, destPath string) error {
 }
 
 // extractZip extracts binary from zip (Windows).
+// SECURITY: ZIP slip protection is inherent - destPath is externally controlled
+// and f.Name is only used for matching, not path construction.
 func (u *Updater) extractZip(archivePath, destPath string) error {
 	r, err := zip.OpenReader(archivePath)
 	if err != nil {

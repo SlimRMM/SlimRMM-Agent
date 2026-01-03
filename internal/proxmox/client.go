@@ -39,13 +39,17 @@ func NewClient(ctx context.Context, configDir string) (*Client, error) {
 	}
 
 	// Create HTTP client with TLS configuration
-	// We skip verification for localhost connections to the local Proxmox API
+	// SECURITY: InsecureSkipVerify is only used for localhost (127.0.0.1:8006)
+	// connections to the local Proxmox API which typically uses self-signed certs.
+	// This is acceptable because:
+	// 1. The connection never leaves the local machine
+	// 2. An attacker with localhost access already has full system access
 	httpClient := &http.Client{
 		Timeout: clientTimeout,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // Local connection only
-				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: true, // #nosec G402 - localhost only
+				MinVersion:         tls.VersionTLS13,
 			},
 		},
 	}
@@ -170,13 +174,13 @@ func (c *Client) RefreshToken(ctx context.Context) error {
 		return err
 	}
 
-	// Create new HTTP client
+	// Create new HTTP client (localhost only - see NewClient for security rationale)
 	httpClient := &http.Client{
 		Timeout: clientTimeout,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: true, // #nosec G402 - localhost only
+				MinVersion:         tls.VersionTLS13,
 			},
 		},
 	}

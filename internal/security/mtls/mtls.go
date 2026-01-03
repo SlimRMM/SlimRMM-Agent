@@ -33,6 +33,8 @@ type CertPaths struct {
 
 // Config holds TLS configuration options.
 type Config struct {
+	// Deprecated: InsecureSkipVerify is ignored for security.
+	// Certificate verification is always enabled.
 	InsecureSkipVerify bool
 	ServerName         string
 }
@@ -42,11 +44,12 @@ type Config struct {
 // If certPaths is nil, only server verification is performed.
 func NewTLSConfig(certPaths *CertPaths, cfg *Config) (*tls.Config, error) {
 	tlsConfig := &tls.Config{
-		MinVersion: tls.VersionTLS12,
+		MinVersion: tls.VersionTLS13,
 	}
 
 	if cfg != nil {
-		tlsConfig.InsecureSkipVerify = cfg.InsecureSkipVerify
+		// Note: InsecureSkipVerify is intentionally NOT applied from config.
+		// Certificate verification must always be enabled for security.
 		if cfg.ServerName != "" {
 			tlsConfig.ServerName = cfg.ServerName
 		}
