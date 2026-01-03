@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -264,7 +265,7 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	if err := os.MkdirAll(u.backupPath, 0755); err != nil {
 		result.Error = fmt.Sprintf("creating backup dir: %v", err)
 		u.logError("update failed", result.Error)
-		return result, fmt.Errorf(result.Error)
+		return result, errors.New(result.Error)
 	}
 
 	// Backup current binary
@@ -272,7 +273,7 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	if err := u.backupBinary(backupFile); err != nil {
 		result.Error = fmt.Sprintf("backup failed: %v", err)
 		u.logError("update failed", result.Error)
-		return result, fmt.Errorf(result.Error)
+		return result, errors.New(result.Error)
 	}
 	u.logger.Info("backed up current binary", "path", backupFile)
 
@@ -281,7 +282,7 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	if err != nil {
 		result.Error = fmt.Sprintf("creating temp dir: %v", err)
 		u.logError("update failed", result.Error)
-		return result, fmt.Errorf(result.Error)
+		return result, errors.New(result.Error)
 	}
 	defer os.RemoveAll(tempDir)
 
@@ -289,7 +290,7 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	if err := u.downloadFile(ctx, info.DownloadURL, archivePath); err != nil {
 		result.Error = fmt.Sprintf("download failed: %v", err)
 		u.logError("update failed", result.Error)
-		return result, fmt.Errorf(result.Error)
+		return result, errors.New(result.Error)
 	}
 	u.logger.Info("downloaded update", "path", archivePath)
 
@@ -302,12 +303,12 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 		if !ok {
 			result.Error = "checksum not found for asset"
 			u.logError("update failed", result.Error)
-			return result, fmt.Errorf(result.Error)
+			return result, errors.New(result.Error)
 		}
 		if err := VerifyChecksum(archivePath, expectedHash); err != nil {
 			result.Error = fmt.Sprintf("checksum verification failed: %v", err)
 			u.logError("update failed", result.Error)
-			return result, fmt.Errorf(result.Error)
+			return result, errors.New(result.Error)
 		}
 		u.logger.Info("checksum verified", "hash", expectedHash)
 	}
@@ -320,7 +321,7 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	if err := u.extractBinary(archivePath, newBinaryPath); err != nil {
 		result.Error = fmt.Sprintf("extract failed: %v", err)
 		u.logError("update failed", result.Error)
-		return result, fmt.Errorf(result.Error)
+		return result, errors.New(result.Error)
 	}
 	u.logger.Info("extracted new binary", "path", newBinaryPath)
 
@@ -340,7 +341,7 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 			result.RolledBack = true
 		}
 		u.startService()
-		return result, fmt.Errorf(result.Error)
+		return result, errors.New(result.Error)
 	}
 	u.logger.Info("replaced binary")
 
@@ -355,7 +356,7 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 			result.RolledBack = true
 			u.startService()
 		}
-		return result, fmt.Errorf(result.Error)
+		return result, errors.New(result.Error)
 	}
 
 	// Health check - verify new version is running
@@ -370,7 +371,7 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 			result.RolledBack = true
 			u.startService()
 		}
-		return result, fmt.Errorf(result.Error)
+		return result, errors.New(result.Error)
 	}
 
 	// Success - clean up old backups (keep only last 2)
