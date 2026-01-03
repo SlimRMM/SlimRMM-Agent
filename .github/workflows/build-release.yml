@@ -229,22 +229,27 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME#v}
 
-          # Use /opt/slimrmm for everything on macOS
-          mkdir -p pkg/opt/slimrmm/{bin,certs,log}
+          # Match Python agent: use /var/lib/slimrmm for config/certs
+          # Binary goes to /usr/local/bin (via postinstall)
+          mkdir -p pkg/var/lib/slimrmm/{certs,log}
           mkdir -p pkg/Library/LaunchDaemons
+          mkdir -p pkg/usr/local/bin
 
-          cp slimrmm-agent-darwin-arm64 pkg/opt/slimrmm/bin/slimrmm-agent
-          chmod +x pkg/opt/slimrmm/bin/slimrmm-agent
+          cp slimrmm-agent-darwin-arm64 pkg/usr/local/bin/slimrmm-agent
+          chmod +x pkg/usr/local/bin/slimrmm-agent
 
-          # Update plist to use new path
-          sed 's|/usr/local/bin/slimrmm-agent|/opt/slimrmm/bin/slimrmm-agent|g' \
-            build/macos/io.slimrmm.agent.plist > pkg/Library/LaunchDaemons/io.slimrmm.agent.plist
+          cp build/macos/io.slimrmm.agent.plist pkg/Library/LaunchDaemons/
 
-          # Create symlink script for postinstall
+          # Create postinstall script
           mkdir -p scripts
           cat > scripts/postinstall << 'SCRIPT'
           #!/bin/bash
-          ln -sf /opt/slimrmm/bin/slimrmm-agent /usr/local/bin/slimrmm-agent 2>/dev/null || true
+          # Ensure directories exist with correct permissions
+          mkdir -p /var/lib/slimrmm/{certs,log}
+          chmod 755 /var/lib/slimrmm
+          chmod 700 /var/lib/slimrmm/certs
+          chmod 755 /var/lib/slimrmm/log
+          # Load the service
           launchctl load /Library/LaunchDaemons/io.slimrmm.agent.plist 2>/dev/null || true
           exit 0
           SCRIPT

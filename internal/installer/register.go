@@ -3,30 +3,27 @@ package installer
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"runtime"
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/config"
-	"github.com/slimrmm/slimrmm-agent/internal/monitor"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
 
-// RegistrationRequest is sent to the server to register the agent.
+// RegistrationRequest matches Python agent exactly:
+// os, arch, hostname, agent_version
 type RegistrationRequest struct {
-	Hostname        string `json:"hostname"`
-	OS              string `json:"os"`
-	Platform        string `json:"platform"`
-	Kernel          string `json:"kernel"`
-	Arch            string `json:"arch"`
-	AgentVersion    string `json:"agent_version"`
-	ExternalIP      string `json:"external_ip,omitempty"`
-	RegistrationKey string `json:"registration_key,omitempty"`
+	OS           string `json:"os"`
+	Arch         string `json:"arch"`
+	Hostname     string `json:"hostname"`
+	AgentVersion string `json:"agent_version"`
 }
 
 // RegistrationResponse is received from the server after registration.
@@ -39,25 +36,30 @@ type RegistrationResponse struct {
 	Error      string `json:"error,omitempty"`
 }
 
+// getArch returns architecture in Python's platform.machine() format
+func getArch() string {
+	arch := runtime.GOARCH
+	// Convert Go's amd64 to Python's x86_64
+	if arch == "amd64" {
+		return "x86_64"
+	}
+	return arch
+}
+
 // Register registers the agent with the server.
 func Register(serverURL string, regKey string, paths config.Paths) (*config.Config, error) {
-	// Gather system information
-	mon := monitor.New()
-	stats, err := mon.GetStats(context.Background())
+	// Get hostname
+	hostname, err := os.Hostname()
 	if err != nil {
-		return nil, fmt.Errorf("gathering system info: %w", err)
+		hostname = "unknown"
 	}
 
-	// Create registration request
+	// Create registration request - matches Python agent exactly
 	req := RegistrationRequest{
-		Hostname:        stats.Hostname,
-		OS:              stats.OS,
-		Platform:        stats.Platform,
-		Kernel:          stats.Kernel,
-		Arch:            version.Get().Arch,
-		AgentVersion:    version.Get().Version,
-		ExternalIP:      stats.ExternalIP,
-		RegistrationKey: regKey,
+		OS:           runtime.GOOS,       // "linux", "darwin", "windows"
+		Arch:         getArch(),          // "x86_64", "arm64"
+		Hostname:     hostname,
+		AgentVersion: version.Get().Version,
 	}
 
 	reqBody, err := json.Marshal(req)

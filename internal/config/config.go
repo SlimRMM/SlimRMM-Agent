@@ -49,15 +49,14 @@ var (
 )
 
 // DefaultPaths returns the default paths for the current OS.
+// Matches Python agent: /var/lib/slimrmm for Linux and macOS
 func DefaultPaths() Paths {
 	var baseDir string
 
 	switch runtime.GOOS {
 	case "windows":
 		baseDir = filepath.Join(os.Getenv("ProgramFiles"), "SlimRMM")
-	case "darwin":
-		baseDir = "/opt/slimrmm"
-	default: // linux
+	default: // linux, darwin
 		baseDir = "/var/lib/slimrmm"
 	}
 

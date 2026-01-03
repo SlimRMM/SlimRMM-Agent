@@ -9,15 +9,15 @@
         <string>/usr/local/bin/slimrmm-agent</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Library/Application Support/SlimRMM</string>
+    <string>/var/lib/slimrmm</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Library/Application Support/SlimRMM/log/agent.log</string>
+    <string>/var/lib/slimrmm/log/agent.log</string>
     <key>StandardErrorPath</key>
-    <string>/Library/Application Support/SlimRMM/log/agent.log</string>
+    <string>/var/lib/slimrmm/log/agent.log</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
 </dict>
