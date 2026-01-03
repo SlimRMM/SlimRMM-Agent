@@ -19,11 +19,16 @@ restore_backup() {
         echo "Restoring configuration from upgrade backup..."
         mkdir -p "$CONFIG_DIR"
 
-        # Restore config file
-        if [ -f "$BACKUP_DIR/.slimrmm_config.json" ]; then
-            cp -p "$BACKUP_DIR/.slimrmm_config.json" "$CONFIG_FILE"
-            echo "Configuration restored"
+        # Check if config file exists in backup - this is required
+        if [ ! -f "$BACKUP_DIR/.slimrmm_config.json" ]; then
+            echo "Warning: No configuration found in backup (possibly lost during upgrade from old version)"
+            rm -rf "$BACKUP_DIR"
+            return 1
         fi
+
+        # Restore config file
+        cp -p "$BACKUP_DIR/.slimrmm_config.json" "$CONFIG_FILE"
+        echo "Configuration restored"
 
         # Restore certificates
         for cert_file in ca.crt client.crt client.key; do
