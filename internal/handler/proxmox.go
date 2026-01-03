@@ -21,6 +21,8 @@ func (h *Handler) registerProxmoxHandlers() {
 	h.handlers["proxmox_resources"] = h.handleProxmoxResources
 	h.handlers["proxmox_action"] = h.handleProxmoxAction
 	h.handlers["proxmox_resource"] = h.handleProxmoxResource
+	h.handlers["proxmox_token_status"] = h.handleProxmoxTokenStatus
+	h.handlers["proxmox_set_token"] = h.handleProxmoxSetToken
 }
 
 // getProxmoxClient returns the shared Proxmox client, creating it if needed.
@@ -154,4 +156,62 @@ func CloseProxmoxClient() {
 		proxmoxClient.Close()
 		proxmoxClient = nil
 	}
+}
+
+// handleProxmoxTokenStatus checks if a Proxmox API token is configured.
+func (h *Handler) handleProxmoxTokenStatus(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if !proxmox.IsProxmoxHost() {
+		return map[string]interface{}{
+			"is_proxmox":     false,
+			"token_configured": false,
+		}, nil
+	}
+
+	hasToken := proxmox.HasToken(h.paths.BaseDir)
+	return map[string]interface{}{
+		"is_proxmox":       true,
+		"token_configured": hasToken,
+	}, nil
+}
+
+// proxmoxSetTokenRequest is the request to set a Proxmox API token.
+type proxmoxSetTokenRequest struct {
+	TokenID string `json:"token_id"` // e.g., "root@pam!slimrmm"
+	Secret  string `json:"secret"`   // The token secret
+}
+
+// handleProxmoxSetToken saves a Proxmox API token provided by the user.
+func (h *Handler) handleProxmoxSetToken(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if !proxmox.IsProxmoxHost() {
+		return nil, fmt.Errorf("not a Proxmox host")
+	}
+
+	var req proxmoxSetTokenRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if req.TokenID == "" || req.Secret == "" {
+		return nil, fmt.Errorf("token_id and secret are required")
+	}
+
+	// Save the token
+	if err := proxmox.SaveToken(h.paths.BaseDir, req.TokenID, req.Secret); err != nil {
+		return nil, fmt.Errorf("failed to save token: %w", err)
+	}
+
+	// Clear cached client so it will be recreated with new token
+	proxmoxClientMu.Lock()
+	if proxmoxClient != nil {
+		proxmoxClient.Close()
+		proxmoxClient = nil
+	}
+	proxmoxClientMu.Unlock()
+
+	h.logger.Info("proxmox API token saved", "token_id", req.TokenID)
+
+	return map[string]interface{}{
+		"success": true,
+		"message": "Token saved successfully",
+	}, nil
 }

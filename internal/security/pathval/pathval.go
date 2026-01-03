@@ -18,33 +18,37 @@ var (
 )
 
 // AllowedPaths contains paths that users can access.
+// Using "/" as base allows access to most paths, with ForbiddenPaths blocking sensitive areas.
 var AllowedPaths = []string{
-	"/home",
-	"/Users",
-	"/tmp",
-	"/var/log",
-	"/var/tmp",
-	"/opt",
+	"/",
 }
 
 // AllowedPathsWindows contains allowed paths for Windows.
+// Allow common drive letters, with ForbiddenPathsWindows blocking sensitive areas.
 var AllowedPathsWindows = []string{
-	"C:\\Users",
-	"C:\\Temp",
-	"C:\\Windows\\Temp",
-	"C:\\Program Files",
-	"C:\\Program Files (x86)",
+	"C:\\",
+	"D:\\",
+	"E:\\",
+	"F:\\",
 }
 
 // ForbiddenPaths contains paths that should never be accessed.
 var ForbiddenPaths = []string{
+	// Sensitive authentication files
 	"/etc/shadow",
-	"/etc/passwd",
+	"/etc/gshadow",
 	"/etc/sudoers",
-	"/etc/ssh",
+	"/etc/sudoers.d",
+	// SSH keys
+	"/etc/ssh/ssh_host",
 	"/root/.ssh",
-	"/var/lib/slimrmm", // Agent's own directory
+	// Agent's own directories
+	"/var/lib/slimrmm",
 	"/var/lib/rmm",
+	"/opt/slimrmm/agent/.proxmox_token.json",
+	// Kubernetes secrets
+	"/var/run/secrets",
+	"/run/secrets",
 }
 
 // ForbiddenPathsWindows contains forbidden paths for Windows.

@@ -26,12 +26,16 @@ const (
 	localAPIURL       = "https://127.0.0.1:8006/api2/json"
 )
 
-// NewClient creates a new Proxmox client with automatic token management.
+// ErrTokenNotConfigured is returned when no API token is available.
+var ErrTokenNotConfigured = fmt.Errorf("proxmox API token not configured")
+
+// NewClient creates a new Proxmox client with the configured token.
+// Returns ErrTokenNotConfigured if no token has been set up.
 func NewClient(ctx context.Context, configDir string) (*Client, error) {
-	// Get or create API token
-	token, err := GetOrCreateToken(ctx, configDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get API token: %w", err)
+	// Load existing token (don't auto-create)
+	token := LoadToken(configDir)
+	if token == nil {
+		return nil, ErrTokenNotConfigured
 	}
 
 	// Create HTTP client with TLS configuration

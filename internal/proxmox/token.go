@@ -281,3 +281,54 @@ func ClearCachedToken() {
 	defer tokenMu.Unlock()
 	cachedToken = nil
 }
+
+// HasToken checks if a token configuration file exists.
+func HasToken(configDir string) bool {
+	tokenPath := filepath.Join(configDir, tokenConfigFile)
+	_, err := os.Stat(tokenPath)
+	return err == nil
+}
+
+// SaveToken saves a token provided by the user.
+func SaveToken(configDir, tokenID, secret string) error {
+	tokenMu.Lock()
+	defer tokenMu.Unlock()
+
+	token := &TokenConfig{
+		TokenID:   tokenID,
+		Secret:    secret,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	tokenPath := filepath.Join(configDir, tokenConfigFile)
+	if err := saveTokenToFile(tokenPath, token); err != nil {
+		return err
+	}
+
+	// Update cache
+	cachedToken = token
+	return nil
+}
+
+// LoadToken loads the token from file without creating one.
+// Returns nil if no token exists.
+func LoadToken(configDir string) *TokenConfig {
+	tokenMu.RLock()
+	if cachedToken != nil {
+		tokenMu.RUnlock()
+		return cachedToken
+	}
+	tokenMu.RUnlock()
+
+	tokenPath := filepath.Join(configDir, tokenConfigFile)
+	token, err := loadTokenFromFile(tokenPath)
+	if err != nil {
+		return nil
+	}
+
+	tokenMu.Lock()
+	cachedToken = token
+	tokenMu.Unlock()
+
+	return token
+}
