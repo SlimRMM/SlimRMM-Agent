@@ -6,12 +6,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/security/archive"
+	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
@@ -59,6 +61,12 @@ func (h *Handler) registerHandlers() {
 	h.handlers["restart"] = h.handleRestart
 	h.handlers["shutdown"] = h.handleShutdown
 	h.handlers["cancel_shutdown"] = h.handleCancelShutdown
+
+	// Service management
+	h.handlers["list_services"] = h.handleListServices
+	h.handlers["start_service"] = h.handleStartService
+	h.handlers["stop_service"] = h.handleStopService
+	h.handlers["restart_service"] = h.handleRestartService
 
 	// Terminal - Python compatible names
 	h.handlers["terminal"] = h.handleStartTerminal       // Python: terminal
@@ -270,8 +278,12 @@ func (h *Handler) handleChown(ctx context.Context, data json.RawMessage) (interf
 }
 
 type zipEntryRequest struct {
+	// Agent format
 	SourcePath string `json:"source_path"`
 	OutputPath string `json:"output_path,omitempty"`
+	// Frontend format
+	Path   string `json:"path"`
+	Output string `json:"output,omitempty"`
 }
 
 func (h *Handler) handleZipEntry(ctx context.Context, data json.RawMessage) (interface{}, error) {
@@ -280,21 +292,33 @@ func (h *Handler) handleZipEntry(ctx context.Context, data json.RawMessage) (int
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	// Support both frontend (path/output) and agent (source_path/output_path) formats
+	sourcePath := req.SourcePath
+	if sourcePath == "" {
+		sourcePath = req.Path
+	}
 	outputPath := req.OutputPath
 	if outputPath == "" {
-		outputPath = req.SourcePath + ".zip"
+		outputPath = req.Output
+	}
+	if outputPath == "" {
+		outputPath = sourcePath + ".zip"
 	}
 
-	if err := archive.CreateZip(req.SourcePath, outputPath); err != nil {
+	if err := archive.CreateZip(sourcePath, outputPath); err != nil {
 		return nil, err
 	}
 
-	return map[string]string{"status": "zipped", "source": req.SourcePath, "output": outputPath}, nil
+	return map[string]string{"status": "zipped", "source": sourcePath, "output": outputPath}, nil
 }
 
 type unzipEntryRequest struct {
+	// Agent format
 	SourcePath string `json:"source_path"`
 	OutputPath string `json:"output_path,omitempty"`
+	// Frontend format
+	Path   string `json:"path"`
+	Output string `json:"output,omitempty"`
 }
 
 func (h *Handler) handleUnzipEntry(ctx context.Context, data json.RawMessage) (interface{}, error) {
@@ -303,21 +327,29 @@ func (h *Handler) handleUnzipEntry(ctx context.Context, data json.RawMessage) (i
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	// Support both frontend (path/output) and agent (source_path/output_path) formats
+	sourcePath := req.SourcePath
+	if sourcePath == "" {
+		sourcePath = req.Path
+	}
 	outputPath := req.OutputPath
 	if outputPath == "" {
+		outputPath = req.Output
+	}
+	if outputPath == "" {
 		// Remove .zip extension for output directory
-		outputPath = req.SourcePath
+		outputPath = sourcePath
 		if len(outputPath) > 4 && outputPath[len(outputPath)-4:] == ".zip" {
 			outputPath = outputPath[:len(outputPath)-4]
 		}
 	}
 
 	limits := archive.DefaultLimits()
-	if err := archive.ExtractZip(req.SourcePath, outputPath, limits); err != nil {
+	if err := archive.ExtractZip(sourcePath, outputPath, limits); err != nil {
 		return nil, err
 	}
 
-	return map[string]string{"status": "unzipped", "source": req.SourcePath, "output": outputPath}, nil
+	return map[string]string{"status": "unzipped", "source": sourcePath, "output": outputPath}, nil
 }
 
 // Software handlers
@@ -390,9 +422,15 @@ func (h *Handler) handleStartUpload(ctx context.Context, data json.RawMessage) (
 }
 
 type uploadChunkRequest struct {
+	// Session-based upload (agent format)
 	SessionID  string `json:"session_id"`
 	ChunkIndex int    `json:"chunk_index"`
-	Data       string `json:"data"` // Base64 encoded
+	// Simple upload (frontend format)
+	Path   string `json:"path"`
+	Offset int64  `json:"offset"`
+	IsLast bool   `json:"is_last"`
+	// Common field
+	Data string `json:"data"` // Base64 encoded
 }
 
 func (h *Handler) handleUploadChunk(ctx context.Context, data json.RawMessage) (interface{}, error) {
@@ -406,11 +444,48 @@ func (h *Handler) handleUploadChunk(ctx context.Context, data json.RawMessage) (
 		return nil, fmt.Errorf("decoding chunk data: %w", err)
 	}
 
-	if err := h.uploadManager.UploadChunk(req.SessionID, req.ChunkIndex, chunkData); err != nil {
-		return nil, err
+	// Check if using session-based upload or simple upload
+	if req.SessionID != "" {
+		// Session-based upload (agent format)
+		if err := h.uploadManager.UploadChunk(req.SessionID, req.ChunkIndex, chunkData); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"status": "received", "chunk_index": req.ChunkIndex}, nil
 	}
 
-	return map[string]interface{}{"status": "received", "chunk_index": req.ChunkIndex}, nil
+	// Simple upload (frontend format) - write directly to file
+	if req.Path == "" {
+		return nil, fmt.Errorf("path or session_id required")
+	}
+
+	var file *os.File
+	if req.Offset == 0 {
+		// First chunk - create new file
+		file, err = os.Create(req.Path)
+	} else {
+		// Subsequent chunk - open for append
+		file, err = os.OpenFile(req.Path, os.O_WRONLY|os.O_APPEND, 0644)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("opening file: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := file.Write(chunkData); err != nil {
+		return nil, fmt.Errorf("writing chunk: %w", err)
+	}
+
+	response := map[string]interface{}{
+		"status": "received",
+		"offset": req.Offset,
+		"path":   req.Path,
+	}
+
+	if req.IsLast {
+		response["status"] = "complete"
+	}
+
+	return response, nil
 }
 
 type finishUploadRequest struct {
@@ -894,4 +969,97 @@ func (h *Handler) handleUpdateOsquery(ctx context.Context, data json.RawMessage)
 		"status":  "installed",
 		"message": "osquery installed successfully",
 	}, nil
+}
+
+// Service management handlers
+
+// handleListServices lists all system services.
+func (h *Handler) handleListServices(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	mgr := service.New()
+	if mgr == nil {
+		return nil, fmt.Errorf("service management not supported on this platform")
+	}
+
+	services, err := mgr.List()
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"services": services,
+		"count":    len(services),
+	}, nil
+}
+
+type serviceActionRequest struct {
+	Name string `json:"name"`
+}
+
+// handleStartService starts a system service.
+func (h *Handler) handleStartService(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req serviceActionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if req.Name == "" {
+		return nil, fmt.Errorf("service name is required")
+	}
+
+	mgr := service.New()
+	if mgr == nil {
+		return nil, fmt.Errorf("service management not supported on this platform")
+	}
+
+	if err := mgr.Start(req.Name); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"status": "started", "service": req.Name}, nil
+}
+
+// handleStopService stops a system service.
+func (h *Handler) handleStopService(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req serviceActionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if req.Name == "" {
+		return nil, fmt.Errorf("service name is required")
+	}
+
+	mgr := service.New()
+	if mgr == nil {
+		return nil, fmt.Errorf("service management not supported on this platform")
+	}
+
+	if err := mgr.Stop(req.Name); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"status": "stopped", "service": req.Name}, nil
+}
+
+// handleRestartService restarts a system service.
+func (h *Handler) handleRestartService(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req serviceActionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if req.Name == "" {
+		return nil, fmt.Errorf("service name is required")
+	}
+
+	mgr := service.New()
+	if mgr == nil {
+		return nil, fmt.Errorf("service management not supported on this platform")
+	}
+
+	if err := mgr.Restart(req.Name); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"status": "restarted", "service": req.Name}, nil
 }

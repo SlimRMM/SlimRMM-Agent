@@ -159,3 +159,75 @@ func (m *SystemdManager) IsInstalled(name string) bool {
 	_, err := os.Stat(unitPath)
 	return err == nil
 }
+
+// Restart restarts a systemd service.
+func (m *SystemdManager) Restart(name string) error {
+	cmd := exec.Command("systemctl", "restart", name)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("restarting service: %s", string(output))
+	}
+	return nil
+}
+
+// List lists all systemd services.
+func (m *SystemdManager) List() ([]ServiceInfo, error) {
+	// List all unit files
+	cmd := exec.Command("systemctl", "list-units", "--type=service", "--all", "--no-pager", "--no-legend")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("listing services: %w", err)
+	}
+
+	var services []ServiceInfo
+	lines := strings.Split(string(output), "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Parse: UNIT LOAD ACTIVE SUB DESCRIPTION
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+
+		name := strings.TrimSuffix(fields[0], ".service")
+		active := fields[2]
+		// Description is the rest of the fields
+		description := ""
+		if len(fields) > 4 {
+			description = strings.Join(fields[4:], " ")
+		}
+
+		// Get enabled status
+		enabledCmd := exec.Command("systemctl", "is-enabled", name)
+		enabledOutput, _ := enabledCmd.Output()
+		enabledStatus := strings.TrimSpace(string(enabledOutput))
+		enabled := enabledStatus == "enabled"
+
+		startType := "manual"
+		if enabled {
+			startType = "auto"
+		} else if enabledStatus == "disabled" {
+			startType = "disabled"
+		}
+
+		status := StatusStopped
+		if active == "active" {
+			status = StatusRunning
+		}
+
+		services = append(services, ServiceInfo{
+			Name:        name,
+			DisplayName: name,
+			Description: description,
+			Status:      status,
+			Enabled:     enabled,
+			StartType:   startType,
+		})
+	}
+
+	return services, nil
+}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -298,33 +299,75 @@ func getLinuxUpdates(ctx context.Context) (*UpdateList, error) {
 }
 
 func getAptUpdates(ctx context.Context) (*UpdateList, error) {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
-
-	// Update package list first
-	exec.CommandContext(ctx, "apt", "update", "-qq").Run()
-
-	cmd := exec.CommandContext(ctx, "apt", "list", "--upgradable")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
 
 	updates := &UpdateList{
 		Updates: make([]Update, 0),
 		Source:  "apt",
 	}
 
-	// Parse output: package/source version [arch]
-	re := regexp.MustCompile(`^([^/]+)/\S+\s+(\S+)\s+`)
+	// Try apt-get upgrade simulation first (more reliable)
+	cmd := exec.CommandContext(ctx, "apt-get", "-s", "upgrade")
+	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C")
+	output, err := cmd.Output()
+	if err == nil {
+		// Parse output: Inst package (version ...)
+		instRe := regexp.MustCompile(`^Inst (\S+) \[([^\]]*)\] \((\S+)`)
+		scanner := bufio.NewScanner(bytes.NewReader(output))
+		for scanner.Scan() {
+			line := scanner.Text()
+			matches := instRe.FindStringSubmatch(line)
+			if len(matches) >= 4 {
+				update := Update{
+					Name:       matches[1],
+					CurrentVer: matches[2],
+					Version:    matches[3],
+					Source:     "apt",
+				}
+
+				// Categorize
+				if strings.Contains(strings.ToLower(line), "security") {
+					update.Category = "security"
+				} else if strings.HasPrefix(matches[1], "linux-") {
+					update.Category = "kernel"
+				} else {
+					update.Category = "standard"
+				}
+
+				updates.Updates = append(updates.Updates, update)
+			}
+		}
+
+		if len(updates.Updates) > 0 {
+			updates.Count = len(updates.Updates)
+			return updates, nil
+		}
+	}
+
+	// Fallback to apt list --upgradable
+	cmd = exec.CommandContext(ctx, "apt", "list", "--upgradable", "-qq")
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		// Try one more fallback
+		cmd = exec.CommandContext(ctx, "apt-get", "-s", "dist-upgrade")
+		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C")
+		output, _ = cmd.Output()
+	}
+
+	// Parse output: package/source version arch [upgradable from: old_version]
+	// Example: curl/jammy-updates,jammy-security 7.81.0-1ubuntu1.16 amd64 [upgradable from: 7.81.0-1ubuntu1.15]
+	listRe := regexp.MustCompile(`^([^/\s]+)/\S+\s+(\S+)`)
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "Listing") {
+		// Skip header lines
+		if strings.HasPrefix(line, "Listing") || strings.HasPrefix(line, "WARNING") || line == "" {
 			continue
 		}
 
-		matches := re.FindStringSubmatch(line)
+		matches := listRe.FindStringSubmatch(line)
 		if len(matches) >= 3 {
 			update := Update{
 				Name:    matches[1],
@@ -332,10 +375,18 @@ func getAptUpdates(ctx context.Context) (*UpdateList, error) {
 				Source:  "apt",
 			}
 
+			// Extract current version if present
+			if idx := strings.Index(line, "upgradable from:"); idx > 0 {
+				rest := line[idx+16:]
+				rest = strings.TrimPrefix(rest, " ")
+				rest = strings.TrimSuffix(rest, "]")
+				update.CurrentVer = rest
+			}
+
 			// Categorize
 			if strings.Contains(strings.ToLower(line), "security") {
 				update.Category = "security"
-			} else if strings.Contains(matches[1], "linux-") {
+			} else if strings.HasPrefix(matches[1], "linux-") {
 				update.Category = "kernel"
 			} else {
 				update.Category = "standard"

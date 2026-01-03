@@ -15,14 +15,26 @@ const (
 	StatusUnknown ServiceStatus = "unknown"
 )
 
+// ServiceInfo contains information about a system service.
+type ServiceInfo struct {
+	Name        string        `json:"name"`
+	DisplayName string        `json:"display_name,omitempty"`
+	Description string        `json:"description,omitempty"`
+	Status      ServiceStatus `json:"status"`
+	Enabled     bool          `json:"enabled"`
+	StartType   string        `json:"start_type,omitempty"` // auto, manual, disabled
+}
+
 // Manager provides service management operations.
 type Manager interface {
 	Install(name, displayName, description, execPath string) error
 	Uninstall(name string) error
 	Start(name string) error
 	Stop(name string) error
+	Restart(name string) error
 	Status(name string) (ServiceStatus, error)
 	IsInstalled(name string) bool
+	List() ([]ServiceInfo, error)
 }
 
 // New creates a new service manager for the current OS.

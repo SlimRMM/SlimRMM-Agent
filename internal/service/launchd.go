@@ -163,3 +163,76 @@ func (m *LaunchdManager) IsInstalled(name string) bool {
 	_, err := os.Stat(plistPath)
 	return err == nil
 }
+
+// Restart restarts a launchd service.
+func (m *LaunchdManager) Restart(name string) error {
+	m.Stop(name)
+	return m.Start(name)
+}
+
+// List lists all launchd services.
+func (m *LaunchdManager) List() ([]ServiceInfo, error) {
+	// List all services
+	cmd := exec.Command("launchctl", "list")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("listing services: %w", err)
+	}
+
+	var services []ServiceInfo
+	lines := strings.Split(string(output), "\n")
+
+	for i, line := range lines {
+		// Skip header line
+		if i == 0 {
+			continue
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Parse: PID STATUS LABEL
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+
+		pid := fields[0]
+		name := fields[2]
+
+		// Skip Apple system services for cleaner list
+		if strings.HasPrefix(name, "com.apple.") {
+			continue
+		}
+
+		status := StatusStopped
+		if pid != "-" {
+			status = StatusRunning
+		}
+
+		// Check if there's a plist file in LaunchDaemons or LaunchAgents
+		enabled := false
+		if _, err := os.Stat(filepath.Join("/Library/LaunchDaemons", name+".plist")); err == nil {
+			enabled = true
+		} else if _, err := os.Stat(filepath.Join("/Library/LaunchAgents", name+".plist")); err == nil {
+			enabled = true
+		}
+
+		startType := "manual"
+		if enabled {
+			startType = "auto"
+		}
+
+		services = append(services, ServiceInfo{
+			Name:        name,
+			DisplayName: name,
+			Status:      status,
+			Enabled:     enabled,
+			StartType:   startType,
+		})
+	}
+
+	return services, nil
+}

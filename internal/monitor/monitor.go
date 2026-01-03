@@ -80,14 +80,76 @@ type NetStats struct {
 
 // Monitor provides system monitoring functionality.
 type Monitor struct {
-	externalIP     string
-	externalIPTime time.Time
-	mu             sync.RWMutex
+	externalIP      string
+	externalIPTime  time.Time
+	lastCPUPercent  float64
+	lastCPUTime     time.Time
+	cpuInitialized  bool
+	mu              sync.RWMutex
 }
 
 // New creates a new Monitor.
 func New() *Monitor {
-	return &Monitor{}
+	m := &Monitor{}
+	// Initialize CPU sampling in background
+	go m.initCPUSampling()
+	return m
+}
+
+// initCPUSampling initializes CPU sampling by taking the first measurement.
+// This is needed because gopsutil returns 0 on the first call without a duration.
+func (m *Monitor) initCPUSampling() {
+	// Take an initial sample with a short duration to prime the CPU stats
+	cpuPercent, err := cpu.Percent(200*time.Millisecond, false)
+	if err == nil && len(cpuPercent) > 0 {
+		m.mu.Lock()
+		m.lastCPUPercent = cpuPercent[0]
+		m.lastCPUTime = time.Now()
+		m.cpuInitialized = true
+		m.mu.Unlock()
+	}
+}
+
+// getCPUPercent returns the current CPU percentage with proper sampling.
+// On macOS and some systems, cpu.Percent with 0 duration returns 0 on first call.
+// This method handles that by maintaining state across calls.
+func (m *Monitor) getCPUPercent(ctx context.Context) float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// If not initialized yet, try to get a quick sample
+	if !m.cpuInitialized {
+		cpuPercent, err := cpu.PercentWithContext(ctx, 100*time.Millisecond, false)
+		if err == nil && len(cpuPercent) > 0 {
+			m.lastCPUPercent = cpuPercent[0]
+			m.lastCPUTime = time.Now()
+			m.cpuInitialized = true
+			return m.lastCPUPercent
+		}
+		return 0
+	}
+
+	// If last sample is recent (within 5 seconds), use it
+	if time.Since(m.lastCPUTime) < 5*time.Second {
+		return m.lastCPUPercent
+	}
+
+	// Get new sample without blocking (0 duration means compare since last call)
+	cpuPercent, err := cpu.PercentWithContext(ctx, 0, false)
+	if err == nil && len(cpuPercent) > 0 && cpuPercent[0] > 0 {
+		m.lastCPUPercent = cpuPercent[0]
+		m.lastCPUTime = time.Now()
+		return m.lastCPUPercent
+	}
+
+	// If 0 was returned (common on macOS first call), take a blocking sample
+	cpuPercent, err = cpu.PercentWithContext(ctx, 100*time.Millisecond, false)
+	if err == nil && len(cpuPercent) > 0 {
+		m.lastCPUPercent = cpuPercent[0]
+		m.lastCPUTime = time.Now()
+	}
+
+	return m.lastCPUPercent
 }
 
 // GetStats collects and returns current system statistics.
@@ -114,10 +176,8 @@ func (m *Monitor) GetStats(ctx context.Context) (*Stats, error) {
 		stats.CPU.Cores = runtime.NumCPU()
 	}
 
-	cpuPercent, err := cpu.PercentWithContext(ctx, 0, false)
-	if err == nil && len(cpuPercent) > 0 {
-		stats.CPU.UsagePercent = cpuPercent[0]
-	}
+	// Get CPU percentage with proper sampling
+	stats.CPU.UsagePercent = m.getCPUPercent(ctx)
 
 	// Memory info
 	memInfo, err := mem.VirtualMemoryWithContext(ctx)
