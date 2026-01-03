@@ -228,45 +228,113 @@ jobs:
       - name: Build PKG
         run: |
           VERSION=${GITHUB_REF_NAME#v}
+          INSTALL_DIR="/var/lib/slimrmm"
+          LAUNCHD_LABEL="io.slimrmm.agent"
 
-          # Match Python agent: use /var/lib/slimrmm for config/certs
-          # Binary goes to /usr/local/bin (via postinstall)
-          mkdir -p pkg/var/lib/slimrmm/{certs,log}
+          # Create PKG structure - matches Python agent exactly
+          mkdir -p pkg${INSTALL_DIR}
           mkdir -p pkg/Library/LaunchDaemons
-          mkdir -p pkg/usr/local/bin
-
-          cp slimrmm-agent-darwin-arm64 pkg/usr/local/bin/slimrmm-agent
-          chmod +x pkg/usr/local/bin/slimrmm-agent
-
-          cp build/macos/io.slimrmm.agent.plist pkg/Library/LaunchDaemons/
-
-          # Create postinstall script
           mkdir -p scripts
-          cat > scripts/postinstall << 'SCRIPT'
-          #!/bin/bash
-          # Ensure directories exist with correct permissions
-          mkdir -p /var/lib/slimrmm/{certs,log}
-          chmod 755 /var/lib/slimrmm
-          chmod 700 /var/lib/slimrmm/certs
-          chmod 755 /var/lib/slimrmm/log
-          # Load the service
-          launchctl load /Library/LaunchDaemons/io.slimrmm.agent.plist 2>/dev/null || true
-          exit 0
-          SCRIPT
-          chmod +x scripts/postinstall
 
-          cat > scripts/preinstall << 'SCRIPT'
+          # Copy binary to /var/lib/slimrmm/slimrmm-agent (like Python)
+          cp slimrmm-agent-darwin-arm64 pkg${INSTALL_DIR}/slimrmm-agent
+          chmod 755 pkg${INSTALL_DIR}/slimrmm-agent
+
+          # Create LaunchDaemon plist (inline, matching Python)
+          cat > pkg/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>Label</key>
+              <string>${LAUNCHD_LABEL}</string>
+              <key>ProgramArguments</key>
+              <array>
+                  <string>${INSTALL_DIR}/slimrmm-agent</string>
+              </array>
+              <key>RunAtLoad</key>
+              <true/>
+              <key>KeepAlive</key>
+              <dict>
+                  <key>SuccessfulExit</key>
+                  <false/>
+              </dict>
+              <key>WorkingDirectory</key>
+              <string>${INSTALL_DIR}</string>
+              <key>StandardOutPath</key>
+              <string>${INSTALL_DIR}/log/stdout.log</string>
+              <key>StandardErrorPath</key>
+              <string>${INSTALL_DIR}/log/stderr.log</string>
+              <key>EnvironmentVariables</key>
+              <dict>
+                  <key>PATH</key>
+                  <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+              </dict>
+          </dict>
+          </plist>
+          PLIST
+
+          # Preinstall script - creates directories BEFORE pkg contents are installed
+          cat > scripts/preinstall << 'PREINSTALL'
           #!/bin/bash
-          launchctl unload /Library/LaunchDaemons/io.slimrmm.agent.plist 2>/dev/null || true
+          INSTALL_DIR="/var/lib/slimrmm"
+          LAUNCHD_LABEL="io.slimrmm.agent"
+
+          # Stop existing service
+          if launchctl list | grep -q "${LAUNCHD_LABEL}"; then
+              launchctl bootout system/${LAUNCHD_LABEL} 2>/dev/null || true
+          fi
+
+          # Remove old plist
+          rm -f /Library/LaunchDaemons/${LAUNCHD_LABEL}.plist
+
+          # Preserve config if exists
+          if [ -f "${INSTALL_DIR}/.slimrmm_config.json" ]; then
+              cp "${INSTALL_DIR}/.slimrmm_config.json" /tmp/.slimrmm_config.json.backup
+          fi
+
+          # Create fresh directories
+          mkdir -p "${INSTALL_DIR}/log"
+          mkdir -p "${INSTALL_DIR}/certs"
+
+          # Restore config
+          if [ -f /tmp/.slimrmm_config.json.backup ]; then
+              mv /tmp/.slimrmm_config.json.backup "${INSTALL_DIR}/.slimrmm_config.json"
+          fi
+
           exit 0
-          SCRIPT
+          PREINSTALL
           chmod +x scripts/preinstall
 
+          # Postinstall script - set permissions and load service
+          cat > scripts/postinstall << 'POSTINSTALL'
+          #!/bin/bash
+          INSTALL_DIR="/var/lib/slimrmm"
+          LAUNCHD_LABEL="io.slimrmm.agent"
+
+          # Set permissions
+          chmod 755 "${INSTALL_DIR}/slimrmm-agent"
+          chmod 700 "${INSTALL_DIR}/certs"
+          chmod 755 "${INSTALL_DIR}/log"
+
+          # Create symlink for convenience
+          ln -sf "${INSTALL_DIR}/slimrmm-agent" /usr/local/bin/slimrmm-agent 2>/dev/null || true
+
+          echo ""
+          echo "SlimRMM Agent installed successfully"
+          echo "Configure with: slimrmm-agent --install --server https://your-server.com"
+          echo ""
+
+          exit 0
+          POSTINSTALL
+          chmod +x scripts/postinstall
+
+          # Build PKG
           pkgbuild --root pkg \
-            --identifier io.slimrmm.agent \
+            --scripts scripts \
+            --identifier ${LAUNCHD_LABEL} \
             --version ${VERSION} \
             --install-location / \
-            --scripts scripts \
             slimrmm-agent_${VERSION}_darwin_arm64.pkg
 
       - name: Upload PKG to Release

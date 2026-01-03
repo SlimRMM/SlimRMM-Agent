@@ -6,19 +6,25 @@
     <string>io.slimrmm.agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/slimrmm-agent</string>
+        <string>/var/lib/slimrmm/slimrmm-agent</string>
     </array>
-    <key>WorkingDirectory</key>
-    <string>/var/lib/slimrmm</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/var/lib/slimrmm</string>
     <key>StandardOutPath</key>
-    <string>/var/lib/slimrmm/log/agent.log</string>
+    <string>/var/lib/slimrmm/log/stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/var/lib/slimrmm/log/agent.log</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
+    <string>/var/lib/slimrmm/log/stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
 </dict>
 </plist>
