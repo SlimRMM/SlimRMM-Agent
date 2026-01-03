@@ -88,6 +88,9 @@ func (h *Handler) registerHandlers() {
 
 	// Proxmox handlers (only active on Proxmox hosts)
 	h.registerProxmoxHandlers()
+
+	// Remote desktop handlers
+	h.registerRemoteDesktopHandlers()
 }
 
 // Command handlers
