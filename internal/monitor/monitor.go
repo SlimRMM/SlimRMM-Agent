@@ -138,8 +138,16 @@ func (m *Monitor) GetStats(ctx context.Context) (*Stats, error) {
 	partitions, err := disk.PartitionsWithContext(ctx, false)
 	if err == nil {
 		for _, p := range partitions {
+			// Skip virtual/pseudo filesystems
+			if isVirtualFilesystem(p.Fstype, p.Mountpoint) {
+				continue
+			}
 			usage, err := disk.UsageWithContext(ctx, p.Mountpoint)
 			if err != nil {
+				continue
+			}
+			// Skip filesystems with no size (virtual fs)
+			if usage.Total == 0 {
 				continue
 			}
 			stats.Disk = append(stats.Disk, DiskStats{
@@ -260,4 +268,58 @@ func FormatBytes(bytes uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// isVirtualFilesystem returns true if the filesystem is a pseudo/virtual filesystem
+// that should not be reported as a disk.
+func isVirtualFilesystem(fstype, mountpoint string) bool {
+	// Virtual/pseudo filesystem types to exclude
+	virtualFsTypes := map[string]bool{
+		"sysfs":       true,
+		"proc":        true,
+		"devpts":      true,
+		"securityfs":  true,
+		"cgroup":      true,
+		"cgroup2":     true,
+		"pstore":      true,
+		"debugfs":     true,
+		"hugetlbfs":   true,
+		"mqueue":      true,
+		"configfs":    true,
+		"fusectl":     true,
+		"binfmt_misc": true,
+		"autofs":      true,
+		"rpc_pipefs":  true,
+		"sunrpc":      true,
+		"nfsd":        true,
+		"tracefs":     true,
+		"efivarfs":    true,
+		"bpf":         true,
+		"fuse.gvfsd-fuse": true,
+		"fuse.portal": true,
+		"overlay":     true,
+		"nsfs":        true,
+	}
+
+	if virtualFsTypes[fstype] {
+		return true
+	}
+
+	// Exclude certain mount point prefixes
+	virtualMountPrefixes := []string{
+		"/sys",
+		"/proc",
+		"/dev/pts",
+		"/run/user",
+		"/run/credentials",
+		"/run/lock",
+	}
+
+	for _, prefix := range virtualMountPrefixes {
+		if strings.HasPrefix(mountpoint, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
