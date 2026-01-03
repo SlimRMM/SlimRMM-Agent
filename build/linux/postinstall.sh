@@ -1,83 +1,111 @@
 #!/bin/bash
 set -e
 
-# SlimRMM Agent Post-Installation Script
-# Installs as systemd service and auto-registers if SLIMRMM_SERVER is set
+# SlimRMM Agent Post-Installation Script for Linux
+# This script runs after the package manager installs the binary
+#
+# The installer only places files - configuration is done separately via:
+#   sudo slimrmm-agent install -s https://server.com -k TOKEN
+#
 # Arguments:
 #   Debian: $1 = "configure" (fresh install or upgrade)
 #   RPM: $1 = number of packages (1 = fresh install, 2+ = upgrade)
 
 CONFIG_DIR="/var/lib/slimrmm"
-CONFIG_FILE="$CONFIG_DIR/.slimrmm_config.json"
+CONFIG_FILE="${CONFIG_DIR}/.slimrmm_config.json"
 BACKUP_DIR="/tmp/slimrmm-upgrade-backup"
+BINARY="/usr/local/bin/slimrmm-agent"
 
 echo "Installing SlimRMM Agent..."
 
-# Restore backed up configuration from upgrade
+# Restore configuration from upgrade backup if available
 restore_backup() {
-    if [ -d "$BACKUP_DIR" ]; then
+    if [ -d "${BACKUP_DIR}" ] && [ -f "${BACKUP_DIR}/.slimrmm_config.json" ]; then
         echo "Restoring configuration from upgrade backup..."
-        mkdir -p "$CONFIG_DIR"
-
-        # Check if config file exists in backup - this is required
-        if [ ! -f "$BACKUP_DIR/.slimrmm_config.json" ]; then
-            echo "Warning: No configuration found in backup (possibly lost during upgrade from old version)"
-            rm -rf "$BACKUP_DIR"
-            return 1
-        fi
+        mkdir -p "${CONFIG_DIR}"
 
         # Restore config file
-        cp -p "$BACKUP_DIR/.slimrmm_config.json" "$CONFIG_FILE"
-        echo "Configuration restored"
+        cp -p "${BACKUP_DIR}/.slimrmm_config.json" "${CONFIG_FILE}"
 
         # Restore certificates
         for cert_file in ca.crt client.crt client.key; do
-            if [ -f "$BACKUP_DIR/$cert_file" ]; then
-                cp -p "$BACKUP_DIR/$cert_file" "$CONFIG_DIR/"
+            if [ -f "${BACKUP_DIR}/${cert_file}" ]; then
+                cp -p "${BACKUP_DIR}/${cert_file}" "${CONFIG_DIR}/"
             fi
         done
 
         # Restore Proxmox token
-        if [ -f "$BACKUP_DIR/.proxmox_token.json" ]; then
-            cp -p "$BACKUP_DIR/.proxmox_token.json" "$CONFIG_DIR/"
+        if [ -f "${BACKUP_DIR}/.proxmox_token.json" ]; then
+            cp -p "${BACKUP_DIR}/.proxmox_token.json" "${CONFIG_DIR}/"
         fi
 
         # Clean up backup
-        rm -rf "$BACKUP_DIR"
+        rm -rf "${BACKUP_DIR}"
         return 0
     fi
     return 1
 }
 
-# Check for upgrade backup first
+# Create directories
+mkdir -p "${CONFIG_DIR}"
+chmod 700 "${CONFIG_DIR}"
+
+# Check for upgrade backup
 if restore_backup; then
-    echo "Upgrade detected - starting service with existing configuration..."
-    # Install and start service with existing config
+    echo "Upgrade detected - restarting service with existing configuration..."
+
+    # Reload systemd and restart service
     systemctl daemon-reload
     systemctl enable slimrmm-agent 2>/dev/null || true
     systemctl start slimrmm-agent
-    echo "SlimRMM Agent upgraded and started successfully"
-elif [ -n "$SLIMRMM_SERVER" ]; then
-    # Fresh install with server URL provided
-    echo "Server URL provided: $SLIMRMM_SERVER"
-    export SLIMRMM_SERVER
-    /usr/local/bin/slimrmm-agent --install-service
-elif [ -f "$CONFIG_FILE" ]; then
-    # Config exists (shouldn't happen normally, but handle it)
-    echo "Existing configuration found, starting service..."
-    /usr/local/bin/slimrmm-agent --install-service
-else
-    # Fresh install without server URL
-    echo ""
-    echo "================================================"
-    echo "SlimRMM Agent installed but not configured."
-    echo ""
-    echo "To complete setup, run:"
-    echo "  SLIMRMM_SERVER=https://your-server.com slimrmm-agent --install-service"
-    echo ""
-    echo "Or with enrollment token for auto-approval:"
-    echo "  SLIMRMM_SERVER=https://your-server.com SLIMRMM_TOKEN=your-token slimrmm-agent --install-service"
-    echo "================================================"
+
+    echo "SlimRMM Agent upgraded successfully"
+    exit 0
 fi
 
-echo "SlimRMM Agent installation complete"
+# Check if already configured (upgrade without backup - old version)
+if [ -f "${CONFIG_FILE}" ]; then
+    echo "Existing configuration found, restarting service..."
+
+    # Use the new install command which handles everything
+    "${BINARY}" install 2>/dev/null || {
+        # Fallback to manual restart
+        systemctl daemon-reload
+        systemctl enable slimrmm-agent 2>/dev/null || true
+        systemctl start slimrmm-agent
+    }
+
+    echo "SlimRMM Agent upgraded successfully"
+    exit 0
+fi
+
+# Check for environment variables (silent install mode)
+if [ -n "${SLIMRMM_SERVER}" ]; then
+    echo "Server URL provided via environment: ${SLIMRMM_SERVER}"
+
+    # Build install command
+    INSTALL_CMD="${BINARY} install -s ${SLIMRMM_SERVER}"
+    if [ -n "${SLIMRMM_TOKEN}" ]; then
+        INSTALL_CMD="${INSTALL_CMD} -k ${SLIMRMM_TOKEN}"
+    fi
+
+    # Run installation
+    eval "${INSTALL_CMD}"
+
+    echo "SlimRMM Agent installed successfully"
+    exit 0
+fi
+
+# Fresh install without configuration
+echo ""
+echo "================================================"
+echo "SlimRMM Agent installed successfully!"
+echo ""
+echo "To complete setup, run:"
+echo "  sudo slimrmm-agent install -s https://your-server.com -k TOKEN"
+echo ""
+echo "Or check status:"
+echo "  slimrmm-agent status"
+echo "================================================"
+
+exit 0

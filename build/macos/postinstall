@@ -3,6 +3,9 @@ set -e
 
 # SlimRMM Agent Post-Installation Script for macOS
 # This script runs after the PKG installer copies files
+#
+# The installer only places files - configuration is done separately via:
+#   sudo slimrmm-agent install -s https://server.com -k TOKEN
 
 APP_PATH="/Applications/SlimRMM.app"
 BINARY_PATH="${APP_PATH}/Contents/MacOS/slimrmm-agent"
@@ -21,64 +24,51 @@ chmod 755 "${LOG_DIR}"
 # Create symlink for CLI access
 ln -sf "${BINARY_PATH}" /usr/local/bin/slimrmm-agent 2>/dev/null || true
 
-# Check if already configured (update scenario)
+# Check if already configured (upgrade scenario)
 if [ -f "${CONFIG_FILE}" ]; then
-    echo "Existing configuration found, updating service..."
-    "${BINARY_PATH}" --install-service
-    echo "SlimRMM Agent updated successfully"
+    echo "Existing configuration found, restarting service..."
+
+    # Stop old service if running
+    launchctl bootout system /Library/LaunchDaemons/io.slimrmm.agent.plist 2>/dev/null || \
+        launchctl unload /Library/LaunchDaemons/io.slimrmm.agent.plist 2>/dev/null || true
+
+    # Wait for service to stop
+    sleep 1
+
+    # Re-install and start service with existing config
+    "${BINARY_PATH}" install 2>/dev/null || true
+
+    echo "SlimRMM Agent upgraded successfully"
     exit 0
 fi
 
-# Check if server URL was provided via environment variable
+# Check for environment variables (silent install mode)
 if [ -n "$SLIMRMM_SERVER" ]; then
     echo "Server URL provided via environment: $SLIMRMM_SERVER"
-    export SLIMRMM_SERVER
+
+    # Build install command
+    INSTALL_CMD="${BINARY_PATH} install -s ${SLIMRMM_SERVER}"
     if [ -n "$SLIMRMM_TOKEN" ]; then
-        export SLIMRMM_TOKEN
+        INSTALL_CMD="${INSTALL_CMD} -k ${SLIMRMM_TOKEN}"
     fi
-    "${BINARY_PATH}" --install-service
+
+    # Run installation
+    eval "${INSTALL_CMD}"
+
     echo "SlimRMM Agent installed successfully"
     exit 0
 fi
 
-# Prompt user for server URL using AppleScript
-echo "Prompting user for server configuration..."
+# Fresh install without configuration
+echo ""
+echo "================================================"
+echo "SlimRMM Agent installed successfully!"
+echo ""
+echo "To complete setup, run:"
+echo "  sudo slimrmm-agent install -s https://your-server.com -k TOKEN"
+echo ""
+echo "Or check status:"
+echo "  slimrmm-agent status"
+echo "================================================"
 
-SERVER_URL=$(osascript -e 'display dialog "Enter your SlimRMM Server URL:" & return & return & "Example: https://rmm.example.com" default answer "https://" with title "SlimRMM Agent Setup" with icon note buttons {"Cancel", "Continue"} default button "Continue"' -e 'text returned of result' 2>/dev/null) || {
-    echo "User cancelled server URL input"
-    echo ""
-    echo "================================================"
-    echo "SlimRMM Agent installed but not configured."
-    echo ""
-    echo "To complete setup later, run:"
-    echo "  sudo SLIMRMM_SERVER=https://your-server.com slimrmm-agent --install-service"
-    echo "================================================"
-    exit 0
-}
-
-# Validate server URL
-if [ -z "$SERVER_URL" ] || [ "$SERVER_URL" = "https://" ]; then
-    osascript -e 'display alert "Invalid Server URL" message "Please provide a valid server URL." as critical' 2>/dev/null || true
-    echo "Invalid server URL provided"
-    exit 0
-fi
-
-# Prompt for enrollment token
-ENROLL_TOKEN=$(osascript -e 'display dialog "Enter your Enrollment Token:" & return & return & "(Optional - leave empty if not required)" default answer "" with title "SlimRMM Agent Setup" with icon note buttons {"Skip", "Continue"} default button "Continue"' -e 'text returned of result' 2>/dev/null) || {
-    ENROLL_TOKEN=""
-}
-
-# Set environment and install service
-export SLIMRMM_SERVER="$SERVER_URL"
-if [ -n "$ENROLL_TOKEN" ]; then
-    export SLIMRMM_TOKEN="$ENROLL_TOKEN"
-fi
-
-echo "Configuring agent with server: $SLIMRMM_SERVER"
-"${BINARY_PATH}" --install-service
-
-# Show success message
-osascript -e 'display notification "Agent registered and running" with title "SlimRMM Agent" subtitle "Installation Complete"' 2>/dev/null || true
-
-echo "SlimRMM Agent installation complete"
 exit 0

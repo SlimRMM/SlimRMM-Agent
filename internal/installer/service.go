@@ -259,18 +259,45 @@ func IsServiceInstalled() bool {
 }
 
 // IsServiceRunning checks if the service is currently running.
-func IsServiceRunning() bool {
+func IsServiceRunning() (bool, error) {
 	switch runtime.GOOS {
 	case "linux":
 		out, err := exec.Command("systemctl", "is-active", systemdServiceName).Output()
-		return err == nil && strings.TrimSpace(string(out)) == "active"
+		if err != nil {
+			return false, nil // Service not active is not an error
+		}
+		return strings.TrimSpace(string(out)) == "active", nil
 	case "darwin":
-		return exec.Command("launchctl", "list", launchdPlistName).Run() == nil
+		err := exec.Command("launchctl", "list", launchdPlistName).Run()
+		return err == nil, nil
 	case "windows":
 		out, err := exec.Command("sc", "query", "SlimRMMAgent").Output()
-		return err == nil && strings.Contains(string(out), "RUNNING")
+		if err != nil {
+			return false, nil
+		}
+		return strings.Contains(string(out), "RUNNING"), nil
 	default:
-		return false
+		return false, fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+}
+
+// StopService stops the service without uninstalling it.
+func StopService() error {
+	switch runtime.GOOS {
+	case "linux":
+		return exec.Command("systemctl", "stop", systemdServiceName).Run()
+	case "darwin":
+		// Use bootout for modern macOS, fallback to unload
+		err := exec.Command("launchctl", "bootout", "system", launchdPlistPath).Run()
+		if err != nil {
+			// Fallback to older unload command
+			return exec.Command("launchctl", "unload", launchdPlistPath).Run()
+		}
+		return nil
+	case "windows":
+		return exec.Command("sc", "stop", "SlimRMMAgent").Run()
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
 }
 
