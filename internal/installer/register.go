@@ -40,26 +40,34 @@ var (
 )
 
 // RegistrationRequest matches backend schema.
-// Includes optional existing_uuid for re-registration after update/reinstall.
+// Includes optional existing_uuid and reregistration_secret for re-registration.
 type RegistrationRequest struct {
-	OS           string `json:"os"`
-	Arch         string `json:"arch"`
-	Hostname     string `json:"hostname"`
-	AgentVersion string `json:"agent_version"`
-	ExistingUUID string `json:"existing_uuid,omitempty"`
+	OS                    string `json:"os"`
+	Arch                  string `json:"arch"`
+	Hostname              string `json:"hostname"`
+	AgentVersion          string `json:"agent_version"`
+	ExistingUUID          string `json:"existing_uuid,omitempty"`
+	ReregistrationSecret  string `json:"reregistration_secret,omitempty"`
 }
 
 // RegistrationResponse is received from the server after initial registration.
 type RegistrationResponse struct {
-	UUID              string `json:"uuid"`
-	Status            string `json:"status"`
-	RegistrationToken string `json:"registration_token,omitempty"`
-	Message           string `json:"message,omitempty"`
-	Error             string `json:"error,omitempty"`
+	UUID                  string `json:"uuid"`
+	Status                string `json:"status"`
+	RegistrationToken     string `json:"registration_token,omitempty"`
+	ReregistrationSecret  string `json:"reregistration_secret,omitempty"`
+	Message               string `json:"message,omitempty"`
+	Error                 string `json:"error,omitempty"`
 	// Legacy fields for direct registration (no approval workflow)
 	CACert     string `json:"ca_cert,omitempty"`
 	ClientCert string `json:"client_cert,omitempty"`
 	ClientKey  string `json:"client_key,omitempty"`
+	// mTLS fields from new registration flow
+	MTLS *struct {
+		CertificatePEM   string `json:"certificate_pem"`
+		PrivateKeyPEM    string `json:"private_key_pem"`
+		CACertificatePEM string `json:"ca_certificate_pem"`
+	} `json:"mtls,omitempty"`
 }
 
 // EnrollmentStatusResponse is returned when polling for approval status.
@@ -72,9 +80,10 @@ type EnrollmentStatusResponse struct {
 // CertificateResponse is returned when fetching certificates after approval.
 // Matches backend's /api/v1/enrollment/certificate/{uuid} response.
 type CertificateResponse struct {
-	UUID   string `json:"uuid"`
-	Status string `json:"status"`
-	MTLS   struct {
+	UUID                 string `json:"uuid"`
+	Status               string `json:"status"`
+	ReregistrationSecret string `json:"reregistration_secret,omitempty"`
+	MTLS                 struct {
 		CertificatePEM   string `json:"certificate_pem"`
 		PrivateKeyPEM    string `json:"private_key_pem"`
 		CACertificatePEM string `json:"ca_certificate_pem"`
@@ -102,8 +111,11 @@ func getArch() string {
 // RegisterOptions contains optional parameters for registration.
 type RegisterOptions struct {
 	// ExistingUUID is the UUID from a previous installation.
-	// If provided and the agent was previously approved, auto-approval will occur.
+	// If provided along with ReregistrationSecret, the agent can be auto-approved.
 	ExistingUUID string
+	// ReregistrationSecret is the secret from the previous approval.
+	// Required for secure re-registration to prevent UUID spoofing.
+	ReregistrationSecret string
 }
 
 // Register registers the agent with the server using the enrollment workflow.
@@ -117,8 +129,19 @@ func Register(serverURL string, regKey string, paths config.Paths) (*config.Conf
 
 // RegisterWithExistingUUID registers the agent with an existing UUID for re-registration.
 // This allows previously approved agents to be auto-approved after reinstall/update.
+// The reregistration secret is loaded from the existing config for secure verification.
 func RegisterWithExistingUUID(serverURL string, regKey string, paths config.Paths, existingUUID string) (*config.Config, error) {
-	opts := &RegisterOptions{ExistingUUID: existingUUID}
+	// Try to load existing config to get the reregistration secret
+	existingCfg, err := config.Load(paths.ConfigFile)
+	var reregSecret string
+	if err == nil && existingCfg != nil {
+		reregSecret = existingCfg.GetReregistrationSecret()
+	}
+
+	opts := &RegisterOptions{
+		ExistingUUID:         existingUUID,
+		ReregistrationSecret: reregSecret,
+	}
 	return RegisterWithContext(context.Background(), serverURL, regKey, paths, nil, opts)
 }
 
@@ -129,11 +152,12 @@ func RegisterWithContext(ctx context.Context, serverURL string, regKey string, p
 	}
 
 	// Step 1: Initial registration
-	var existingUUID string
+	var existingUUID, reregSecret string
 	if opts != nil {
 		existingUUID = opts.ExistingUUID
+		reregSecret = opts.ReregistrationSecret
 	}
-	regResp, err := registerAgent(ctx, serverURL, regKey, existingUUID, logger)
+	regResp, err := registerAgent(ctx, serverURL, regKey, existingUUID, reregSecret, logger)
 	if err != nil {
 		return nil, fmt.Errorf("registration failed: %w", err)
 	}
@@ -146,9 +170,20 @@ func RegisterWithContext(ctx context.Context, serverURL string, regKey string, p
 	cfg := config.New(serverURL, paths)
 	cfg.SetUUID(regResp.UUID)
 
+	// Save reregistration secret if provided
+	if regResp.ReregistrationSecret != "" {
+		cfg.SetReregistrationSecret(regResp.ReregistrationSecret)
+	}
+
+	// Check if we got certificates directly (new approval mode with mTLS in response)
+	if regResp.MTLS != nil && regResp.MTLS.CertificatePEM != "" {
+		logger.Info("received certificates directly, agent approved")
+		return saveCertificatesAndConfig(cfg, regResp.MTLS.CACertificatePEM, regResp.MTLS.CertificatePEM, regResp.MTLS.PrivateKeyPEM, paths)
+	}
+
 	// Check if we got certificates directly (legacy/direct approval mode)
 	if regResp.CACert != "" && regResp.ClientCert != "" && regResp.ClientKey != "" {
-		logger.Info("received certificates directly, no approval workflow required")
+		logger.Info("received certificates directly (legacy), no approval workflow required")
 		return saveCertificatesAndConfig(cfg, regResp.CACert, regResp.ClientCert, regResp.ClientKey, paths)
 	}
 
@@ -180,22 +215,27 @@ func RegisterWithContext(ctx context.Context, serverURL string, regKey string, p
 }
 
 // registerAgent performs the initial registration request.
-func registerAgent(ctx context.Context, serverURL string, regKey string, existingUUID string, logger *slog.Logger) (*RegistrationResponse, error) {
+func registerAgent(ctx context.Context, serverURL string, regKey string, existingUUID string, reregSecret string, logger *slog.Logger) (*RegistrationResponse, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = "unknown"
 	}
 
 	req := RegistrationRequest{
-		OS:           runtime.GOOS,
-		Arch:         getArch(),
-		Hostname:     hostname,
-		AgentVersion: version.Get().Version,
-		ExistingUUID: existingUUID,
+		OS:                   runtime.GOOS,
+		Arch:                 getArch(),
+		Hostname:             hostname,
+		AgentVersion:         version.Get().Version,
+		ExistingUUID:         existingUUID,
+		ReregistrationSecret: reregSecret,
 	}
 
 	if existingUUID != "" {
-		logger.Info("re-registering with existing UUID", "uuid", existingUUID)
+		if reregSecret != "" {
+			logger.Info("re-registering with existing UUID and secret", "uuid", existingUUID)
+		} else {
+			logger.Warn("re-registering with existing UUID but no secret (will require manual approval)", "uuid", existingUUID)
+		}
 	}
 
 	reqBody, err := json.Marshal(req)
@@ -428,6 +468,12 @@ func fetchCertificatesAndSave(ctx context.Context, cfg *config.Config, serverURL
 	// Validate response has certificate data
 	if certResp.MTLS.CACertificatePEM == "" || certResp.MTLS.CertificatePEM == "" || certResp.MTLS.PrivateKeyPEM == "" {
 		return nil, errors.New("certificate response missing required certificate data")
+	}
+
+	// Save reregistration secret for future reinstalls
+	if certResp.ReregistrationSecret != "" {
+		cfg.SetReregistrationSecret(certResp.ReregistrationSecret)
+		logger.Info("received reregistration secret for future reinstalls")
 	}
 
 	return saveCertificatesAndConfig(cfg, certResp.MTLS.CACertificatePEM, certResp.MTLS.CertificatePEM, certResp.MTLS.PrivateKeyPEM, paths)

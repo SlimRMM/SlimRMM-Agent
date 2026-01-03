@@ -21,12 +21,13 @@ const (
 
 // Config holds the agent configuration.
 type Config struct {
-	Server         string `json:"server"`
-	UUID           string `json:"uuid"`
-	MTLSEnabled    bool   `json:"mtls_enabled"`
-	InstallDate    string `json:"install_date,omitempty"`
-	LastConnection string `json:"last_connection,omitempty"`
-	LastHeartbeat  string `json:"last_heartbeat,omitempty"`
+	Server                 string `json:"server"`
+	UUID                   string `json:"uuid"`
+	MTLSEnabled            bool   `json:"mtls_enabled"`
+	InstallDate            string `json:"install_date,omitempty"`
+	LastConnection         string `json:"last_connection,omitempty"`
+	LastHeartbeat          string `json:"last_heartbeat,omitempty"`
+	ReregistrationSecret   string `json:"reregistration_secret,omitempty"`
 
 	mu       sync.RWMutex
 	filePath string
@@ -192,6 +193,20 @@ func (c *Config) SetLastHeartbeat(t string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.LastHeartbeat = t
+}
+
+// GetReregistrationSecret returns the re-registration secret.
+func (c *Config) GetReregistrationSecret() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.ReregistrationSecret
+}
+
+// SetReregistrationSecret updates the re-registration secret.
+func (c *Config) SetReregistrationSecret(secret string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ReregistrationSecret = secret
 }
 
 // New creates a new configuration with the given server.
