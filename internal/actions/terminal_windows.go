@@ -1,4 +1,5 @@
 // Package actions provides terminal functionality for Windows.
+//go:build windows
 // +build windows
 
 package actions

@@ -201,10 +201,10 @@ func containsDangerousScriptPattern(script string) bool {
 	dangerousPatterns := []string{
 		"rm -rf /",
 		"rm -fr /",
-		":(){:|:&};:",           // Fork bomb
+		":(){:|:&};:",          // Fork bomb
 		"dd if=/dev/zero of=/", // Disk wipe
-		"mkfs.",                 // Format filesystem
-		"> /dev/sda",            // Overwrite disk
+		"mkfs.",                // Format filesystem
+		"> /dev/sda",           // Overwrite disk
 		"chmod -R 777 /",
 	}
 

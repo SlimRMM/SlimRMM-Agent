@@ -16,15 +16,15 @@ import (
 // FileInfo contains information about a file or directory.
 // Field names match frontend expectations (see useAgentWebSocket.ts)
 type FileInfo struct {
-	Name        string `json:"name"`
-	Path        string `json:"path"`
-	Type        string `json:"type"`        // "file" or "directory"
-	Size        int64  `json:"size,omitempty"`
-	Modified    string `json:"modified,omitempty"`
-	Permissions string `json:"permissions,omitempty"`
-	Owner       string `json:"owner,omitempty"`
-	Group       string `json:"group,omitempty"`
-	IsSymlink   bool   `json:"is_symlink,omitempty"`
+	Name          string `json:"name"`
+	Path          string `json:"path"`
+	Type          string `json:"type"` // "file" or "directory"
+	Size          int64  `json:"size,omitempty"`
+	Modified      string `json:"modified,omitempty"`
+	Permissions   string `json:"permissions,omitempty"`
+	Owner         string `json:"owner,omitempty"`
+	Group         string `json:"group,omitempty"`
+	IsSymlink     bool   `json:"is_symlink,omitempty"`
 	SymlinkTarget string `json:"symlink_target,omitempty"`
 }
 

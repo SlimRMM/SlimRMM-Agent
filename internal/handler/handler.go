@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	writeWait            = 10 * time.Second
-	pongWait             = 60 * time.Second
-	pingPeriod           = (pongWait * 9) / 10
-	heartbeatPeriod      = 30 * time.Second
-	maxMessageSize       = 10 * 1024 * 1024 // 10 MB
-	certCheckInterval    = 24 * time.Hour   // Check certificates every 24 hours (like Python)
+	writeWait         = 10 * time.Second
+	pongWait          = 60 * time.Second
+	pingPeriod        = (pongWait * 9) / 10
+	heartbeatPeriod   = 30 * time.Second
+	maxMessageSize    = 10 * 1024 * 1024 // 10 MB
+	certCheckInterval = 24 * time.Hour   // Check certificates every 24 hours (like Python)
 )
 
 // Message represents a WebSocket message from the backend.

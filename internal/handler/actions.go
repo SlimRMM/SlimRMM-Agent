@@ -20,8 +20,8 @@ func (h *Handler) registerHandlers() {
 	// Basic - Python compatible names
 	h.handlers["ping"] = h.handlePing
 	h.handlers["heartbeat"] = h.handleHeartbeat
-	h.handlers["system_stats"] = h.handleGetSystemStats      // Python: system_stats
-	h.handlers["get_system_stats"] = h.handleGetSystemStats  // Alias for compatibility
+	h.handlers["system_stats"] = h.handleGetSystemStats     // Python: system_stats
+	h.handlers["get_system_stats"] = h.handleGetSystemStats // Alias for compatibility
 
 	// Commands
 	h.handlers["custom_command"] = h.handleCustomCommand
@@ -29,8 +29,8 @@ func (h *Handler) registerHandlers() {
 
 	// File operations - Python compatible names
 	h.handlers["list_dir"] = h.handleListDir
-	h.handlers["create_dir"] = h.handleCreateFolder          // Python: create_dir
-	h.handlers["create_folder"] = h.handleCreateFolder       // Alias
+	h.handlers["create_dir"] = h.handleCreateFolder    // Python: create_dir
+	h.handlers["create_folder"] = h.handleCreateFolder // Alias
 	h.handlers["delete_entry"] = h.handleDeleteEntry
 	h.handlers["rename_entry"] = h.handleRenameEntry
 	h.handlers["chmod"] = h.handleChmod
@@ -59,21 +59,21 @@ func (h *Handler) registerHandlers() {
 	h.handlers["cancel_shutdown"] = h.handleCancelShutdown
 
 	// Terminal - Python compatible names
-	h.handlers["terminal"] = h.handleStartTerminal           // Python: terminal
-	h.handlers["start_terminal"] = h.handleStartTerminal     // Alias
+	h.handlers["terminal"] = h.handleStartTerminal       // Python: terminal
+	h.handlers["start_terminal"] = h.handleStartTerminal // Alias
 	h.handlers["terminal_input"] = h.handleTerminalInput
 	h.handlers["terminal_output"] = h.handleTerminalOutput
 	h.handlers["terminal_resize"] = h.handleResizeTerminal
-	h.handlers["terminal_stop"] = h.handleStopTerminal       // Python: terminal_stop
-	h.handlers["stop_terminal"] = h.handleStopTerminal       // Alias
+	h.handlers["terminal_stop"] = h.handleStopTerminal // Python: terminal_stop
+	h.handlers["stop_terminal"] = h.handleStopTerminal // Alias
 
 	// osquery - Python compatible names
-	h.handlers["osquery"] = h.handleRunOsquery               // Python: osquery
-	h.handlers["run_osquery"] = h.handleRunOsquery           // Alias
+	h.handlers["osquery"] = h.handleRunOsquery     // Python: osquery
+	h.handlers["run_osquery"] = h.handleRunOsquery // Alias
 
 	// Agent management - Python compatible names
 	h.handlers["update_agent"] = h.handleUpdateAgent
-	h.handlers["update_osquery"] = h.handleUpdateOsquery     // Python: update_osquery
+	h.handlers["update_osquery"] = h.handleUpdateOsquery // Python: update_osquery
 }
 
 // Command handlers
@@ -537,9 +537,9 @@ type rebootConfig struct {
 }
 
 type executePatchesRequest struct {
-	ExecutionID    string       `json:"execution_id"`
-	PolicyID       string       `json:"policy_id"`
-	Patches        []struct {
+	ExecutionID string `json:"execution_id"`
+	PolicyID    string `json:"policy_id"`
+	Patches     []struct {
 		Name     string `json:"name"`
 		Version  string `json:"version"`
 		Category string `json:"category"`

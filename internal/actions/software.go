@@ -26,12 +26,12 @@ type Software struct {
 
 // Update represents an available system update.
 type Update struct {
-	Name        string `json:"name"`
-	Version     string `json:"version"`
-	CurrentVer  string `json:"current_version,omitempty"`
-	Category    string `json:"category"` // security, kernel, standard
-	Size        int64  `json:"size,omitempty"`
-	Source      string `json:"source"`
+	Name       string `json:"name"`
+	Version    string `json:"version"`
+	CurrentVer string `json:"current_version,omitempty"`
+	Category   string `json:"category"` // security, kernel, standard
+	Size       int64  `json:"size,omitempty"`
+	Source     string `json:"source"`
 }
 
 // SoftwareInventory contains the list of installed software.
@@ -43,9 +43,9 @@ type SoftwareInventory struct {
 
 // UpdateList contains available updates.
 type UpdateList struct {
-	Updates  []Update `json:"updates"`
-	Count    int      `json:"count"`
-	Source   string   `json:"source"`
+	Updates []Update `json:"updates"`
+	Count   int      `json:"count"`
+	Source  string   `json:"source"`
 }
 
 // GetSoftwareInventory returns the list of installed software.
@@ -83,9 +83,14 @@ func getLinuxSoftware(ctx context.Context) (*SoftwareInventory, error) {
 		return getDpkgSoftware(ctx)
 	}
 
-	// Try rpm (RHEL/CentOS)
+	// Try rpm (RHEL/CentOS/Fedora)
 	if _, err := exec.LookPath("rpm"); err == nil {
 		return getRpmSoftware(ctx)
+	}
+
+	// Try pacman (Arch Linux)
+	if _, err := exec.LookPath("pacman"); err == nil {
+		return getPacmanSoftware(ctx)
 	}
 
 	return nil, fmt.Errorf("no supported package manager found")
@@ -158,6 +163,37 @@ func getRpmSoftware(ctx context.Context) (*SoftwareInventory, error) {
 				pkg.Publisher = parts[3]
 			}
 			inventory.Packages = append(inventory.Packages, pkg)
+		}
+	}
+
+	inventory.Count = len(inventory.Packages)
+	return inventory, nil
+}
+
+func getPacmanSoftware(ctx context.Context) (*SoftwareInventory, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "pacman", "-Q")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	inventory := &SoftwareInventory{
+		Packages: make([]Software, 0),
+		Source:   "pacman",
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		parts := strings.Fields(scanner.Text())
+		if len(parts) >= 2 {
+			inventory.Packages = append(inventory.Packages, Software{
+				Name:    parts[0],
+				Version: parts[1],
+				Source:  "pacman",
+			})
 		}
 	}
 
@@ -253,6 +289,11 @@ func getLinuxUpdates(ctx context.Context) (*UpdateList, error) {
 		return getYumUpdates(ctx)
 	}
 
+	// Try pacman (Arch Linux)
+	if _, err := exec.LookPath("pacman"); err == nil {
+		return getPacmanUpdates(ctx)
+	}
+
 	return nil, fmt.Errorf("no supported package manager found")
 }
 
@@ -341,6 +382,57 @@ func getYumUpdates(ctx context.Context) (*UpdateList, error) {
 	return getDnfUpdates(ctx) // Same format
 }
 
+func getPacmanUpdates(ctx context.Context) (*UpdateList, error) {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	// Sync database first
+	exec.CommandContext(ctx, "pacman", "-Sy").Run()
+
+	// Check for updates
+	cmd := exec.CommandContext(ctx, "pacman", "-Qu")
+	output, _ := cmd.Output() // pacman returns exit code 1 when no updates
+
+	updates := &UpdateList{
+		Updates: make([]Update, 0),
+		Source:  "pacman",
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.Fields(line)
+		if len(parts) >= 4 {
+			// Format: package current_version -> new_version
+			update := Update{
+				Name:       parts[0],
+				CurrentVer: parts[1],
+				Version:    parts[3],
+				Category:   "standard",
+				Source:     "pacman",
+			}
+
+			// Check for kernel updates
+			if strings.HasPrefix(parts[0], "linux") {
+				update.Category = "kernel"
+			}
+
+			updates.Updates = append(updates.Updates, update)
+		} else if len(parts) >= 2 {
+			// Fallback for simple format: package version
+			updates.Updates = append(updates.Updates, Update{
+				Name:     parts[0],
+				Version:  parts[1],
+				Category: "standard",
+				Source:   "pacman",
+			})
+		}
+	}
+
+	updates.Count = len(updates.Updates)
+	return updates, nil
+}
+
 // macOS updates
 func getMacOSUpdates(ctx context.Context) (*UpdateList, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -374,74 +466,90 @@ func getMacOSUpdates(ctx context.Context) (*UpdateList, error) {
 	return updates, nil
 }
 
-// Windows updates
+// Windows updates using PSWindowsUpdate module
 func getWindowsUpdates(ctx context.Context) (*UpdateList, error) {
-	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
-	// Use PowerShell to query Windows Update
+	// PowerShell script to install PSWindowsUpdate if needed and get updates
 	script := `
-$UpdateSession = New-Object -ComObject Microsoft.Update.Session
-$UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
+$ErrorActionPreference = 'SilentlyContinue'
 
-try {
-    $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and Type='Software'")
-    $Updates = @()
-
-    foreach ($Update in $SearchResult.Updates) {
-        $Category = "standard"
-        foreach ($Cat in $Update.Categories) {
-            if ($Cat.Name -match "Security") {
-                $Category = "security"
-                break
+# Check if PSWindowsUpdate module is installed
+if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
+    try {
+        # Install NuGet provider if needed
+        if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers | Out-Null
+        }
+        # Install PSWindowsUpdate module
+        Install-Module -Name PSWindowsUpdate -Force -Scope AllUsers -AllowClobber | Out-Null
+    } catch {
+        # Fall back to COM object method if module installation fails
+        $UpdateSession = New-Object -ComObject Microsoft.Update.Session
+        $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
+        $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and Type='Software'")
+        $Updates = @()
+        foreach ($Update in $SearchResult.Updates) {
+            $Category = "standard"
+            foreach ($Cat in $Update.Categories) {
+                if ($Cat.Name -match "Security|Critical") { $Category = "security"; break }
             }
-            if ($Cat.Name -match "Critical") {
-                $Category = "security"
-                break
+            $Updates += @{
+                Title = $Update.Title
+                KB = ""
+                Size = $Update.MaxDownloadSize
+                Category = $Category
             }
         }
-
-        $Updates += @{
-            Name = $Update.Title
-            Version = $Update.Identity.UpdateID
-            Category = $Category
-            Size = $Update.MaxDownloadSize
-            Source = "windows_update"
-        }
+        $Updates | ConvertTo-Json -Depth 3 -Compress
+        exit
     }
+}
 
-    $Updates | ConvertTo-Json -Depth 3
-} catch {
+# Import module and get updates
+Import-Module PSWindowsUpdate -Force
+$Updates = Get-WindowsUpdate -MicrosoftUpdate -AcceptAll -IgnoreReboot 2>$null | ForEach-Object {
+    $Category = "standard"
+    if ($_.Title -match "Security|Critical") { $Category = "security" }
+    if ($_.Title -match "Cumulative|Feature") { $Category = "feature" }
+    @{
+        Title = $_.Title
+        KB = $_.KB
+        Size = $_.Size
+        Category = $Category
+    }
+}
+
+if ($Updates) {
+    $Updates | ConvertTo-Json -Depth 3 -Compress
+} else {
     Write-Output "[]"
 }
 `
 
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
 	output, err := cmd.Output()
 	if err != nil {
-		// Fall back to empty list on error
 		return &UpdateList{
 			Updates: make([]Update, 0),
-			Source:  "windows_update",
+			Source:  "pswindowsupdate",
 		}, nil
 	}
 
 	updates := &UpdateList{
 		Updates: make([]Update, 0),
-		Source:  "windows_update",
+		Source:  "pswindowsupdate",
 	}
 
-	// Parse JSON output
 	outputStr := strings.TrimSpace(string(output))
 	if outputStr == "" || outputStr == "[]" || outputStr == "null" {
 		updates.Count = 0
 		return updates, nil
 	}
 
-	// Try to parse as array
 	var rawUpdates []map[string]interface{}
 	if err := parseWindowsUpdateJSON(outputStr, &rawUpdates); err != nil {
-		// Try parsing as single object
 		var singleUpdate map[string]interface{}
 		if err := parseWindowsUpdateJSON(outputStr, &singleUpdate); err == nil {
 			rawUpdates = append(rawUpdates, singleUpdate)
@@ -450,14 +558,14 @@ try {
 
 	for _, raw := range rawUpdates {
 		update := Update{
-			Source: "windows_update",
+			Source: "pswindowsupdate",
 		}
 
-		if name, ok := raw["Name"].(string); ok {
-			update.Name = name
+		if title, ok := raw["Title"].(string); ok {
+			update.Name = title
 		}
-		if version, ok := raw["Version"].(string); ok {
-			update.Version = version
+		if kb, ok := raw["KB"].(string); ok && kb != "" {
+			update.Version = kb
 		}
 		if category, ok := raw["Category"].(string); ok {
 			update.Category = category

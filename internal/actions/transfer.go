@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	DefaultChunkSize  = 64 * 1024           // 64 KB
-	MaxFileSize       = 100 * 1024 * 1024   // 100 MB
-	SessionTimeout    = 30 * time.Minute    // Stale session timeout
-	CleanupInterval   = 5 * time.Minute     // Cleanup check interval
+	DefaultChunkSize = 64 * 1024         // 64 KB
+	MaxFileSize      = 100 * 1024 * 1024 // 100 MB
+	SessionTimeout   = 30 * time.Minute  // Stale session timeout
+	CleanupInterval  = 5 * time.Minute   // Cleanup check interval
 )
 
 // UploadSession tracks an ongoing file upload.
@@ -239,11 +239,11 @@ type UploadResult struct {
 
 // DownloadResult contains file download information.
 type DownloadResult struct {
-	Path     string `json:"path"`
-	Size     int64  `json:"size"`
-	Hash     string `json:"hash"`
-	Content  string `json:"content,omitempty"` // Base64 encoded for small files
-	ChunkCount int  `json:"chunk_count,omitempty"`
+	Path       string `json:"path"`
+	Size       int64  `json:"size"`
+	Hash       string `json:"hash"`
+	Content    string `json:"content,omitempty"` // Base64 encoded for small files
+	ChunkCount int    `json:"chunk_count,omitempty"`
 }
 
 // DownloadFile prepares a file for download.

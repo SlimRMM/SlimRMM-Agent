@@ -99,30 +99,59 @@ func ExecutePatches(ctx context.Context, categories []string, reboot bool) (*Com
 	defer cancel()
 
 	var cmd *exec.Cmd
+	var preCmd *exec.Cmd
 
 	switch runtime.GOOS {
 	case "linux":
 		// Detect package manager
 		if _, err := exec.LookPath("apt-get"); err == nil {
+			// Update package list first
+			preCmd = exec.CommandContext(ctx, "apt-get", "update", "-qq")
 			cmd = exec.CommandContext(ctx, "apt-get", "upgrade", "-y")
 		} else if _, err := exec.LookPath("dnf"); err == nil {
 			cmd = exec.CommandContext(ctx, "dnf", "upgrade", "-y")
 		} else if _, err := exec.LookPath("yum"); err == nil {
 			cmd = exec.CommandContext(ctx, "yum", "update", "-y")
+		} else if _, err := exec.LookPath("pacman"); err == nil {
+			// Arch Linux: sync and upgrade
+			cmd = exec.CommandContext(ctx, "pacman", "-Syu", "--noconfirm")
 		} else {
 			return nil, fmt.Errorf("no supported package manager found")
 		}
 	case "darwin":
-		cmd = exec.CommandContext(ctx, "softwareupdate", "-i", "-a")
+		cmd = exec.CommandContext(ctx, "softwareupdate", "-i", "-a", "--agree-to-license")
 	case "windows":
-		// Use PowerShell to install updates
+		// Use PSWindowsUpdate module for installing updates
 		script := `
-			$Updates = Get-WindowsUpdate -AcceptAll -Install -IgnoreReboot
-			$Updates | Format-List
-		`
-		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+$ErrorActionPreference = 'Stop'
+
+# Ensure PSWindowsUpdate is installed
+if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
+    if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers | Out-Null
+    }
+    Install-Module -Name PSWindowsUpdate -Force -Scope AllUsers -AllowClobber | Out-Null
+}
+
+Import-Module PSWindowsUpdate -Force
+
+# Install all available updates
+$Results = Install-WindowsUpdate -MicrosoftUpdate -AcceptAll -IgnoreReboot -Verbose 4>&1
+
+# Output results
+$Results | ForEach-Object { Write-Output $_ }
+
+# Return success
+Write-Output "Windows Update completed successfully"
+`
+		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
 	default:
 		return nil, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+	}
+
+	// Run pre-command if set (e.g., apt-get update)
+	if preCmd != nil {
+		preCmd.Run()
 	}
 
 	start := time.Now()
@@ -169,6 +198,8 @@ func UninstallSoftware(ctx context.Context, packageName string) (*CommandResult,
 			cmd = exec.CommandContext(ctx, "dnf", "remove", "-y", packageName)
 		} else if _, err := exec.LookPath("yum"); err == nil {
 			cmd = exec.CommandContext(ctx, "yum", "remove", "-y", packageName)
+		} else if _, err := exec.LookPath("pacman"); err == nil {
+			cmd = exec.CommandContext(ctx, "pacman", "-R", "--noconfirm", packageName)
 		} else {
 			return nil, fmt.Errorf("no supported package manager found")
 		}
