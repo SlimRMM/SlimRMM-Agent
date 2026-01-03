@@ -14,24 +14,26 @@ import (
 )
 
 // FileInfo contains information about a file or directory.
+// Field names match frontend expectations (see useAgentWebSocket.ts)
 type FileInfo struct {
 	Name        string `json:"name"`
 	Path        string `json:"path"`
-	Size        int64  `json:"size"`
-	IsDir       bool   `json:"is_dir"`
-	Mode        string `json:"mode"`
-	ModTime     string `json:"mod_time"`
+	Type        string `json:"type"`        // "file" or "directory"
+	Size        int64  `json:"size,omitempty"`
+	Modified    string `json:"modified,omitempty"`
+	Permissions string `json:"permissions,omitempty"`
 	Owner       string `json:"owner,omitempty"`
 	Group       string `json:"group,omitempty"`
-	IsSymlink   bool   `json:"is_symlink"`
+	IsSymlink   bool   `json:"is_symlink,omitempty"`
 	SymlinkTarget string `json:"symlink_target,omitempty"`
 }
 
 // ListDirResult contains the result of a directory listing.
+// Field names match frontend expectations (see useAgentWebSocket.ts)
 type ListDirResult struct {
-	Path    string     `json:"path"`
-	Files   []FileInfo `json:"files"`
-	Count   int        `json:"count"`
+	CurrentPath string     `json:"current_path"`
+	Entries     []FileInfo `json:"entries"`
+	Count       int        `json:"count"`
 }
 
 var pathValidator = pathval.New()
@@ -49,9 +51,9 @@ func ListDirectory(path string) (*ListDirResult, error) {
 	}
 
 	result := &ListDirResult{
-		Path:  path,
-		Files: make([]FileInfo, 0, len(entries)),
-		Count: len(entries),
+		CurrentPath: path,
+		Entries:     make([]FileInfo, 0, len(entries)),
+		Count:       len(entries),
 	}
 
 	for _, entry := range entries {
@@ -60,13 +62,19 @@ func ListDirectory(path string) (*ListDirResult, error) {
 			continue
 		}
 
+		// Determine type
+		fileType := "file"
+		if entry.IsDir() {
+			fileType = "directory"
+		}
+
 		fi := FileInfo{
-			Name:    entry.Name(),
-			Path:    filepath.Join(path, entry.Name()),
-			Size:    info.Size(),
-			IsDir:   entry.IsDir(),
-			Mode:    info.Mode().String(),
-			ModTime: info.ModTime().Format(time.RFC3339),
+			Name:        entry.Name(),
+			Path:        filepath.Join(path, entry.Name()),
+			Type:        fileType,
+			Size:        info.Size(),
+			Modified:    info.ModTime().Format(time.RFC3339),
+			Permissions: info.Mode().String(),
 		}
 
 		// Check for symlink
@@ -80,7 +88,7 @@ func ListDirectory(path string) (*ListDirResult, error) {
 		// Get owner/group (platform-specific)
 		fi.Owner, fi.Group = getFileOwnership(info)
 
-		result.Files = append(result.Files, fi)
+		result.Entries = append(result.Entries, fi)
 	}
 
 	return result, nil
@@ -272,13 +280,19 @@ func GetFileInfo(path string) (*FileInfo, error) {
 		return nil, err
 	}
 
+	// Determine type
+	fileType := "file"
+	if info.IsDir() {
+		fileType = "directory"
+	}
+
 	fi := &FileInfo{
-		Name:    info.Name(),
-		Path:    path,
-		Size:    info.Size(),
-		IsDir:   info.IsDir(),
-		Mode:    info.Mode().String(),
-		ModTime: info.ModTime().Format(time.RFC3339),
+		Name:        info.Name(),
+		Path:        path,
+		Type:        fileType,
+		Size:        info.Size(),
+		Modified:    info.ModTime().Format(time.RFC3339),
+		Permissions: info.Mode().String(),
 	}
 
 	if info.Mode()&os.ModeSymlink != 0 {
