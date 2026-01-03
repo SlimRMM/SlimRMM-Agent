@@ -536,30 +536,52 @@ func (u *Updater) replaceBinary(newPath string) error {
 	// because the running process keeps the inode open, not the filename.
 	oldPath := u.binaryPath + ".old"
 	os.Remove(oldPath) // Remove any previous .old file
+
 	if err := os.Rename(u.binaryPath, oldPath); err != nil {
-		// If rename fails, try direct copy (might work if service is stopped)
-		u.logger.Warn("rename failed, trying direct copy", "error", err)
+		// If rename fails (e.g., file doesn't exist on fresh install), continue
+		u.logger.Warn("rename of current binary failed (may be fresh install)", "error", err)
 	}
 
-	// Copy new binary to the original location
-	src, err := os.Open(newPath)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
+	// Use rename to atomically move new binary into place
+	// This avoids "text file busy" because rename doesn't open the file
+	if err := os.Rename(newPath, u.binaryPath); err != nil {
+		// Cross-device rename not supported, fall back to copy
+		u.logger.Warn("rename failed (cross-device?), falling back to copy", "error", err)
 
-	dst, err := os.Create(u.binaryPath)
-	if err != nil {
-		return err
-	}
-	defer dst.Close()
+		src, err := os.Open(newPath)
+		if err != nil {
+			return err
+		}
+		defer src.Close()
 
-	if _, err := io.Copy(dst, src); err != nil {
-		return err
+		// Create with a temporary name first, then rename
+		tmpPath := u.binaryPath + ".new"
+		dst, err := os.Create(tmpPath)
+		if err != nil {
+			return err
+		}
+
+		if _, err := io.Copy(dst, src); err != nil {
+			dst.Close()
+			os.Remove(tmpPath)
+			return err
+		}
+		dst.Close()
+
+		if err := os.Chmod(tmpPath, 0755); err != nil {
+			os.Remove(tmpPath)
+			return err
+		}
+
+		// Final rename of .new to target
+		if err := os.Rename(tmpPath, u.binaryPath); err != nil {
+			os.Remove(tmpPath)
+			return err
+		}
 	}
 
 	if err := os.Chmod(u.binaryPath, 0755); err != nil {
-		return err
+		u.logger.Warn("chmod failed", "error", err)
 	}
 
 	// Clean up old binary (best effort - may fail on Windows until reboot)
@@ -575,28 +597,50 @@ func (u *Updater) rollback(backupPath string) error {
 	// Use rename trick to avoid "text file busy" error
 	oldPath := u.binaryPath + ".failed"
 	os.Remove(oldPath)
+
 	if err := os.Rename(u.binaryPath, oldPath); err != nil {
 		u.logger.Warn("rename failed during rollback", "error", err)
 	}
 
-	src, err := os.Open(backupPath)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
+	// Try to rename backup directly into place (atomic, no "text file busy")
+	if err := os.Rename(backupPath, u.binaryPath); err != nil {
+		// Cross-device or other issue, fall back to copy
+		u.logger.Warn("rename failed during rollback, falling back to copy", "error", err)
 
-	dst, err := os.Create(u.binaryPath)
-	if err != nil {
-		return err
-	}
-	defer dst.Close()
+		src, err := os.Open(backupPath)
+		if err != nil {
+			return err
+		}
+		defer src.Close()
 
-	if _, err := io.Copy(dst, src); err != nil {
-		return err
+		// Copy to temporary file first
+		tmpPath := u.binaryPath + ".rollback"
+		dst, err := os.Create(tmpPath)
+		if err != nil {
+			return err
+		}
+
+		if _, err := io.Copy(dst, src); err != nil {
+			dst.Close()
+			os.Remove(tmpPath)
+			return err
+		}
+		dst.Close()
+
+		if err := os.Chmod(tmpPath, 0755); err != nil {
+			os.Remove(tmpPath)
+			return err
+		}
+
+		// Final rename
+		if err := os.Rename(tmpPath, u.binaryPath); err != nil {
+			os.Remove(tmpPath)
+			return err
+		}
 	}
 
 	if err := os.Chmod(u.binaryPath, 0755); err != nil {
-		return err
+		u.logger.Warn("chmod failed during rollback", "error", err)
 	}
 
 	// Clean up failed binary
