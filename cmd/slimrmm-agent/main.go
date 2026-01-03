@@ -225,9 +225,15 @@ func autoInstall(serverURL string, paths config.Paths, logger *slog.Logger) (*co
 		return nil, fmt.Errorf("creating directories: %w", err)
 	}
 
+	// Check for enrollment token
+	enrollmentToken := os.Getenv("SLIMRMM_TOKEN")
+	if enrollmentToken != "" {
+		logger.Info("enrollment token provided for auto-approval")
+	}
+
 	// Register with server and get UUID + certificates
 	logger.Info("registering with server", "url", serverURL)
-	cfg, err := installer.Register(serverURL, "", paths)
+	cfg, err := installer.Register(serverURL, enrollmentToken, paths)
 	if err != nil {
 		return nil, fmt.Errorf("registration failed: %w", err)
 	}
@@ -246,9 +252,14 @@ func runInstallService(paths config.Paths, logger *slog.Logger) error {
 		logger.Info("service already installed, updating...")
 	}
 
-	// Check for server URL
+	// Check for server URL and enrollment token
 	serverURL := os.Getenv("SLIMRMM_SERVER")
+	enrollmentToken := os.Getenv("SLIMRMM_TOKEN")
 	var existingUUID string
+
+	if enrollmentToken != "" {
+		logger.Info("enrollment token provided for auto-approval")
+	}
 
 	if serverURL == "" {
 		// Try to load existing config
@@ -277,7 +288,7 @@ func runInstallService(paths config.Paths, logger *slog.Logger) error {
 	cfg, err := config.Load(paths.ConfigFile)
 	if err == config.ErrConfigNotFound || (err == nil && cfg.GetUUID() == "") {
 		logger.Info("registering with server", "url", serverURL)
-		cfg, err = installer.Register(serverURL, "", paths)
+		cfg, err = installer.Register(serverURL, enrollmentToken, paths)
 		if err != nil {
 			return fmt.Errorf("registration failed: %w", err)
 		}
@@ -289,7 +300,7 @@ func runInstallService(paths config.Paths, logger *slog.Logger) error {
 		// This is needed when the agent is reinstalled or updated
 		if existingUUID != "" {
 			logger.Info("re-registering with existing UUID to obtain new certificates", "uuid", existingUUID)
-			cfg, err = installer.RegisterWithExistingUUID(serverURL, "", paths, existingUUID)
+			cfg, err = installer.RegisterWithExistingUUID(serverURL, enrollmentToken, paths, existingUUID)
 			if err != nil {
 				return fmt.Errorf("re-registration failed: %w", err)
 			}

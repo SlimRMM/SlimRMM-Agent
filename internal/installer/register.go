@@ -40,12 +40,13 @@ var (
 )
 
 // RegistrationRequest matches backend schema.
-// Includes optional existing_uuid and reregistration_secret for re-registration.
+// Includes optional token for auto-approval and existing_uuid for re-registration.
 type RegistrationRequest struct {
 	OS                    string `json:"os"`
 	Arch                  string `json:"arch"`
 	Hostname              string `json:"hostname"`
 	AgentVersion          string `json:"agent_version"`
+	Token                 string `json:"token,omitempty"`
 	ExistingUUID          string `json:"existing_uuid,omitempty"`
 	ReregistrationSecret  string `json:"reregistration_secret,omitempty"`
 }
@@ -130,7 +131,7 @@ func Register(serverURL string, regKey string, paths config.Paths) (*config.Conf
 // RegisterWithExistingUUID registers the agent with an existing UUID for re-registration.
 // This allows previously approved agents to be auto-approved after reinstall/update.
 // The reregistration secret is loaded from the existing config for secure verification.
-func RegisterWithExistingUUID(serverURL string, regKey string, paths config.Paths, existingUUID string) (*config.Config, error) {
+func RegisterWithExistingUUID(serverURL string, enrollmentToken string, paths config.Paths, existingUUID string) (*config.Config, error) {
 	// Try to load existing config to get the reregistration secret
 	existingCfg, err := config.Load(paths.ConfigFile)
 	var reregSecret string
@@ -142,11 +143,11 @@ func RegisterWithExistingUUID(serverURL string, regKey string, paths config.Path
 		ExistingUUID:         existingUUID,
 		ReregistrationSecret: reregSecret,
 	}
-	return RegisterWithContext(context.Background(), serverURL, regKey, paths, nil, opts)
+	return RegisterWithContext(context.Background(), serverURL, enrollmentToken, paths, nil, opts)
 }
 
 // RegisterWithContext registers the agent with cancellation support.
-func RegisterWithContext(ctx context.Context, serverURL string, regKey string, paths config.Paths, logger *slog.Logger, opts *RegisterOptions) (*config.Config, error) {
+func RegisterWithContext(ctx context.Context, serverURL string, enrollmentToken string, paths config.Paths, logger *slog.Logger, opts *RegisterOptions) (*config.Config, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -157,7 +158,7 @@ func RegisterWithContext(ctx context.Context, serverURL string, regKey string, p
 		existingUUID = opts.ExistingUUID
 		reregSecret = opts.ReregistrationSecret
 	}
-	regResp, err := registerAgent(ctx, serverURL, regKey, existingUUID, reregSecret, logger)
+	regResp, err := registerAgent(ctx, serverURL, enrollmentToken, existingUUID, reregSecret, logger)
 	if err != nil {
 		return nil, fmt.Errorf("registration failed: %w", err)
 	}
@@ -215,7 +216,7 @@ func RegisterWithContext(ctx context.Context, serverURL string, regKey string, p
 }
 
 // registerAgent performs the initial registration request.
-func registerAgent(ctx context.Context, serverURL string, regKey string, existingUUID string, reregSecret string, logger *slog.Logger) (*RegistrationResponse, error) {
+func registerAgent(ctx context.Context, serverURL string, enrollmentToken string, existingUUID string, reregSecret string, logger *slog.Logger) (*RegistrationResponse, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = "unknown"
@@ -226,8 +227,13 @@ func registerAgent(ctx context.Context, serverURL string, regKey string, existin
 		Arch:                 getArch(),
 		Hostname:             hostname,
 		AgentVersion:         version.Get().Version,
+		Token:                enrollmentToken,
 		ExistingUUID:         existingUUID,
 		ReregistrationSecret: reregSecret,
+	}
+
+	if enrollmentToken != "" {
+		logger.Info("registering with enrollment token for auto-approval")
 	}
 
 	if existingUUID != "" {
@@ -259,8 +265,8 @@ func registerAgent(ctx context.Context, serverURL string, regKey string, existin
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if regKey != "" {
-		httpReq.Header.Set("X-Registration-Key", regKey)
+	if enrollmentToken != "" {
+		httpReq.Header.Set("X-Registration-Key", enrollmentToken)
 	}
 
 	logger.Debug("sending registration request", "url", url)
