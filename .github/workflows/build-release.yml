@@ -126,17 +126,18 @@ jobs:
       - name: Build DEB package
         run: |
           VERSION=${GITHUB_REF_NAME#v}
+          PKGROOT="_pkgroot"
 
-          mkdir -p pkg/usr/local/bin
-          mkdir -p pkg/etc/systemd/system
-          mkdir -p pkg/var/lib/slimrmm/{certs,log}
-          mkdir -p pkg/DEBIAN
+          mkdir -p ${PKGROOT}/usr/local/bin
+          mkdir -p ${PKGROOT}/etc/systemd/system
+          mkdir -p ${PKGROOT}/var/lib/slimrmm/{certs,log}
+          mkdir -p ${PKGROOT}/DEBIAN
 
-          cp slimrmm-agent-linux-amd64 pkg/usr/local/bin/slimrmm-agent
-          chmod +x pkg/usr/local/bin/slimrmm-agent
-          cp build/linux/slimrmm-agent.service pkg/etc/systemd/system/
+          cp slimrmm-agent-linux-amd64 ${PKGROOT}/usr/local/bin/slimrmm-agent
+          chmod +x ${PKGROOT}/usr/local/bin/slimrmm-agent
+          cp build/linux/slimrmm-agent.service ${PKGROOT}/etc/systemd/system/
 
-          cat > pkg/DEBIAN/control << EOF
+          cat > ${PKGROOT}/DEBIAN/control << EOF
           Package: slimrmm-agent
           Version: ${VERSION}
           Section: admin
@@ -146,11 +147,11 @@ jobs:
           Description: SlimRMM Remote Monitoring & Management Agent
           EOF
 
-          cp build/linux/postinstall.sh pkg/DEBIAN/postinst
-          cp build/linux/preremove.sh pkg/DEBIAN/prerm
-          chmod +x pkg/DEBIAN/postinst pkg/DEBIAN/prerm
+          cp build/linux/postinstall.sh ${PKGROOT}/DEBIAN/postinst
+          cp build/linux/preremove.sh ${PKGROOT}/DEBIAN/prerm
+          chmod +x ${PKGROOT}/DEBIAN/postinst ${PKGROOT}/DEBIAN/prerm
 
-          dpkg-deb --build pkg slimrmm-agent_${VERSION}_amd64.deb
+          dpkg-deb --build ${PKGROOT} slimrmm-agent_${VERSION}_amd64.deb
 
       - name: Upload DEB to Release
         uses: softprops/action-gh-release@v1
@@ -181,14 +182,15 @@ jobs:
       - name: Build RPM package
         run: |
           VERSION=${GITHUB_REF_NAME#v}
+          PKGROOT="_pkgroot"
 
-          mkdir -p pkg/usr/local/bin
-          mkdir -p pkg/etc/systemd/system
-          mkdir -p pkg/var/lib/slimrmm/{certs,log}
+          mkdir -p ${PKGROOT}/usr/local/bin
+          mkdir -p ${PKGROOT}/etc/systemd/system
+          mkdir -p ${PKGROOT}/var/lib/slimrmm/{certs,log}
 
-          cp slimrmm-agent-linux-amd64 pkg/usr/local/bin/slimrmm-agent
-          chmod +x pkg/usr/local/bin/slimrmm-agent
-          cp build/linux/slimrmm-agent.service pkg/etc/systemd/system/
+          cp slimrmm-agent-linux-amd64 ${PKGROOT}/usr/local/bin/slimrmm-agent
+          chmod +x ${PKGROOT}/usr/local/bin/slimrmm-agent
+          cp build/linux/slimrmm-agent.service ${PKGROOT}/etc/systemd/system/
 
           fpm -s dir -t rpm \
             -n slimrmm-agent \
@@ -200,7 +202,7 @@ jobs:
             --license "Proprietary" \
             --after-install build/linux/postinstall.sh \
             --before-remove build/linux/preremove.sh \
-            -C pkg \
+            -C ${PKGROOT} \
             .
 
           mv *.rpm slimrmm-agent_${VERSION}_amd64.rpm
@@ -231,19 +233,21 @@ jobs:
           LAUNCHD_LABEL="io.slimrmm.agent"
           APP_SUPPORT="/Library/Application Support/SlimRMM"
           LOG_DIR="/Library/Logs/SlimRMM"
+          # Use _pkgroot to avoid conflict with Go's pkg/ directory
+          PKGROOT="_pkgroot"
 
           # Create package structure using standard macOS locations
-          mkdir -p "pkg${APP_SUPPORT}/certs"
-          mkdir -p "pkg${LOG_DIR}"
-          mkdir -p pkg/Library/LaunchDaemons
+          mkdir -p "${PKGROOT}${APP_SUPPORT}/certs"
+          mkdir -p "${PKGROOT}${LOG_DIR}"
+          mkdir -p "${PKGROOT}/Library/LaunchDaemons"
           mkdir -p scripts
 
           # Copy binary
-          cp slimrmm-agent-darwin-arm64 "pkg${APP_SUPPORT}/slimrmm-agent"
-          chmod 755 "pkg${APP_SUPPORT}/slimrmm-agent"
+          cp slimrmm-agent-darwin-arm64 "${PKGROOT}${APP_SUPPORT}/slimrmm-agent"
+          chmod 755 "${PKGROOT}${APP_SUPPORT}/slimrmm-agent"
 
           # Create LaunchDaemon plist with proper macOS paths
-          cat > pkg/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist << 'PLIST'
+          cat > "${PKGROOT}/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist" << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -298,7 +302,7 @@ jobs:
           chmod +x scripts/postinstall
 
           # Build PKG
-          pkgbuild --root pkg \
+          pkgbuild --root "${PKGROOT}" \
             --scripts scripts \
             --identifier ${LAUNCHD_LABEL} \
             --version ${VERSION} \
