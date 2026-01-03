@@ -1,20 +1,24 @@
 #!/bin/bash
 set -e
 
-# SlimRMM Agent Post-Installation Script
-# Installs as systemd service and auto-registers if SLIMRMM_SERVER is set
+# SlimRMM Agent Post-Installation Script for macOS
+# This script runs after the PKG installer copies files
 
 echo "Installing SlimRMM Agent..."
 
+# Create log directory
+mkdir -p "/Library/Logs/SlimRMM"
+chmod 755 "/Library/Logs/SlimRMM"
+
 # The agent handles directory creation, registration, and service installation
-# Just run --install-service with the environment variables
+# Check for server URL (can be passed via installer variables or environment)
 if [ -n "$SLIMRMM_SERVER" ]; then
     echo "Server URL provided: $SLIMRMM_SERVER"
     export SLIMRMM_SERVER
     /usr/local/bin/slimrmm-agent --install-service
 else
     # Check if already configured (update scenario)
-    if [ -f "/var/lib/slimrmm/.slimrmm_config.json" ]; then
+    if [ -f "/Library/Application Support/SlimRMM/.slimrmm_config.json" ]; then
         echo "Existing configuration found, updating service..."
         /usr/local/bin/slimrmm-agent --install-service
     else
@@ -23,12 +27,13 @@ else
         echo "SlimRMM Agent installed but not configured."
         echo ""
         echo "To complete setup, run:"
-        echo "  SLIMRMM_SERVER=https://your-server.com slimrmm-agent --install-service"
+        echo "  sudo SLIMRMM_SERVER=https://your-server.com /usr/local/bin/slimrmm-agent --install-service"
         echo ""
         echo "Or start manually with:"
-        echo "  SLIMRMM_SERVER=https://your-server.com slimrmm-agent"
+        echo "  sudo SLIMRMM_SERVER=https://your-server.com /usr/local/bin/slimrmm-agent"
         echo "================================================"
     fi
 fi
 
 echo "SlimRMM Agent installation complete"
+exit 0

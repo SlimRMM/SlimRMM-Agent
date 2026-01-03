@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Product Id="*"
+             Name="SlimRMM Agent"
+             Language="1033"
+             Version="!(bind.FileVersion.MainExecutable)"
+             Manufacturer="Kiefer Networks"
+             UpgradeCode="B8F5E2D1-4A3C-4B5E-9D8F-1A2B3C4D5E6F">
+
+        <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+
+        <MajorUpgrade DowngradeErrorMessage="A newer version of SlimRMM Agent is already installed."
+                      AllowSameVersionUpgrades="yes" />
+
+        <MediaTemplate EmbedCab="yes" />
+
+        <Feature Id="ProductFeature" Title="SlimRMM Agent" Level="1">
+            <ComponentGroupRef Id="ProductComponents" />
+            <ComponentRef Id="ServiceComponent" />
+        </Feature>
+
+        <Property Id="SLIMRMM_SERVER" Secure="yes" />
+
+        <CustomAction Id="StopService"
+                      Directory="INSTALLFOLDER"
+                      ExeCommand="[INSTALLFOLDER]slimrmm-agent.exe --stop-service"
+                      Execute="deferred"
+                      Impersonate="no"
+                      Return="ignore" />
+
+        <CustomAction Id="InstallService"
+                      Directory="INSTALLFOLDER"
+                      ExeCommand="[INSTALLFOLDER]slimrmm-agent.exe --install-service"
+                      Execute="deferred"
+                      Impersonate="no"
+                      Return="check" />
+
+        <CustomAction Id="UninstallService"
+                      Directory="INSTALLFOLDER"
+                      ExeCommand="[INSTALLFOLDER]slimrmm-agent.exe --uninstall"
+                      Execute="deferred"
+                      Impersonate="no"
+                      Return="ignore" />
+
+        <InstallExecuteSequence>
+            <Custom Action="StopService" Before="InstallFiles">Installed AND NOT UPGRADINGPRODUCTCODE</Custom>
+            <Custom Action="UninstallService" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+            <Custom Action="InstallService" After="InstallFiles">NOT Installed OR UPGRADINGPRODUCTCODE</Custom>
+        </InstallExecuteSequence>
+    </Product>
+
+    <Fragment>
+        <Directory Id="TARGETDIR" Name="SourceDir">
+            <Directory Id="ProgramFiles64Folder">
+                <Directory Id="INSTALLFOLDER" Name="SlimRMM">
+                    <Directory Id="CertsFolder" Name="certs" />
+                    <Directory Id="LogFolder" Name="log" />
+                </Directory>
+            </Directory>
+        </Directory>
+    </Fragment>
+
+    <Fragment>
+        <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+            <Component Id="MainExecutable" Guid="A1B2C3D4-E5F6-7890-ABCD-EF1234567890" Win64="yes">
+                <File Id="MainExecutable"
+                      Source="slimrmm-agent.exe"
+                      KeyPath="yes" />
+            </Component>
+        </ComponentGroup>
+
+        <Component Id="ServiceComponent" Directory="INSTALLFOLDER" Guid="B2C3D4E5-F6A7-8901-BCDE-F23456789012" Win64="yes">
+            <CreateFolder Directory="CertsFolder" />
+            <CreateFolder Directory="LogFolder" />
+            <ServiceInstall Id="SlimRMMService"
+                           Type="ownProcess"
+                           Name="SlimRMMAgent"
+                           DisplayName="SlimRMM Agent"
+                           Description="SlimRMM Remote Monitoring and Management Agent"
+                           Start="auto"
+                           Account="LocalSystem"
+                           ErrorControl="normal" />
+            <ServiceControl Id="StartSlimRMMService"
+                           Name="SlimRMMAgent"
+                           Start="install"
+                           Stop="both"
+                           Remove="uninstall"
+                           Wait="yes" />
+        </Component>
+    </Fragment>
+</Wix>

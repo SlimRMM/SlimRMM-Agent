@@ -1,0 +1,297 @@
+// Package installer provides service installation for different platforms.
+package installer
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+)
+
+const (
+	// Linux systemd service
+	systemdServiceName = "slimrmm-agent"
+	systemdServicePath = "/etc/systemd/system/slimrmm-agent.service"
+
+	// macOS launchd plist
+	launchdPlistName = "io.slimrmm.agent"
+	launchdPlistPath = "/Library/LaunchDaemons/io.slimrmm.agent.plist"
+)
+
+// systemdServiceTemplate is the systemd unit file template.
+const systemdServiceTemplate = `[Unit]
+Description=SlimRMM Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%s
+Restart=always
+RestartSec=10
+User=root
+Environment="SLIMRMM_SERVICE=1"
+
+# Security hardening
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/slimrmm /var/log
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+`
+
+// launchdPlistTemplate is the launchd plist template.
+const launchdPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.slimrmm.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>%s</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Library/Logs/SlimRMM/agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Library/Logs/SlimRMM/agent.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SLIMRMM_SERVICE</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>
+`
+
+// InstallService installs and starts the service for the current platform.
+func InstallService() error {
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("getting executable path: %w", err)
+	}
+
+	// Resolve symlinks to get the real path
+	binaryPath, err = filepath.EvalSymlinks(binaryPath)
+	if err != nil {
+		return fmt.Errorf("resolving executable path: %w", err)
+	}
+
+	switch runtime.GOOS {
+	case "linux":
+		return installSystemdService(binaryPath)
+	case "darwin":
+		return installLaunchdService(binaryPath)
+	case "windows":
+		return installWindowsService(binaryPath)
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+}
+
+// installSystemdService installs and starts a systemd service on Linux.
+func installSystemdService(binaryPath string) error {
+	// Generate service file content
+	serviceContent := fmt.Sprintf(systemdServiceTemplate, binaryPath)
+
+	// Write service file
+	if err := os.WriteFile(systemdServicePath, []byte(serviceContent), 0644); err != nil {
+		return fmt.Errorf("writing service file: %w", err)
+	}
+
+	// Reload systemd
+	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+		return fmt.Errorf("reloading systemd: %w", err)
+	}
+
+	// Enable service
+	if err := exec.Command("systemctl", "enable", systemdServiceName).Run(); err != nil {
+		return fmt.Errorf("enabling service: %w", err)
+	}
+
+	// Start service
+	if err := exec.Command("systemctl", "start", systemdServiceName).Run(); err != nil {
+		return fmt.Errorf("starting service: %w", err)
+	}
+
+	return nil
+}
+
+// installLaunchdService installs and starts a launchd service on macOS.
+func installLaunchdService(binaryPath string) error {
+	// Ensure log directory exists
+	logDir := "/Library/Logs/SlimRMM"
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return fmt.Errorf("creating log directory: %w", err)
+	}
+
+	// Generate plist content
+	plistContent := fmt.Sprintf(launchdPlistTemplate, binaryPath)
+
+	// Unload existing service if present
+	exec.Command("launchctl", "unload", launchdPlistPath).Run()
+
+	// Write plist file
+	if err := os.WriteFile(launchdPlistPath, []byte(plistContent), 0644); err != nil {
+		return fmt.Errorf("writing plist file: %w", err)
+	}
+
+	// Load and start service
+	if err := exec.Command("launchctl", "load", "-w", launchdPlistPath).Run(); err != nil {
+		return fmt.Errorf("loading service: %w", err)
+	}
+
+	return nil
+}
+
+// installWindowsService installs a Windows service.
+func installWindowsService(binaryPath string) error {
+	// Check if service exists
+	checkCmd := exec.Command("sc", "query", "SlimRMMAgent")
+	if checkCmd.Run() == nil {
+		// Service exists, stop it first
+		exec.Command("sc", "stop", "SlimRMMAgent").Run()
+	}
+
+	// Create or update service
+	createCmd := exec.Command("sc", "create", "SlimRMMAgent",
+		"binPath=", binaryPath,
+		"start=", "auto",
+		"DisplayName=", "SlimRMM Agent",
+	)
+	if err := createCmd.Run(); err != nil {
+		// Try to update if creation fails
+		updateCmd := exec.Command("sc", "config", "SlimRMMAgent",
+			"binPath=", binaryPath,
+		)
+		if err := updateCmd.Run(); err != nil {
+			return fmt.Errorf("configuring service: %w", err)
+		}
+	}
+
+	// Set service description
+	exec.Command("sc", "description", "SlimRMMAgent", "SlimRMM Remote Monitoring and Management Agent").Run()
+
+	// Start service
+	if err := exec.Command("sc", "start", "SlimRMMAgent").Run(); err != nil {
+		return fmt.Errorf("starting service: %w", err)
+	}
+
+	return nil
+}
+
+// UninstallService stops and removes the service.
+func UninstallService() error {
+	switch runtime.GOOS {
+	case "linux":
+		return uninstallSystemdService()
+	case "darwin":
+		return uninstallLaunchdService()
+	case "windows":
+		return uninstallWindowsService()
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+}
+
+// uninstallSystemdService stops and removes the systemd service.
+func uninstallSystemdService() error {
+	// Stop service
+	exec.Command("systemctl", "stop", systemdServiceName).Run()
+
+	// Disable service
+	exec.Command("systemctl", "disable", systemdServiceName).Run()
+
+	// Remove service file
+	os.Remove(systemdServicePath)
+
+	// Reload systemd
+	exec.Command("systemctl", "daemon-reload").Run()
+
+	return nil
+}
+
+// uninstallLaunchdService stops and removes the launchd service.
+func uninstallLaunchdService() error {
+	// Unload service
+	exec.Command("launchctl", "unload", launchdPlistPath).Run()
+
+	// Remove plist file
+	os.Remove(launchdPlistPath)
+
+	return nil
+}
+
+// uninstallWindowsService stops and removes the Windows service.
+func uninstallWindowsService() error {
+	// Stop service
+	exec.Command("sc", "stop", "SlimRMMAgent").Run()
+
+	// Delete service
+	exec.Command("sc", "delete", "SlimRMMAgent").Run()
+
+	return nil
+}
+
+// IsServiceInstalled checks if the service is installed.
+func IsServiceInstalled() bool {
+	switch runtime.GOOS {
+	case "linux":
+		_, err := os.Stat(systemdServicePath)
+		return err == nil
+	case "darwin":
+		_, err := os.Stat(launchdPlistPath)
+		return err == nil
+	case "windows":
+		return exec.Command("sc", "query", "SlimRMMAgent").Run() == nil
+	default:
+		return false
+	}
+}
+
+// IsServiceRunning checks if the service is currently running.
+func IsServiceRunning() bool {
+	switch runtime.GOOS {
+	case "linux":
+		out, err := exec.Command("systemctl", "is-active", systemdServiceName).Output()
+		return err == nil && strings.TrimSpace(string(out)) == "active"
+	case "darwin":
+		return exec.Command("launchctl", "list", launchdPlistName).Run() == nil
+	case "windows":
+		out, err := exec.Command("sc", "query", "SlimRMMAgent").Output()
+		return err == nil && strings.Contains(string(out), "RUNNING")
+	default:
+		return false
+	}
+}
+
+// RestartService restarts the service.
+func RestartService() error {
+	switch runtime.GOOS {
+	case "linux":
+		return exec.Command("systemctl", "restart", systemdServiceName).Run()
+	case "darwin":
+		// launchctl doesn't have restart, so unload/load
+		exec.Command("launchctl", "unload", launchdPlistPath).Run()
+		return exec.Command("launchctl", "load", "-w", launchdPlistPath).Run()
+	case "windows":
+		exec.Command("sc", "stop", "SlimRMMAgent").Run()
+		return exec.Command("sc", "start", "SlimRMMAgent").Run()
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+}
+
+// IsRunningAsService returns true if the process is running as a system service.
+func IsRunningAsService() bool {
+	return os.Getenv("SLIMRMM_SERVICE") == "1"
+}

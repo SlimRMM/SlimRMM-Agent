@@ -1,5 +1,5 @@
-// Package actions provides terminal/PTY functionality.
-// +build !windows
+// Package actions provides terminal functionality for Windows.
+// +build windows
 
 package actions
 
@@ -10,17 +10,15 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"syscall"
-	"unsafe"
-
-	"github.com/creack/pty"
 )
 
-// Terminal represents an interactive PTY terminal session.
+// Terminal represents a terminal session (limited on Windows).
 type Terminal struct {
 	ID         string
 	cmd        *exec.Cmd
-	pty        *os.File
+	stdin      io.WriteCloser
+	stdout     io.ReadCloser
+	stderr     io.ReadCloser
 	done       chan struct{}
 	mu         sync.RWMutex
 	running    bool
@@ -42,7 +40,7 @@ func NewTerminalManager() *TerminalManager {
 	}
 }
 
-// StartTerminal starts a new PTY terminal session.
+// StartTerminal starts a new terminal session (cmd.exe on Windows).
 func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -51,29 +49,46 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 		return nil, fmt.Errorf("terminal %s already exists", id)
 	}
 
-	// Get user's shell
-	shell := os.Getenv("SHELL")
+	// Use PowerShell or cmd.exe
+	shell := os.Getenv("COMSPEC")
 	if shell == "" {
-		shell = "/bin/bash"
+		shell = "cmd.exe"
 	}
 
-	// Create command with login shell
-	cmd := exec.Command(shell, "-l")
-	cmd.Env = append(os.Environ(),
-		"TERM=xterm-256color",
-		"COLORTERM=truecolor",
-	)
+	cmd := exec.Command(shell)
+	cmd.Env = os.Environ()
 
-	// Start with PTY
-	ptmx, err := pty.Start(cmd)
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, fmt.Errorf("starting PTY: %w", err)
+		return nil, fmt.Errorf("creating stdin pipe: %w", err)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		stdin.Close()
+		return nil, fmt.Errorf("creating stdout pipe: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		stdin.Close()
+		stdout.Close()
+		return nil, fmt.Errorf("creating stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		stdout.Close()
+		stderr.Close()
+		return nil, fmt.Errorf("starting command: %w", err)
 	}
 
 	term := &Terminal{
 		ID:         id,
 		cmd:        cmd,
-		pty:        ptmx,
+		stdin:      stdin,
+		stdout:     stdout,
+		stderr:     stderr,
 		done:       make(chan struct{}),
 		running:    true,
 		outputChan: make(chan []byte, 256),
@@ -81,13 +96,11 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 		cols:       80,
 	}
 
-	// Set initial size
-	term.Resize(24, 80)
+	// Read output goroutines
+	go term.readOutput(stdout)
+	go term.readOutput(stderr)
 
-	// Start output reader goroutine
-	go term.readOutput()
-
-	// Wait for process to exit
+	// Wait for process exit
 	go func() {
 		cmd.Wait()
 		term.mu.Lock()
@@ -101,8 +114,8 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 	return term, nil
 }
 
-// readOutput reads from PTY and sends to output channel.
-func (t *Terminal) readOutput() {
+// readOutput reads from a pipe and sends to output channel.
+func (t *Terminal) readOutput(r io.ReadCloser) {
 	buf := make([]byte, 4096)
 	for {
 		select {
@@ -111,16 +124,12 @@ func (t *Terminal) readOutput() {
 		default:
 		}
 
-		n, err := t.pty.Read(buf)
+		n, err := r.Read(buf)
 		if err != nil {
-			if err != io.EOF {
-				// Log error but don't crash
-			}
 			return
 		}
 
 		if n > 0 {
-			// Make a copy of the data
 			data := make([]byte, n)
 			copy(data, buf[:n])
 
@@ -129,7 +138,7 @@ func (t *Terminal) readOutput() {
 			case <-t.done:
 				return
 			default:
-				// Channel full, drop oldest data
+				// Channel full, drop oldest
 				select {
 				case <-t.outputChan:
 				default:
@@ -140,7 +149,7 @@ func (t *Terminal) readOutput() {
 	}
 }
 
-// SendInput sends raw input to the terminal (character by character).
+// SendInput sends input to the terminal.
 func (m *TerminalManager) SendInput(id, input string) error {
 	m.mu.RLock()
 	term, exists := m.terminals[id]
@@ -158,8 +167,7 @@ func (m *TerminalManager) SendInput(id, input string) error {
 		return fmt.Errorf("terminal %s is not running", id)
 	}
 
-	// Write raw input (no newline added - frontend handles that)
-	_, err := term.pty.Write([]byte(input))
+	_, err := term.stdin.Write([]byte(input))
 	return err
 }
 
@@ -181,40 +189,20 @@ func (m *TerminalManager) SendInputRaw(id string, data []byte) error {
 		return fmt.Errorf("terminal %s is not running", id)
 	}
 
-	_, err := term.pty.Write(data)
+	_, err := term.stdin.Write(data)
 	return err
 }
 
-// Resize changes the terminal size.
+// Resize is a no-op on Windows (no PTY support).
 func (t *Terminal) Resize(rows, cols uint16) error {
 	t.mu.Lock()
 	t.rows = rows
 	t.cols = cols
 	t.mu.Unlock()
-
-	ws := struct {
-		Row    uint16
-		Col    uint16
-		Xpixel uint16
-		Ypixel uint16
-	}{
-		Row: rows,
-		Col: cols,
-	}
-
-	_, _, errno := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		t.pty.Fd(),
-		syscall.TIOCSWINSZ,
-		uintptr(unsafe.Pointer(&ws)),
-	)
-	if errno != 0 {
-		return errno
-	}
 	return nil
 }
 
-// ResizeTerminal resizes a terminal session.
+// ResizeTerminal resizes a terminal session (no-op on Windows).
 func (m *TerminalManager) ResizeTerminal(id string, rows, cols uint16) error {
 	m.mu.RLock()
 	term, exists := m.terminals[id]
@@ -252,7 +240,7 @@ func (m *TerminalManager) StopTerminal(id string) error {
 
 	term.mu.Lock()
 	if term.running {
-		term.pty.Close()
+		term.stdin.Close()
 		term.cmd.Process.Kill()
 	}
 	term.mu.Unlock()

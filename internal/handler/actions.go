@@ -58,6 +58,7 @@ func (h *Handler) registerHandlers() {
 	h.handlers["start_terminal"] = h.handleStartTerminal
 	h.handlers["terminal_input"] = h.handleTerminalInput
 	h.handlers["terminal_output"] = h.handleTerminalOutput
+	h.handlers["terminal_resize"] = h.handleResizeTerminal
 	h.handlers["stop_terminal"] = h.handleStopTerminal
 
 	// osquery
@@ -595,6 +596,8 @@ func (h *Handler) handleUninstallSoftware(ctx context.Context, data json.RawMess
 
 type startTerminalRequest struct {
 	TerminalID string `json:"terminal_id"`
+	Rows       uint16 `json:"rows,omitempty"`
+	Cols       uint16 `json:"cols,omitempty"`
 }
 
 func (h *Handler) handleStartTerminal(ctx context.Context, data json.RawMessage) (interface{}, error) {
@@ -603,17 +606,57 @@ func (h *Handler) handleStartTerminal(ctx context.Context, data json.RawMessage)
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	_, err := h.terminalManager.StartTerminal(req.TerminalID)
+	term, err := h.terminalManager.StartTerminal(req.TerminalID)
 	if err != nil {
 		return nil, err
 	}
 
+	// Set initial size if provided
+	if req.Rows > 0 && req.Cols > 0 {
+		term.Resize(req.Rows, req.Cols)
+	}
+
+	// Start output streaming goroutine
+	go h.streamTerminalOutput(req.TerminalID)
+
 	return map[string]string{"status": "started", "terminal_id": req.TerminalID}, nil
+}
+
+// streamTerminalOutput continuously sends terminal output to the backend.
+func (h *Handler) streamTerminalOutput(terminalID string) {
+	outputChan, err := h.terminalManager.GetOutput(terminalID)
+	if err != nil {
+		return
+	}
+
+	for data := range outputChan {
+		if len(data) == 0 {
+			continue
+		}
+
+		// Send output as base64-encoded bytes for xterm.js
+		h.SendRaw(map[string]interface{}{
+			"action":      "terminal_output",
+			"terminal_id": terminalID,
+			"output":      base64.StdEncoding.EncodeToString(data),
+			"running":     h.terminalManager.IsRunning(terminalID),
+		})
+	}
+
+	// Notify that terminal has closed
+	h.SendRaw(map[string]interface{}{
+		"action":      "terminal_output",
+		"terminal_id": terminalID,
+		"output":      "",
+		"running":     false,
+		"closed":      true,
+	})
 }
 
 type terminalInputRequest struct {
 	TerminalID string `json:"terminal_id"`
 	Input      string `json:"input"`
+	IsBase64   bool   `json:"is_base64,omitempty"`
 }
 
 func (h *Handler) handleTerminalInput(ctx context.Context, data json.RawMessage) (interface{}, error) {
@@ -622,7 +665,19 @@ func (h *Handler) handleTerminalInput(ctx context.Context, data json.RawMessage)
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	if err := h.terminalManager.SendInput(req.TerminalID, req.Input); err != nil {
+	var err error
+	if req.IsBase64 {
+		// Decode base64 input for raw bytes (special keys, etc.)
+		rawData, decErr := base64.StdEncoding.DecodeString(req.Input)
+		if decErr != nil {
+			return nil, fmt.Errorf("decoding base64 input: %w", decErr)
+		}
+		err = h.terminalManager.SendInputRaw(req.TerminalID, rawData)
+	} else {
+		err = h.terminalManager.SendInput(req.TerminalID, req.Input)
+	}
+
+	if err != nil {
 		return nil, err
 	}
 
@@ -631,7 +686,7 @@ func (h *Handler) handleTerminalInput(ctx context.Context, data json.RawMessage)
 
 type terminalOutputRequest struct {
 	TerminalID string `json:"terminal_id"`
-	MaxLines   int    `json:"max_lines,omitempty"`
+	MaxBytes   int    `json:"max_bytes,omitempty"`
 }
 
 func (h *Handler) handleTerminalOutput(ctx context.Context, data json.RawMessage) (interface{}, error) {
@@ -640,20 +695,44 @@ func (h *Handler) handleTerminalOutput(ctx context.Context, data json.RawMessage
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	maxLines := req.MaxLines
-	if maxLines == 0 {
-		maxLines = 100
+	maxBytes := req.MaxBytes
+	if maxBytes == 0 {
+		maxBytes = 32768 // 32 KB default
 	}
 
-	lines, err := h.terminalManager.ReadOutput(ctx, req.TerminalID, maxLines)
+	output, err := h.terminalManager.ReadOutput(ctx, req.TerminalID, maxBytes)
 	if err != nil {
 		return nil, err
 	}
 
 	return map[string]interface{}{
 		"terminal_id": req.TerminalID,
-		"lines":       lines,
+		"output":      base64.StdEncoding.EncodeToString(output),
 		"running":     h.terminalManager.IsRunning(req.TerminalID),
+	}, nil
+}
+
+type resizeTerminalRequest struct {
+	TerminalID string `json:"terminal_id"`
+	Rows       uint16 `json:"rows"`
+	Cols       uint16 `json:"cols"`
+}
+
+func (h *Handler) handleResizeTerminal(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req resizeTerminalRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if err := h.terminalManager.ResizeTerminal(req.TerminalID, req.Rows, req.Cols); err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"status":      "resized",
+		"terminal_id": req.TerminalID,
+		"rows":        req.Rows,
+		"cols":        req.Cols,
 	}, nil
 }
 

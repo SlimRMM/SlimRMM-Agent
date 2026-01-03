@@ -25,14 +25,12 @@ import (
 func main() {
 	// Parse command line flags
 	var (
-		showVersion = flag.Bool("version", false, "Show version information")
-		showInfo    = flag.Bool("info", false, "Show detailed agent information")
-		doUpdate    = flag.Bool("update", false, "Check for and install updates")
-		install     = flag.Bool("install", false, "Install the agent")
-		uninstall   = flag.Bool("uninstall", false, "Uninstall the agent")
-		serverURL   = flag.String("server", "", "Server URL for registration")
-		regKey      = flag.String("key", "", "Registration key")
-		debug       = flag.Bool("debug", false, "Enable debug logging")
+		showVersion    = flag.Bool("version", false, "Show version information")
+		showInfo       = flag.Bool("info", false, "Show detailed agent information")
+		doUpdate       = flag.Bool("update", false, "Check for and install updates")
+		uninstall      = flag.Bool("uninstall", false, "Uninstall the agent")
+		installService = flag.Bool("install-service", false, "Install as system service")
+		debug          = flag.Bool("debug", false, "Enable debug logging")
 	)
 	flag.Parse()
 
@@ -68,15 +66,16 @@ func main() {
 	// Get paths
 	paths := config.DefaultPaths()
 
-	// Handle install/uninstall
-	if *install {
-		if err := runInstall(*serverURL, *regKey, paths, logger); err != nil {
-			logger.Error("installation failed", "error", err)
+	// Handle service installation
+	if *installService {
+		if err := runInstallService(paths, logger); err != nil {
+			logger.Error("service installation failed", "error", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
 	}
 
+	// Handle uninstall
 	if *uninstall {
 		if err := runUninstall(paths, logger); err != nil {
 			logger.Error("uninstallation failed", "error", err)
@@ -85,7 +84,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Run the agent
+	// Run the agent (with auto-install if needed)
 	if err := run(paths, logger); err != nil {
 		logger.Error("agent failed", "error", err)
 		os.Exit(1)
@@ -95,10 +94,24 @@ func main() {
 func run(paths config.Paths, logger *slog.Logger) error {
 	logger.Info("starting SlimRMM Agent", "version", version.Get().Version)
 
-	// Load configuration
+	// Load configuration - or auto-install if ENV vars are set
 	cfg, err := config.Load(paths.ConfigFile)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		if err == config.ErrConfigNotFound {
+			// Config doesn't exist - check for auto-install via ENV
+			serverURL := os.Getenv("SLIMRMM_SERVER")
+			if serverURL != "" {
+				logger.Info("no config found, auto-registering with server", "url", serverURL)
+				cfg, err = autoInstall(serverURL, paths, logger)
+				if err != nil {
+					return fmt.Errorf("auto-install failed: %w", err)
+				}
+			} else {
+				return fmt.Errorf("no config found and SLIMRMM_SERVER not set - run with SLIMRMM_SERVER=https://your-server.com")
+			}
+		} else {
+			return fmt.Errorf("loading config: %w", err)
+		}
 	}
 
 	// Setup mTLS
@@ -176,20 +189,45 @@ func run(paths config.Paths, logger *slog.Logger) error {
 	}
 }
 
-func runInstall(serverURL, regKey string, paths config.Paths, logger *slog.Logger) error {
-	logger.Info("installing SlimRMM Agent")
-
-	// Check for required parameters
-	if serverURL == "" {
-		// Try environment variable
-		serverURL = os.Getenv("SLIMRMM_SERVER")
-	}
-	if regKey == "" {
-		regKey = os.Getenv("SLIMRMM_KEY")
+// autoInstall registers the agent if no config exists.
+// This is called automatically when SLIMRMM_SERVER is set.
+func autoInstall(serverURL string, paths config.Paths, logger *slog.Logger) (*config.Config, error) {
+	// Create directories
+	if err := config.EnsureDirectories(paths); err != nil {
+		return nil, fmt.Errorf("creating directories: %w", err)
 	}
 
+	// Register with server and get UUID + certificates
+	logger.Info("registering with server", "url", serverURL)
+	cfg, err := installer.Register(serverURL, "", paths)
+	if err != nil {
+		return nil, fmt.Errorf("registration failed: %w", err)
+	}
+
+	logger.Info("registration successful", "uuid", cfg.GetUUID())
+	return cfg, nil
+}
+
+// runInstallService installs the agent as a system service.
+// This should be called after the binary is placed in the correct location.
+func runInstallService(paths config.Paths, logger *slog.Logger) error {
+	logger.Info("installing SlimRMM Agent as system service")
+
+	// Check if already installed
+	if installer.IsServiceInstalled() {
+		logger.Info("service already installed, updating...")
+	}
+
+	// Check for server URL
+	serverURL := os.Getenv("SLIMRMM_SERVER")
 	if serverURL == "" {
-		return fmt.Errorf("server URL is required (use --server or SLIMRMM_SERVER)")
+		// Try to load existing config
+		cfg, err := config.Load(paths.ConfigFile)
+		if err != nil {
+			return fmt.Errorf("SLIMRMM_SERVER not set and no existing config found")
+		}
+		serverURL = cfg.GetServer()
+		logger.Info("using server from existing config", "url", serverURL)
 	}
 
 	// Create directories
@@ -197,22 +235,40 @@ func runInstall(serverURL, regKey string, paths config.Paths, logger *slog.Logge
 		return fmt.Errorf("creating directories: %w", err)
 	}
 
-	// Register with server and get UUID + certificates
-	logger.Info("registering with server", "url", serverURL)
-	cfg, err := installer.Register(serverURL, regKey, paths)
-	if err != nil {
-		return fmt.Errorf("registration failed: %w", err)
+	// Check if we need to register (no existing config or UUID)
+	cfg, err := config.Load(paths.ConfigFile)
+	if err == config.ErrConfigNotFound || (err == nil && cfg.GetUUID() == "") {
+		logger.Info("registering with server", "url", serverURL)
+		cfg, err = installer.Register(serverURL, "", paths)
+		if err != nil {
+			return fmt.Errorf("registration failed: %w", err)
+		}
+		logger.Info("registration successful", "uuid", cfg.GetUUID())
+	} else if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	} else {
+		logger.Info("using existing registration", "uuid", cfg.GetUUID())
 	}
 
-	logger.Info("registration successful", "uuid", cfg.GetUUID())
-	logger.Info("installation complete", "config", paths.ConfigFile)
+	// Install and start service
+	if err := installer.InstallService(); err != nil {
+		return fmt.Errorf("installing service: %w", err)
+	}
+
+	logger.Info("service installed and started successfully")
 	return nil
 }
 
 func runUninstall(paths config.Paths, logger *slog.Logger) error {
 	logger.Info("uninstalling SlimRMM Agent")
 
-	// TODO: Stop and remove service
+	// Stop and remove service
+	if installer.IsServiceInstalled() {
+		logger.Info("removing service...")
+		if err := installer.UninstallService(); err != nil {
+			logger.Warn("failed to remove service", "error", err)
+		}
+	}
 
 	// Remove configuration and certificates
 	filesToRemove := []string{

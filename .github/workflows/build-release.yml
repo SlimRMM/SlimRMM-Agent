@@ -288,15 +288,24 @@ jobs:
           PREINSTALL
           chmod +x scripts/preinstall
 
-          # Postinstall - set permissions and create symlink
+          # Postinstall - set permissions, create symlink, and auto-start if configured
           cat > scripts/postinstall << 'POSTINSTALL'
           #!/bin/bash
           APP_SUPPORT="/Library/Application Support/SlimRMM"
           chmod 755 "${APP_SUPPORT}/slimrmm-agent"
           chmod 700 "${APP_SUPPORT}/certs"
+          mkdir -p /Library/Logs/SlimRMM
           # Create symlink for easy CLI access
           ln -sf "${APP_SUPPORT}/slimrmm-agent" /usr/local/bin/slimrmm-agent 2>/dev/null || true
-          echo "SlimRMM Agent installed. Configure with: slimrmm-agent --install --server <URL>"
+          # Auto-install service if SLIMRMM_SERVER is set or config exists
+          if [ -n "$SLIMRMM_SERVER" ]; then
+              /usr/local/bin/slimrmm-agent --install-service
+          elif [ -f "${APP_SUPPORT}/.slimrmm_config.json" ]; then
+              /usr/local/bin/slimrmm-agent --install-service
+          else
+              echo "SlimRMM Agent installed."
+              echo "To complete setup: sudo SLIMRMM_SERVER=https://your-server.com slimrmm-agent --install-service"
+          fi
           exit 0
           POSTINSTALL
           chmod +x scripts/postinstall
@@ -313,5 +322,42 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: '*.pkg'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-msi:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows AMD64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: slimrmm-agent-windows-amd64
+          path: .
+
+      - name: Rename binary
+        run: |
+          Move-Item -Path slimrmm-agent-windows-amd64.exe -Destination slimrmm-agent.exe
+
+      - name: Build MSI
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+
+          # Update version in WXS file
+          $wxsContent = Get-Content build/windows/slimrmm-agent.wxs -Raw
+          $wxsContent = $wxsContent -replace '!\(bind\.FileVersion\.MainExecutable\)', $version
+          Set-Content -Path slimrmm-agent.wxs -Value $wxsContent
+
+          # Build MSI using WiX
+          & "${env:WIX}bin\candle.exe" -arch x64 slimrmm-agent.wxs
+          & "${env:WIX}bin\light.exe" -ext WixUtilExtension slimrmm-agent.wixobj -o "slimrmm-agent_${version}_amd64.msi"
+
+      - name: Upload MSI to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: '*.msi'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
