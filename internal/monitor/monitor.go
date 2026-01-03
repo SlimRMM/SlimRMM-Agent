@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -227,7 +228,7 @@ func (m *Monitor) getExternalIP() string {
 
 	buf := make([]byte, 64)
 	n, _ := resp.Body.Read(buf)
-	ip := string(buf[:n])
+	ip := strings.TrimSpace(string(buf[:n]))
 
 	// Validate IP
 	if parsed := net.ParseIP(ip); parsed != nil {

@@ -74,9 +74,14 @@ type Updater struct {
 // New creates a new Updater.
 func New(logger *slog.Logger) *Updater {
 	execPath, _ := os.Executable()
-	dataDir := "/var/lib/slimrmm"
-	if runtime.GOOS == "windows" {
+	var dataDir string
+	switch runtime.GOOS {
+	case "darwin":
+		dataDir = "/Library/Application Support/SlimRMM"
+	case "windows":
 		dataDir = filepath.Join(os.Getenv("ProgramData"), "SlimRMM")
+	default: // linux
+		dataDir = "/var/lib/slimrmm"
 	}
 
 	return &Updater{
@@ -137,9 +142,9 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*UpdateInfo, error) {
 	}
 
 	// Find the right asset for this OS/arch
-	assetName := getAssetName()
+	assetPattern := getAssetPattern()
 	for _, asset := range release.Assets {
-		if asset.Name == assetName {
+		if matchesAssetPattern(asset.Name, assetPattern) {
 			u.logger.Info("update available", "current", currentVersion, "latest", latestVersion)
 			return &UpdateInfo{
 				Version:     latestVersion,
@@ -153,13 +158,29 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*UpdateInfo, error) {
 	return nil, fmt.Errorf("no compatible asset found for %s/%s", runtime.GOOS, runtime.GOARCH)
 }
 
-// getAssetName returns the expected asset name for this platform.
-func getAssetName() string {
+// getAssetPattern returns the expected asset pattern for this platform.
+// Assets are named like: slimrmm-agent_VERSION_OS_ARCH.EXT
+func getAssetPattern() string {
 	ext := "tar.gz"
 	if runtime.GOOS == "windows" {
 		ext = "zip"
 	}
-	return fmt.Sprintf("slimrmm-agent_%s_%s.%s", runtime.GOOS, runtime.GOARCH, ext)
+	// Pattern: slimrmm-agent_*_OS_ARCH.EXT
+	return fmt.Sprintf("slimrmm-agent_%%s_%s_%s.%s", runtime.GOOS, runtime.GOARCH, ext)
+}
+
+// matchesAssetPattern checks if an asset name matches the expected pattern.
+func matchesAssetPattern(assetName, pattern string) bool {
+	ext := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		ext = ".zip"
+	}
+
+	// Expected format: slimrmm-agent_VERSION_OS_ARCH.EXT
+	prefix := fmt.Sprintf("slimrmm-agent_")
+	suffix := fmt.Sprintf("_%s_%s%s", runtime.GOOS, runtime.GOARCH, ext)
+
+	return strings.HasPrefix(assetName, prefix) && strings.HasSuffix(assetName, suffix)
 }
 
 // isNewerVersion compares two version strings.
