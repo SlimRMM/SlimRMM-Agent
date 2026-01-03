@@ -529,17 +529,18 @@ func (u *Updater) extractZip(archivePath, destPath string) error {
 }
 
 // replaceBinary replaces the current binary with the new one.
+// Uses rename trick to avoid "text file busy" error on running executables.
 func (u *Updater) replaceBinary(newPath string) error {
-	// On Windows, we need to rename the current binary first
-	if runtime.GOOS == "windows" {
-		oldPath := u.binaryPath + ".old"
-		os.Remove(oldPath)
-		if err := os.Rename(u.binaryPath, oldPath); err != nil {
-			return err
-		}
+	// Rename current binary first - this works even when the binary is running
+	// because the running process keeps the inode open, not the filename.
+	oldPath := u.binaryPath + ".old"
+	os.Remove(oldPath) // Remove any previous .old file
+	if err := os.Rename(u.binaryPath, oldPath); err != nil {
+		// If rename fails, try direct copy (might work if service is stopped)
+		u.logger.Warn("rename failed, trying direct copy", "error", err)
 	}
 
-	// Copy new binary
+	// Copy new binary to the original location
 	src, err := os.Open(newPath)
 	if err != nil {
 		return err
@@ -556,12 +557,26 @@ func (u *Updater) replaceBinary(newPath string) error {
 		return err
 	}
 
-	return os.Chmod(u.binaryPath, 0755)
+	if err := os.Chmod(u.binaryPath, 0755); err != nil {
+		return err
+	}
+
+	// Clean up old binary (best effort - may fail on Windows until reboot)
+	os.Remove(oldPath)
+
+	return nil
 }
 
 // rollback restores the backup binary.
 func (u *Updater) rollback(backupPath string) error {
 	u.logger.Info("rolling back to previous version", "backup", backupPath)
+
+	// Use rename trick to avoid "text file busy" error
+	oldPath := u.binaryPath + ".failed"
+	os.Remove(oldPath)
+	if err := os.Rename(u.binaryPath, oldPath); err != nil {
+		u.logger.Warn("rename failed during rollback", "error", err)
+	}
 
 	src, err := os.Open(backupPath)
 	if err != nil {
@@ -579,7 +594,14 @@ func (u *Updater) rollback(backupPath string) error {
 		return err
 	}
 
-	return os.Chmod(u.binaryPath, 0755)
+	if err := os.Chmod(u.binaryPath, 0755); err != nil {
+		return err
+	}
+
+	// Clean up failed binary
+	os.Remove(oldPath)
+
+	return nil
 }
 
 // stopService stops the agent service.
