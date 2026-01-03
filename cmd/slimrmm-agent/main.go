@@ -16,6 +16,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/config"
 	"github.com/slimrmm/slimrmm-agent/internal/handler"
 	"github.com/slimrmm/slimrmm-agent/internal/installer"
+	"github.com/slimrmm/slimrmm-agent/internal/logging"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
@@ -52,19 +53,20 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Setup logging
-	logLevel := slog.LevelInfo
-	if *debug {
-		logLevel = slog.LevelDebug
-	}
-
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel,
-	}))
-	slog.SetDefault(logger)
-
-	// Get paths
+	// Get paths first (needed for log directory)
 	paths := config.DefaultPaths()
+
+	// Setup logging to both file and stdout
+	logger, logCleanup, err := logging.SetupWithDefaults(paths.LogDir, *debug)
+	if err != nil {
+		// Fallback to simple stdout logging
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		}))
+		logCleanup = func() {}
+	}
+	defer logCleanup()
+	slog.SetDefault(logger)
 
 	// Handle service installation
 	if *installService {
