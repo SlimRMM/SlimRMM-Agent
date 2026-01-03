@@ -53,9 +53,21 @@ type Response struct {
 
 // HeartbeatMessage is the format expected by the backend (Python-compatible).
 type HeartbeatMessage struct {
-	Action     string         `json:"action"`
-	Stats      HeartbeatStats `json:"stats"`
-	ExternalIP string         `json:"external_ip,omitempty"`
+	Action     string              `json:"action"`
+	Stats      HeartbeatStats      `json:"stats"`
+	ExternalIP string              `json:"external_ip,omitempty"`
+	Proxmox    *HeartbeatProxmox   `json:"proxmox,omitempty"`
+}
+
+// HeartbeatProxmox contains Proxmox host information.
+type HeartbeatProxmox struct {
+	IsProxmox      bool   `json:"is_proxmox"`
+	Version        string `json:"version,omitempty"`
+	Release        string `json:"release,omitempty"`
+	KernelVersion  string `json:"kernel_version,omitempty"`
+	ClusterName    string `json:"cluster_name,omitempty"`
+	NodeName       string `json:"node_name,omitempty"`
+	RepositoryType string `json:"repository_type,omitempty"`
 }
 
 // HeartbeatStats contains the stats in the format expected by the backend.
@@ -443,6 +455,19 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 		ExternalIP: stats.ExternalIP,
 	}
 
+	// Add Proxmox info if this is a Proxmox host
+	if proxmoxInfo := GetProxmoxInfo(ctx); proxmoxInfo != nil {
+		heartbeat.Proxmox = &HeartbeatProxmox{
+			IsProxmox:      proxmoxInfo.IsProxmox,
+			Version:        proxmoxInfo.Version,
+			Release:        proxmoxInfo.Release,
+			KernelVersion:  proxmoxInfo.KernelVersion,
+			ClusterName:    proxmoxInfo.ClusterName,
+			NodeName:       proxmoxInfo.NodeName,
+			RepositoryType: proxmoxInfo.RepositoryType,
+		}
+	}
+
 	h.SendRaw(heartbeat)
 
 	// Update last heartbeat time in config
@@ -553,6 +578,9 @@ func (h *Handler) Close() error {
 	if h.uploadManager != nil {
 		h.uploadManager.Stop()
 	}
+
+	// Close Proxmox client
+	CloseProxmoxClient()
 
 	if h.conn != nil {
 		h.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))

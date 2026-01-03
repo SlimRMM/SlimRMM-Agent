@@ -74,6 +74,9 @@ func (h *Handler) registerHandlers() {
 	// Agent management - Python compatible names
 	h.handlers["update_agent"] = h.handleUpdateAgent
 	h.handlers["update_osquery"] = h.handleUpdateOsquery // Python: update_osquery
+
+	// Proxmox handlers (only active on Proxmox hosts)
+	h.registerProxmoxHandlers()
 }
 
 // Command handlers
