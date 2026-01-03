@@ -1,3 +1,5 @@
+//go:build cgo
+
 // Package remotedesktop provides WebRTC-based screen sharing and remote control.
 package remotedesktop
 
