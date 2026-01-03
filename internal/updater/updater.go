@@ -62,13 +62,17 @@ type UpdateResult struct {
 	RestartNeeded bool  `json:"restart_needed"`
 }
 
+// MaintenanceCallback is called to notify the backend about maintenance mode changes.
+type MaintenanceCallback func(enabled bool, reason string)
+
 // Updater manages agent updates.
 type Updater struct {
-	logger      *slog.Logger
-	binaryPath  string
-	backupPath  string
-	dataDir     string
-	serviceName string
+	logger              *slog.Logger
+	binaryPath          string
+	backupPath          string
+	dataDir             string
+	serviceName         string
+	maintenanceCallback MaintenanceCallback
 }
 
 // New creates a new Updater.
@@ -102,6 +106,18 @@ func getServiceName() string {
 		return "SlimRMMAgent"
 	default:
 		return "slimrmm-agent"
+	}
+}
+
+// SetMaintenanceCallback sets the callback for maintenance mode notifications.
+func (u *Updater) SetMaintenanceCallback(cb MaintenanceCallback) {
+	u.maintenanceCallback = cb
+}
+
+// notifyMaintenance calls the maintenance callback if set.
+func (u *Updater) notifyMaintenance(enabled bool, reason string) {
+	if u.maintenanceCallback != nil {
+		u.maintenanceCallback(enabled, reason)
 	}
 }
 
@@ -200,6 +216,20 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	}
 
 	u.logger.Info("starting update", "from", result.OldVersion, "to", result.NewVersion)
+
+	// Enter maintenance mode before starting update
+	u.notifyMaintenance(true, fmt.Sprintf("Updating from %s to %s", result.OldVersion, result.NewVersion))
+	u.logger.Info("entered maintenance mode for update")
+
+	// Ensure we exit maintenance mode when done (success or failure)
+	defer func() {
+		if !result.Success {
+			// On failure, exit maintenance mode
+			u.notifyMaintenance(false, "")
+			u.logger.Info("exited maintenance mode after failed update")
+		}
+		// On success, the new agent version will handle exiting maintenance mode
+	}()
 
 	// Create backup directory
 	if err := os.MkdirAll(u.backupPath, 0755); err != nil {

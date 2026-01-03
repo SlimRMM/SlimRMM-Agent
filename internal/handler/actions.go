@@ -12,6 +12,8 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/security/archive"
+	"github.com/slimrmm/slimrmm-agent/internal/updater"
+	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
 
 // registerAllHandlers registers all action handlers.
@@ -73,6 +75,7 @@ func (h *Handler) registerHandlers() {
 
 	// Agent management - Python compatible names
 	h.handlers["update_agent"] = h.handleUpdateAgent
+	h.handlers["check_update"] = h.handleCheckUpdate     // Check for updates without installing
 	h.handlers["update_osquery"] = h.handleUpdateOsquery // Python: update_osquery
 
 	// Proxmox handlers (only active on Proxmox hosts)
@@ -783,12 +786,13 @@ func (h *Handler) handleStopTerminal(ctx context.Context, data json.RawMessage) 
 	return map[string]string{"status": "stopped", "terminal_id": req.TerminalID}, nil
 }
 
-// Agent update handler
+// Agent update handlers
 
 type updateAgentRequest struct {
-	URL     string `json:"url"`
-	Version string `json:"version"`
+	URL     string `json:"url,omitempty"`
+	Version string `json:"version,omitempty"`
 	Hash    string `json:"hash,omitempty"`
+	Force   bool   `json:"force,omitempty"`
 }
 
 func (h *Handler) handleUpdateAgent(ctx context.Context, data json.RawMessage) (interface{}, error) {
@@ -797,22 +801,74 @@ func (h *Handler) handleUpdateAgent(ctx context.Context, data json.RawMessage) (
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	// Download the new agent binary
-	result, err := actions.DownloadURL(req.URL, "/tmp/slimrmm-agent-update")
+	// Check for available updates
+	info, err := h.updater.CheckForUpdate(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("downloading update: %w", err)
+		return nil, fmt.Errorf("checking for update: %w", err)
 	}
 
-	// Verify hash if provided
-	if req.Hash != "" && result.Hash != req.Hash {
-		return nil, fmt.Errorf("hash mismatch: expected %s, got %s", req.Hash, result.Hash)
+	if info == nil && !req.Force {
+		return map[string]interface{}{
+			"status":  "up_to_date",
+			"message": "already running the latest version",
+		}, nil
+	}
+
+	// If we have update info from GitHub (or forced update with URL)
+	if info == nil && req.URL != "" {
+		// Use provided URL for forced update
+		info = &updater.UpdateInfo{
+			Version:     req.Version,
+			DownloadURL: req.URL,
+		}
+	}
+
+	if info == nil {
+		return map[string]interface{}{
+			"status":  "up_to_date",
+			"message": "no update available",
+		}, nil
+	}
+
+	// Perform the update (this will handle maintenance mode)
+	result, err := h.updater.PerformUpdate(ctx, info)
+	if err != nil {
+		return map[string]interface{}{
+			"status":      "failed",
+			"error":       err.Error(),
+			"rolled_back": result != nil && result.RolledBack,
+		}, nil
 	}
 
 	return map[string]interface{}{
-		"status":  "downloaded",
-		"version": req.Version,
-		"hash":    result.Hash,
-		"message": "agent update downloaded, restart required",
+		"status":       "updated",
+		"old_version":  result.OldVersion,
+		"new_version":  result.NewVersion,
+		"restart":      result.RestartNeeded,
+		"message":      "agent updated successfully",
+	}, nil
+}
+
+// handleCheckUpdate checks for available updates without installing.
+func (h *Handler) handleCheckUpdate(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	info, err := h.updater.CheckForUpdate(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("checking for update: %w", err)
+	}
+
+	if info == nil {
+		return map[string]interface{}{
+			"available":       false,
+			"current_version": version.Version,
+		}, nil
+	}
+
+	return map[string]interface{}{
+		"available":       true,
+		"current_version": version.Version,
+		"new_version":     info.Version,
+		"download_url":    info.DownloadURL,
+		"size":            info.Size,
 	}, nil
 }
 

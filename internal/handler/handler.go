@@ -18,6 +18,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/config"
 	"github.com/slimrmm/slimrmm-agent/internal/monitor"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
+	"github.com/slimrmm/slimrmm-agent/internal/updater"
 )
 
 const (
@@ -130,6 +131,9 @@ type Handler struct {
 
 	// Certificate renewal tracking
 	lastCertCheck time.Time
+
+	// Auto-updater
+	updater *updater.Updater
 }
 
 // New creates a new Handler.
@@ -147,14 +151,27 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		uploadManager:   uploadManager,
 		sendCh:          make(chan []byte, 256),
 		done:            make(chan struct{}),
+		updater:         updater.New(logger),
 	}
 
 	h.registerHandlers()
+
+	// Set up maintenance callback for updater
+	h.updater.SetMaintenanceCallback(h.sendMaintenanceStatus)
 
 	// Start background cleanup for stale upload sessions
 	uploadManager.StartCleanup()
 
 	return h
+}
+
+// sendMaintenanceStatus sends maintenance mode status to the backend.
+func (h *Handler) sendMaintenanceStatus(enabled bool, reason string) {
+	h.SendRaw(map[string]interface{}{
+		"action":  "set_maintenance",
+		"enabled": enabled,
+		"reason":  reason,
+	})
 }
 
 // Note: registerHandlers is defined in actions.go
@@ -218,6 +235,9 @@ func (h *Handler) Run(ctx context.Context) error {
 		conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
 	})
+
+	// Start background auto-updater
+	h.updater.StartBackgroundUpdater(ctx)
 
 	// Start goroutines
 	errCh := make(chan error, 3)
