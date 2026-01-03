@@ -16,7 +16,8 @@
 
         <Feature Id="ProductFeature" Title="SlimRMM Agent" Level="1">
             <ComponentGroupRef Id="ProductComponents" />
-            <ComponentRef Id="ServiceComponent" />
+            <ComponentRef Id="CertsFolderComponent" />
+            <ComponentRef Id="LogFolderComponent" />
         </Feature>
 
         <Property Id="SLIMRMM_SERVER" Secure="yes" />
@@ -66,26 +67,29 @@
                 <File Id="MainExecutable"
                       Source="slimrmm-agent.exe"
                       KeyPath="yes" />
+                <ServiceInstall Id="SlimRMMService"
+                               Type="ownProcess"
+                               Name="SlimRMMAgent"
+                               DisplayName="SlimRMM Agent"
+                               Description="SlimRMM Remote Monitoring and Management Agent"
+                               Start="auto"
+                               Account="LocalSystem"
+                               ErrorControl="normal" />
+                <ServiceControl Id="StartSlimRMMService"
+                               Name="SlimRMMAgent"
+                               Start="install"
+                               Stop="both"
+                               Remove="uninstall"
+                               Wait="yes" />
             </Component>
         </ComponentGroup>
 
-        <Component Id="ServiceComponent" Directory="INSTALLFOLDER" Guid="B2C3D4E5-F6A7-8901-BCDE-F23456789012" Win64="yes">
-            <CreateFolder Directory="CertsFolder" />
-            <CreateFolder Directory="LogFolder" />
-            <ServiceInstall Id="SlimRMMService"
-                           Type="ownProcess"
-                           Name="SlimRMMAgent"
-                           DisplayName="SlimRMM Agent"
-                           Description="SlimRMM Remote Monitoring and Management Agent"
-                           Start="auto"
-                           Account="LocalSystem"
-                           ErrorControl="normal" />
-            <ServiceControl Id="StartSlimRMMService"
-                           Name="SlimRMMAgent"
-                           Start="install"
-                           Stop="both"
-                           Remove="uninstall"
-                           Wait="yes" />
+        <Component Id="CertsFolderComponent" Directory="CertsFolder" Guid="C3D4E5F6-A7B8-9012-CDEF-345678901234" Win64="yes">
+            <CreateFolder />
+        </Component>
+
+        <Component Id="LogFolderComponent" Directory="LogFolder" Guid="D4E5F6A7-B8C9-0123-DEF0-456789012345" Win64="yes">
+            <CreateFolder />
         </Component>
     </Fragment>
 </Wix>
