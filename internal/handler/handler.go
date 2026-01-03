@@ -122,6 +122,8 @@ type Handler struct {
 
 // New creates a new Handler.
 func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *slog.Logger) *Handler {
+	uploadManager := actions.NewUploadManager()
+
 	h := &Handler{
 		cfg:             cfg,
 		paths:           paths,
@@ -130,12 +132,16 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		logger:          logger,
 		handlers:        make(map[string]ActionHandler),
 		terminalManager: actions.NewTerminalManager(),
-		uploadManager:   actions.NewUploadManager(),
+		uploadManager:   uploadManager,
 		sendCh:          make(chan []byte, 256),
 		done:            make(chan struct{}),
 	}
 
 	h.registerHandlers()
+
+	// Start background cleanup for stale upload sessions
+	uploadManager.StartCleanup()
+
 	return h
 }
 
@@ -542,6 +548,11 @@ func (h *Handler) SendRaw(msg interface{}) {
 func (h *Handler) Close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	// Stop upload manager cleanup goroutine
+	if h.uploadManager != nil {
+		h.uploadManager.Stop()
+	}
 
 	if h.conn != nil {
 		h.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))

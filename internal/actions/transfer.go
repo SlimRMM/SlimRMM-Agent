@@ -17,33 +17,89 @@ import (
 )
 
 const (
-	DefaultChunkSize = 64 * 1024 // 64 KB
-	MaxFileSize      = 100 * 1024 * 1024 // 100 MB
+	DefaultChunkSize  = 64 * 1024           // 64 KB
+	MaxFileSize       = 100 * 1024 * 1024   // 100 MB
+	SessionTimeout    = 30 * time.Minute    // Stale session timeout
+	CleanupInterval   = 5 * time.Minute     // Cleanup check interval
 )
 
 // UploadSession tracks an ongoing file upload.
 type UploadSession struct {
-	ID          string
-	Path        string
-	TotalSize   int64
-	Received    int64
-	ChunkCount  int
-	File        *os.File
-	Hash        string
-	StartTime   time.Time
-	mu          sync.Mutex
+	ID           string
+	Path         string
+	TotalSize    int64
+	Received     int64
+	ChunkCount   int
+	File         *os.File
+	Hash         string
+	StartTime    time.Time
+	LastActivity time.Time
+	mu           sync.Mutex
 }
 
 // UploadManager manages file upload sessions.
 type UploadManager struct {
 	sessions map[string]*UploadSession
 	mu       sync.RWMutex
+	stopChan chan struct{}
 }
 
 // NewUploadManager creates a new upload manager.
 func NewUploadManager() *UploadManager {
 	return &UploadManager{
 		sessions: make(map[string]*UploadSession),
+		stopChan: make(chan struct{}),
+	}
+}
+
+// StartCleanup starts the background cleanup goroutine for stale sessions.
+func (m *UploadManager) StartCleanup() {
+	go m.cleanupLoop()
+}
+
+// Stop stops the cleanup goroutine.
+func (m *UploadManager) Stop() {
+	close(m.stopChan)
+}
+
+// cleanupLoop periodically cleans up stale upload sessions.
+func (m *UploadManager) cleanupLoop() {
+	ticker := time.NewTicker(CleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopChan:
+			return
+		case <-ticker.C:
+			m.cleanupStaleSessions()
+		}
+	}
+}
+
+// cleanupStaleSessions removes sessions that haven't had activity for SessionTimeout.
+func (m *UploadManager) cleanupStaleSessions() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	for id, session := range m.sessions {
+		session.mu.Lock()
+		lastActivity := session.LastActivity
+		session.mu.Unlock()
+
+		if now.Sub(lastActivity) > SessionTimeout {
+			// Close and remove stale session
+			session.mu.Lock()
+			if session.File != nil {
+				session.File.Close()
+			}
+			// Remove incomplete file
+			os.Remove(session.Path)
+			session.mu.Unlock()
+
+			delete(m.sessions, id)
+		}
 	}
 }
 
@@ -75,12 +131,14 @@ func (m *UploadManager) StartUpload(sessionID, path string, totalSize int64) err
 		return fmt.Errorf("creating file: %w", err)
 	}
 
+	now := time.Now()
 	m.sessions[sessionID] = &UploadSession{
-		ID:        sessionID,
-		Path:      path,
-		TotalSize: totalSize,
-		File:      file,
-		StartTime: time.Now(),
+		ID:           sessionID,
+		Path:         path,
+		TotalSize:    totalSize,
+		File:         file,
+		StartTime:    now,
+		LastActivity: now,
 	}
 
 	return nil
@@ -106,6 +164,7 @@ func (m *UploadManager) UploadChunk(sessionID string, chunkIndex int, data []byt
 
 	session.Received += int64(n)
 	session.ChunkCount++
+	session.LastActivity = time.Now() // Update activity timestamp
 
 	return nil
 }

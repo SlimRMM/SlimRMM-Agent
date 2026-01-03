@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
@@ -630,6 +631,7 @@ func (h *Handler) handleStartTerminal(ctx context.Context, data json.RawMessage)
 }
 
 // streamTerminalOutput continuously sends terminal output to the backend.
+// Format matches Python agent: UTF-8 decoded string in "data" field.
 func (h *Handler) streamTerminalOutput(terminalID string) {
 	outputChan, err := h.terminalManager.GetOutput(terminalID)
 	if err != nil {
@@ -641,11 +643,14 @@ func (h *Handler) streamTerminalOutput(terminalID string) {
 			continue
 		}
 
-		// Send output as base64-encoded bytes for xterm.js
+		// Send output as UTF-8 string (matching Python agent format)
+		// Replace invalid UTF-8 sequences to prevent encoding errors
+		output := sanitizeUTF8(data)
+
 		h.SendRaw(map[string]interface{}{
 			"action":      "terminal_output",
 			"terminal_id": terminalID,
-			"output":      base64.StdEncoding.EncodeToString(data),
+			"data":        output, // Python uses "data" field
 			"running":     h.terminalManager.IsRunning(terminalID),
 		})
 	}
@@ -654,15 +659,23 @@ func (h *Handler) streamTerminalOutput(terminalID string) {
 	h.SendRaw(map[string]interface{}{
 		"action":      "terminal_output",
 		"terminal_id": terminalID,
-		"output":      "",
+		"data":        "",
 		"running":     false,
 		"closed":      true,
 	})
 }
 
+// sanitizeUTF8 converts bytes to a valid UTF-8 string,
+// replacing invalid sequences with the replacement character.
+func sanitizeUTF8(data []byte) string {
+	// strings.ToValidUTF8 replaces invalid UTF-8 with replacement char
+	return strings.ToValidUTF8(string(data), "\uFFFD")
+}
+
 type terminalInputRequest struct {
 	TerminalID string `json:"terminal_id"`
 	Input      string `json:"input"`
+	Data       string `json:"data"` // Python compatibility: uses "data" field
 	IsBase64   bool   `json:"is_base64,omitempty"`
 }
 
@@ -672,16 +685,22 @@ func (h *Handler) handleTerminalInput(ctx context.Context, data json.RawMessage)
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	// Support both "input" (Go) and "data" (Python) fields
+	inputData := req.Input
+	if inputData == "" {
+		inputData = req.Data
+	}
+
 	var err error
 	if req.IsBase64 {
 		// Decode base64 input for raw bytes (special keys, etc.)
-		rawData, decErr := base64.StdEncoding.DecodeString(req.Input)
+		rawData, decErr := base64.StdEncoding.DecodeString(inputData)
 		if decErr != nil {
 			return nil, fmt.Errorf("decoding base64 input: %w", decErr)
 		}
 		err = h.terminalManager.SendInputRaw(req.TerminalID, rawData)
 	} else {
-		err = h.terminalManager.SendInput(req.TerminalID, req.Input)
+		err = h.terminalManager.SendInput(req.TerminalID, inputData)
 	}
 
 	if err != nil {
@@ -712,9 +731,10 @@ func (h *Handler) handleTerminalOutput(ctx context.Context, data json.RawMessage
 		return nil, err
 	}
 
+	// Return as UTF-8 string in "data" field to match Python agent format
 	return map[string]interface{}{
 		"terminal_id": req.TerminalID,
-		"output":      base64.StdEncoding.EncodeToString(output),
+		"data":        sanitizeUTF8(output),
 		"running":     h.terminalManager.IsRunning(req.TerminalID),
 	}, nil
 }
