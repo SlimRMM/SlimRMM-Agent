@@ -17,6 +17,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/handler"
 	"github.com/slimrmm/slimrmm-agent/internal/installer"
 	"github.com/slimrmm/slimrmm-agent/internal/logging"
+	"github.com/slimrmm/slimrmm-agent/internal/remotedesktop"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
@@ -95,6 +96,9 @@ func main() {
 
 func run(paths config.Paths, logger *slog.Logger) error {
 	logger.Info("starting SlimRMM Agent", "version", version.Get().Version)
+
+	// Initialize platform-specific permissions (e.g., macOS screen recording)
+	remotedesktop.InitializePermissions(logger)
 
 	// Load configuration - or auto-install if ENV vars are set
 	cfg, err := config.Load(paths.ConfigFile)
