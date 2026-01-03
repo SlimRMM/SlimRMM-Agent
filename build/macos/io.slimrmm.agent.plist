@@ -6,7 +6,7 @@
     <string>io.slimrmm.agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/var/lib/slimrmm/slimrmm-agent</string>
+        <string>/Library/Application Support/SlimRMM/slimrmm-agent</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -16,11 +16,11 @@
         <false/>
     </dict>
     <key>WorkingDirectory</key>
-    <string>/var/lib/slimrmm</string>
+    <string>/Library/Application Support/SlimRMM</string>
     <key>StandardOutPath</key>
-    <string>/var/lib/slimrmm/log/stdout.log</string>
+    <string>/Library/Logs/SlimRMM/stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/var/lib/slimrmm/log/stderr.log</string>
+    <string>/Library/Logs/SlimRMM/stderr.log</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>

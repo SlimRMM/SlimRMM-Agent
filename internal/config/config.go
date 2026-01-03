@@ -49,15 +49,23 @@ var (
 )
 
 // DefaultPaths returns the default paths for the current OS.
-// Matches Python agent: /var/lib/slimrmm for Linux and macOS
+// Uses OS-native locations:
+// - macOS: /Library/Application Support/SlimRMM/
+// - Linux: /var/lib/slimrmm/
+// - Windows: C:\Program Files\SlimRMM\
 func DefaultPaths() Paths {
-	var baseDir string
+	var baseDir, logDir string
 
 	switch runtime.GOOS {
+	case "darwin":
+		baseDir = "/Library/Application Support/SlimRMM"
+		logDir = "/Library/Logs/SlimRMM"
 	case "windows":
 		baseDir = filepath.Join(os.Getenv("ProgramFiles"), "SlimRMM")
-	default: // linux, darwin
+		logDir = filepath.Join(baseDir, "log")
+	default: // linux
 		baseDir = "/var/lib/slimrmm"
+		logDir = filepath.Join(baseDir, "log")
 	}
 
 	certsDir := filepath.Join(baseDir, "certs")
@@ -66,7 +74,7 @@ func DefaultPaths() Paths {
 		BaseDir:    baseDir,
 		ConfigFile: filepath.Join(baseDir, configFileName),
 		CertsDir:   certsDir,
-		LogDir:     filepath.Join(baseDir, "log"),
+		LogDir:     logDir,
 		CACert:     filepath.Join(certsDir, "ca.crt"),
 		ClientCert: filepath.Join(certsDir, "client.crt"),
 		ClientKey:  filepath.Join(certsDir, "client.key"),

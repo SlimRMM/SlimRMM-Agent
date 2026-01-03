@@ -228,30 +228,31 @@ jobs:
       - name: Build PKG
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          # Use /private/var because /var is a symlink on macOS
-          INSTALL_DIR="/private/var/lib/slimrmm"
           LAUNCHD_LABEL="io.slimrmm.agent"
+          APP_SUPPORT="/Library/Application Support/SlimRMM"
+          LOG_DIR="/Library/Logs/SlimRMM"
 
-          # Create PKG structure
-          mkdir -p pkg${INSTALL_DIR}
+          # Create package structure using standard macOS locations
+          mkdir -p "pkg${APP_SUPPORT}/certs"
+          mkdir -p "pkg${LOG_DIR}"
           mkdir -p pkg/Library/LaunchDaemons
           mkdir -p scripts
 
           # Copy binary
-          cp slimrmm-agent-darwin-arm64 pkg${INSTALL_DIR}/slimrmm-agent
-          chmod 755 pkg${INSTALL_DIR}/slimrmm-agent
+          cp slimrmm-agent-darwin-arm64 "pkg${APP_SUPPORT}/slimrmm-agent"
+          chmod 755 "pkg${APP_SUPPORT}/slimrmm-agent"
 
-          # Create LaunchDaemon plist - use /var/lib (symlink works at runtime)
-          cat > pkg/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist << PLIST
+          # Create LaunchDaemon plist with proper macOS paths
+          cat > pkg/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
               <key>Label</key>
-              <string>${LAUNCHD_LABEL}</string>
+              <string>io.slimrmm.agent</string>
               <key>ProgramArguments</key>
               <array>
-                  <string>/var/lib/slimrmm/slimrmm-agent</string>
+                  <string>/Library/Application Support/SlimRMM/slimrmm-agent</string>
               </array>
               <key>RunAtLoad</key>
               <true/>
@@ -261,11 +262,11 @@ jobs:
                   <false/>
               </dict>
               <key>WorkingDirectory</key>
-              <string>/var/lib/slimrmm</string>
+              <string>/Library/Application Support/SlimRMM</string>
               <key>StandardOutPath</key>
-              <string>/var/lib/slimrmm/log/stdout.log</string>
+              <string>/Library/Logs/SlimRMM/stdout.log</string>
               <key>StandardErrorPath</key>
-              <string>/var/lib/slimrmm/log/stderr.log</string>
+              <string>/Library/Logs/SlimRMM/stderr.log</string>
               <key>EnvironmentVariables</key>
               <dict>
                   <key>PATH</key>
@@ -275,48 +276,23 @@ jobs:
           </plist>
           PLIST
 
-          # Preinstall script
+          # Preinstall - stop existing service
           cat > scripts/preinstall << 'PREINSTALL'
           #!/bin/bash
-          LAUNCHD_LABEL="io.slimrmm.agent"
-
-          # Stop existing service
-          launchctl bootout system/${LAUNCHD_LABEL} 2>/dev/null || true
-          rm -f /Library/LaunchDaemons/${LAUNCHD_LABEL}.plist
-
-          # Preserve config
-          if [ -f /var/lib/slimrmm/.slimrmm_config.json ]; then
-              cp /var/lib/slimrmm/.slimrmm_config.json /tmp/.slimrmm_config.json.backup
-          fi
-
-          # Create directories (using /private/var directly)
-          mkdir -p /private/var/lib/slimrmm/log
-          mkdir -p /private/var/lib/slimrmm/certs
-
-          # Restore config
-          if [ -f /tmp/.slimrmm_config.json.backup ]; then
-              mv /tmp/.slimrmm_config.json.backup /var/lib/slimrmm/.slimrmm_config.json
-          fi
-
+          launchctl bootout system/io.slimrmm.agent 2>/dev/null || true
           exit 0
           PREINSTALL
           chmod +x scripts/preinstall
 
-          # Postinstall script
+          # Postinstall - set permissions and create symlink
           cat > scripts/postinstall << 'POSTINSTALL'
           #!/bin/bash
-          # Set permissions
-          chmod 755 /var/lib/slimrmm/slimrmm-agent
-          chmod 700 /var/lib/slimrmm/certs
-          chmod 755 /var/lib/slimrmm/log
-
-          # Create symlink
-          ln -sf /var/lib/slimrmm/slimrmm-agent /usr/local/bin/slimrmm-agent 2>/dev/null || true
-
-          echo ""
-          echo "SlimRMM Agent installed successfully"
-          echo "Configure with: slimrmm-agent --install --server https://your-server.com"
-          echo ""
+          APP_SUPPORT="/Library/Application Support/SlimRMM"
+          chmod 755 "${APP_SUPPORT}/slimrmm-agent"
+          chmod 700 "${APP_SUPPORT}/certs"
+          # Create symlink for easy CLI access
+          ln -sf "${APP_SUPPORT}/slimrmm-agent" /usr/local/bin/slimrmm-agent 2>/dev/null || true
+          echo "SlimRMM Agent installed. Configure with: slimrmm-agent --install --server <URL>"
           exit 0
           POSTINSTALL
           chmod +x scripts/postinstall
