@@ -153,7 +153,15 @@ func run(paths config.Paths, logger *slog.Logger) error {
 		cancel()
 	}()
 
-	// Connection loop with reconnection
+	// Connection loop with exponential backoff (matches Python agent)
+	const (
+		initialReconnectDelay = 5 * time.Second
+		maxReconnectDelay     = 5 * time.Minute // 300 seconds like Python
+		backoffMultiplier     = 2.0
+	)
+
+	reconnectDelay := initialReconnectDelay
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -163,26 +171,44 @@ func run(paths config.Paths, logger *slog.Logger) error {
 		}
 
 		if err := h.Connect(ctx); err != nil {
-			logger.Error("connection failed", "error", err)
+			logger.Error("connection failed", "error", err, "retry_in", reconnectDelay)
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-time.After(10 * time.Second):
+			case <-time.After(reconnectDelay):
+				// Exponential backoff
+				reconnectDelay = time.Duration(float64(reconnectDelay) * backoffMultiplier)
+				if reconnectDelay > maxReconnectDelay {
+					reconnectDelay = maxReconnectDelay
+				}
 				continue
 			}
 		}
+
+		// Reset delay on successful connection
+		reconnectDelay = initialReconnectDelay
+		logger.Info("connected successfully, resetting reconnect delay")
+
+		// Update last connection time
+		cfg.SetLastConnection(time.Now().UTC().Format(time.RFC3339))
+		cfg.Save()
 
 		if err := h.Run(ctx); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			logger.Error("handler error", "error", err)
+			logger.Error("handler error", "error", err, "retry_in", reconnectDelay)
 			h.Close()
 
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-time.After(5 * time.Second):
+			case <-time.After(reconnectDelay):
+				// Exponential backoff
+				reconnectDelay = time.Duration(float64(reconnectDelay) * backoffMultiplier)
+				if reconnectDelay > maxReconnectDelay {
+					reconnectDelay = maxReconnectDelay
+				}
 				continue
 			}
 		}

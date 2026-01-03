@@ -17,14 +17,16 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
 	"github.com/slimrmm/slimrmm-agent/internal/config"
 	"github.com/slimrmm/slimrmm-agent/internal/monitor"
+	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 )
 
 const (
-	writeWait      = 10 * time.Second
-	pongWait       = 60 * time.Second
-	pingPeriod     = (pongWait * 9) / 10
-	heartbeatPeriod = 30 * time.Second
-	maxMessageSize = 10 * 1024 * 1024 // 10 MB
+	writeWait            = 10 * time.Second
+	pongWait             = 60 * time.Second
+	pingPeriod           = (pongWait * 9) / 10
+	heartbeatPeriod      = 30 * time.Second
+	maxMessageSize       = 10 * 1024 * 1024 // 10 MB
+	certCheckInterval    = 24 * time.Hour   // Check certificates every 24 hours (like Python)
 )
 
 // Message represents a WebSocket message from the backend.
@@ -49,7 +51,7 @@ type Response struct {
 	Error     string      `json:"error,omitempty"`
 }
 
-// HeartbeatMessage is the format expected by the backend.
+// HeartbeatMessage is the format expected by the backend (Python-compatible).
 type HeartbeatMessage struct {
 	Action     string         `json:"action"`
 	Stats      HeartbeatStats `json:"stats"`
@@ -57,11 +59,34 @@ type HeartbeatMessage struct {
 }
 
 // HeartbeatStats contains the stats in the format expected by the backend.
+// Matches Python agent format for API compatibility.
 type HeartbeatStats struct {
-	CPUPercent    float64 `json:"cpu_percent"`
-	MemoryPercent float64 `json:"memory_percent"`
-	MemoryUsed    uint64  `json:"memory_used"`
-	MemoryTotal   uint64  `json:"memory_total"`
+	CPUPercent    float64             `json:"cpu_percent"`
+	MemoryPercent float64             `json:"memory_percent"`
+	MemoryUsed    uint64              `json:"memory_used"`
+	MemoryTotal   uint64              `json:"memory_total"`
+	Disk          []HeartbeatDisk     `json:"disk,omitempty"`
+	NetworkIO     *HeartbeatNetworkIO `json:"network_io,omitempty"`
+	UptimeSeconds uint64              `json:"uptime_seconds,omitempty"`
+	ProcessCount  int                 `json:"process_count,omitempty"`
+}
+
+// HeartbeatDisk contains disk statistics for heartbeat.
+type HeartbeatDisk struct {
+	Device      string  `json:"device"`
+	Mountpoint  string  `json:"mountpoint"`
+	Total       uint64  `json:"total"`
+	Used        uint64  `json:"used"`
+	Free        uint64  `json:"free"`
+	UsedPercent float64 `json:"used_percent"`
+}
+
+// HeartbeatNetworkIO contains network I/O statistics.
+type HeartbeatNetworkIO struct {
+	BytesSent   uint64 `json:"bytes_sent"`
+	BytesRecv   uint64 `json:"bytes_recv"`
+	PacketsSent uint64 `json:"packets_sent"`
+	PacketsRecv uint64 `json:"packets_recv"`
 }
 
 // OsqueryResponse is the format expected by the backend for osquery results.
@@ -77,12 +102,12 @@ type ActionHandler func(ctx context.Context, data json.RawMessage) (interface{},
 
 // Handler manages WebSocket communication.
 type Handler struct {
-	cfg      *config.Config
-	paths    config.Paths
-	conn     *websocket.Conn
+	cfg       *config.Config
+	paths     config.Paths
+	conn      *websocket.Conn
 	tlsConfig *tls.Config
-	monitor  *monitor.Monitor
-	logger   *slog.Logger
+	monitor   *monitor.Monitor
+	logger    *slog.Logger
 
 	handlers        map[string]ActionHandler
 	terminalManager *actions.TerminalManager
@@ -90,6 +115,9 @@ type Handler struct {
 	sendCh          chan []byte
 	done            chan struct{}
 	mu              sync.RWMutex
+
+	// Certificate renewal tracking
+	lastCertCheck time.Time
 }
 
 // New creates a new Handler.
@@ -248,7 +276,7 @@ func (h *Handler) writePump(ctx context.Context) error {
 	}
 }
 
-// heartbeatPump sends periodic heartbeats.
+// heartbeatPump sends periodic heartbeats and checks certificate renewal.
 func (h *Handler) heartbeatPump(ctx context.Context) error {
 	ticker := time.NewTicker(heartbeatPeriod)
 	defer ticker.Stop()
@@ -256,17 +284,109 @@ func (h *Handler) heartbeatPump(ctx context.Context) error {
 	// Send initial heartbeat
 	h.sendHeartbeat(ctx)
 
+	// Initialize last cert check if not set
+	if h.lastCertCheck.IsZero() {
+		h.lastCertCheck = time.Now()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
 			h.sendHeartbeat(ctx)
+
+			// Check for certificate renewal (every 24 hours like Python agent)
+			if h.cfg.IsMTLSEnabled() && time.Since(h.lastCertCheck) >= certCheckInterval {
+				h.checkAndRenewCertificates(ctx)
+			}
 		}
 	}
 }
 
+// checkAndRenewCertificates checks if certificates need renewal.
+func (h *Handler) checkAndRenewCertificates(ctx context.Context) {
+	h.logger.Info("performing periodic certificate check")
+	h.lastCertCheck = time.Now()
+
+	// Attempt certificate renewal
+	if err := h.renewCertificates(ctx); err != nil {
+		h.logger.Warn("certificate renewal check failed", "error", err)
+		return
+	}
+
+	h.logger.Info("certificate check completed successfully")
+}
+
+// renewCertificates attempts to renew certificates from the server.
+func (h *Handler) renewCertificates(ctx context.Context) error {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: h.tlsConfig,
+		},
+	}
+
+	url := h.cfg.GetServer() + "/api/v1/agents/" + h.cfg.GetUUID() + "/renew-cert"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("X-Agent-UUID", h.cfg.GetUUID())
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 304 Not Modified means certificates are still valid
+	if resp.StatusCode == http.StatusNotModified {
+		h.logger.Debug("certificates are still valid")
+		return nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("renewal failed with status %d", resp.StatusCode)
+	}
+
+	// Parse and save new certificates
+	var renewResp struct {
+		CACert     string `json:"ca_cert"`
+		ClientCert string `json:"client_cert"`
+		ClientKey  string `json:"client_key"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&renewResp); err != nil {
+		return fmt.Errorf("parsing response: %w", err)
+	}
+
+	// Only save if we got new certificates
+	if renewResp.CACert != "" && renewResp.ClientCert != "" && renewResp.ClientKey != "" {
+		h.logger.Info("received new certificates, saving...")
+
+		certPaths := mtls.CertPaths{
+			CACert:     h.paths.CACert,
+			ClientCert: h.paths.ClientCert,
+			ClientKey:  h.paths.ClientKey,
+		}
+
+		if err := mtls.SaveCertificates(certPaths,
+			[]byte(renewResp.CACert),
+			[]byte(renewResp.ClientCert),
+			[]byte(renewResp.ClientKey),
+		); err != nil {
+			return fmt.Errorf("saving certificates: %w", err)
+		}
+
+		h.logger.Info("certificates renewed and saved successfully")
+	}
+
+	return nil
+}
+
 // sendHeartbeat sends a heartbeat message in the format expected by the backend.
+// Matches Python agent format for full compatibility.
 func (h *Handler) sendHeartbeat(ctx context.Context) {
 	stats, err := h.monitor.GetStats(ctx)
 	if err != nil {
@@ -274,7 +394,29 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 		return
 	}
 
-	// Format heartbeat in the structure expected by the backend
+	// Convert disk stats
+	diskStats := make([]HeartbeatDisk, 0, len(stats.Disk))
+	for _, d := range stats.Disk {
+		diskStats = append(diskStats, HeartbeatDisk{
+			Device:      d.Device,
+			Mountpoint:  d.Mountpoint,
+			Total:       d.Total,
+			Used:        d.Used,
+			Free:        d.Free,
+			UsedPercent: d.UsedPercent,
+		})
+	}
+
+	// Aggregate network I/O
+	var totalBytesSent, totalBytesRecv, totalPacketsSent, totalPacketsRecv uint64
+	for _, n := range stats.Network {
+		totalBytesSent += n.BytesSent
+		totalBytesRecv += n.BytesRecv
+		totalPacketsSent += n.PacketsSent
+		totalPacketsRecv += n.PacketsRecv
+	}
+
+	// Format heartbeat in the structure expected by the backend (Python-compatible)
 	heartbeat := HeartbeatMessage{
 		Action: "heartbeat",
 		Stats: HeartbeatStats{
@@ -282,11 +424,23 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			MemoryPercent: stats.Memory.UsedPercent,
 			MemoryUsed:    stats.Memory.Used,
 			MemoryTotal:   stats.Memory.Total,
+			Disk:          diskStats,
+			NetworkIO: &HeartbeatNetworkIO{
+				BytesSent:   totalBytesSent,
+				BytesRecv:   totalBytesRecv,
+				PacketsSent: totalPacketsSent,
+				PacketsRecv: totalPacketsRecv,
+			},
+			UptimeSeconds: stats.Uptime,
+			ProcessCount:  stats.ProcessCount,
 		},
 		ExternalIP: stats.ExternalIP,
 	}
 
 	h.SendRaw(heartbeat)
+
+	// Update last heartbeat time in config
+	h.cfg.SetLastHeartbeat(time.Now().UTC().Format(time.RFC3339))
 }
 
 // handleMessage processes an incoming message.

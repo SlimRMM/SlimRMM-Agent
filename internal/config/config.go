@@ -81,11 +81,41 @@ func DefaultPaths() Paths {
 	}
 }
 
+// LegacyConfigPaths returns paths to check for legacy configurations.
+func LegacyConfigPaths() []string {
+	var paths []string
+
+	switch runtime.GOOS {
+	case "darwin":
+		paths = []string{
+			"/Library/Application Support/RMM/.rmm_config.json",
+			"/var/lib/rmm/.rmm_config.json",
+		}
+	case "linux":
+		paths = []string{
+			"/var/lib/rmm/.rmm_config.json",
+		}
+	case "windows":
+		paths = []string{
+			filepath.Join(os.Getenv("ProgramFiles"), "RMM", ".rmm_config.json"),
+			`C:\Program Files\RMM\.rmm_config.json`,
+		}
+	}
+
+	return paths
+}
+
 // Load reads the configuration from disk.
+// It also attempts to migrate from legacy config locations if not found.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// Try legacy locations
+			cfg, migrated := tryMigrateLegacyConfig(path)
+			if migrated {
+				return cfg, nil
+			}
 			return nil, ErrConfigNotFound
 		}
 		return nil, fmt.Errorf("reading config: %w", err)
@@ -102,6 +132,46 @@ func Load(path string) (*Config, error) {
 
 	cfg.filePath = path
 	return &cfg, nil
+}
+
+// tryMigrateLegacyConfig attempts to migrate from legacy config locations.
+func tryMigrateLegacyConfig(newPath string) (*Config, bool) {
+	for _, legacyPath := range LegacyConfigPaths() {
+		data, err := os.ReadFile(legacyPath)
+		if err != nil {
+			continue
+		}
+
+		var cfg Config
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			continue
+		}
+
+		if cfg.Server == "" {
+			continue
+		}
+
+		// Found valid legacy config, migrate it
+		cfg.filePath = newPath
+
+		// Ensure new directory exists
+		dir := filepath.Dir(newPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			continue
+		}
+
+		// Save to new location
+		if err := cfg.Save(); err != nil {
+			continue
+		}
+
+		// Remove old config file
+		os.Remove(legacyPath)
+
+		return &cfg, true
+	}
+
+	return nil, false
 }
 
 // Save writes the configuration to disk with restricted permissions.

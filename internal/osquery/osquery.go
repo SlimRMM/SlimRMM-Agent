@@ -215,3 +215,152 @@ func (c *Client) GetStartupItems(ctx context.Context) (*QueryResult, error) {
 		return nil, fmt.Errorf("unsupported OS")
 	}
 }
+
+// Install installs osquery on the system.
+func Install(ctx context.Context) error {
+	switch runtime.GOOS {
+	case "linux":
+		return installLinux(ctx)
+	case "darwin":
+		return installMacOS(ctx)
+	case "windows":
+		return installWindows(ctx)
+	default:
+		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+	}
+}
+
+// installLinux installs osquery on Linux.
+func installLinux(ctx context.Context) error {
+	// Determine package manager
+	var installCmd *exec.Cmd
+
+	if _, err := exec.LookPath("apt-get"); err == nil {
+		// Debian/Ubuntu
+		// Add osquery repository
+		keyCmd := exec.CommandContext(ctx, "bash", "-c",
+			"curl -fsSL https://pkg.osquery.io/deb/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/osquery-keyring.gpg")
+		if err := keyCmd.Run(); err != nil {
+			return fmt.Errorf("adding osquery key: %w", err)
+		}
+
+		repoCmd := exec.CommandContext(ctx, "bash", "-c",
+			"echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/osquery-keyring.gpg] https://pkg.osquery.io/deb deb main' | sudo tee /etc/apt/sources.list.d/osquery.list")
+		if err := repoCmd.Run(); err != nil {
+			return fmt.Errorf("adding osquery repo: %w", err)
+		}
+
+		updateCmd := exec.CommandContext(ctx, "apt-get", "update")
+		if err := updateCmd.Run(); err != nil {
+			return fmt.Errorf("updating apt: %w", err)
+		}
+
+		installCmd = exec.CommandContext(ctx, "apt-get", "install", "-y", "osquery")
+	} else if _, err := exec.LookPath("dnf"); err == nil {
+		// Fedora/RHEL 8+
+		installCmd = exec.CommandContext(ctx, "dnf", "install", "-y",
+			"https://pkg.osquery.io/rpm/osquery-5.10.2-1.linux.x86_64.rpm")
+	} else if _, err := exec.LookPath("yum"); err == nil {
+		// RHEL/CentOS 7
+		installCmd = exec.CommandContext(ctx, "yum", "install", "-y",
+			"https://pkg.osquery.io/rpm/osquery-5.10.2-1.linux.x86_64.rpm")
+	} else {
+		return fmt.Errorf("no supported package manager found (apt-get, dnf, yum)")
+	}
+
+	var stderr bytes.Buffer
+	installCmd.Stderr = &stderr
+
+	if err := installCmd.Run(); err != nil {
+		return fmt.Errorf("installing osquery: %w (%s)", err, stderr.String())
+	}
+
+	return nil
+}
+
+// installMacOS installs osquery on macOS.
+func installMacOS(ctx context.Context) error {
+	// Check if brew is available
+	if _, err := exec.LookPath("brew"); err == nil {
+		installCmd := exec.CommandContext(ctx, "brew", "install", "osquery")
+		var stderr bytes.Buffer
+		installCmd.Stderr = &stderr
+
+		if err := installCmd.Run(); err != nil {
+			return fmt.Errorf("brew install osquery: %w (%s)", err, stderr.String())
+		}
+		return nil
+	}
+
+	// Download and install pkg directly
+	pkgURL := "https://pkg.osquery.io/darwin/osquery-5.10.2.pkg"
+	tmpPkg := "/tmp/osquery.pkg"
+
+	downloadCmd := exec.CommandContext(ctx, "curl", "-fsSL", "-o", tmpPkg, pkgURL)
+	if err := downloadCmd.Run(); err != nil {
+		return fmt.Errorf("downloading osquery pkg: %w", err)
+	}
+
+	installCmd := exec.CommandContext(ctx, "installer", "-pkg", tmpPkg, "-target", "/")
+	var stderr bytes.Buffer
+	installCmd.Stderr = &stderr
+
+	if err := installCmd.Run(); err != nil {
+		return fmt.Errorf("installing osquery pkg: %w (%s)", err, stderr.String())
+	}
+
+	// Cleanup
+	os.Remove(tmpPkg)
+
+	return nil
+}
+
+// installWindows installs osquery on Windows.
+func installWindows(ctx context.Context) error {
+	// Check if winget is available
+	if _, err := exec.LookPath("winget"); err == nil {
+		installCmd := exec.CommandContext(ctx, "winget", "install", "--id", "osquery.osquery", "-e", "--silent")
+		var stderr bytes.Buffer
+		installCmd.Stderr = &stderr
+
+		if err := installCmd.Run(); err != nil {
+			return fmt.Errorf("winget install osquery: %w (%s)", err, stderr.String())
+		}
+		return nil
+	}
+
+	// Check if choco is available
+	if _, err := exec.LookPath("choco"); err == nil {
+		installCmd := exec.CommandContext(ctx, "choco", "install", "osquery", "-y")
+		var stderr bytes.Buffer
+		installCmd.Stderr = &stderr
+
+		if err := installCmd.Run(); err != nil {
+			return fmt.Errorf("choco install osquery: %w (%s)", err, stderr.String())
+		}
+		return nil
+	}
+
+	// Download and install MSI directly
+	msiURL := "https://pkg.osquery.io/windows/osquery-5.10.2.msi"
+	tmpMSI := filepath.Join(os.TempDir(), "osquery.msi")
+
+	downloadCmd := exec.CommandContext(ctx, "powershell", "-Command",
+		fmt.Sprintf("Invoke-WebRequest -Uri '%s' -OutFile '%s'", msiURL, tmpMSI))
+	if err := downloadCmd.Run(); err != nil {
+		return fmt.Errorf("downloading osquery msi: %w", err)
+	}
+
+	installCmd := exec.CommandContext(ctx, "msiexec", "/i", tmpMSI, "/quiet", "/qn")
+	var stderr bytes.Buffer
+	installCmd.Stderr = &stderr
+
+	if err := installCmd.Run(); err != nil {
+		return fmt.Errorf("installing osquery msi: %w (%s)", err, stderr.String())
+	}
+
+	// Cleanup
+	os.Remove(tmpMSI)
+
+	return nil
+}

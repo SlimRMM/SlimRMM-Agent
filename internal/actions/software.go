@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -375,9 +376,110 @@ func getMacOSUpdates(ctx context.Context) (*UpdateList, error) {
 
 // Windows updates
 func getWindowsUpdates(ctx context.Context) (*UpdateList, error) {
-	// Windows Update API is complex, return empty for now
-	return &UpdateList{
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	// Use PowerShell to query Windows Update
+	script := `
+$UpdateSession = New-Object -ComObject Microsoft.Update.Session
+$UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
+
+try {
+    $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and Type='Software'")
+    $Updates = @()
+
+    foreach ($Update in $SearchResult.Updates) {
+        $Category = "standard"
+        foreach ($Cat in $Update.Categories) {
+            if ($Cat.Name -match "Security") {
+                $Category = "security"
+                break
+            }
+            if ($Cat.Name -match "Critical") {
+                $Category = "security"
+                break
+            }
+        }
+
+        $Updates += @{
+            Name = $Update.Title
+            Version = $Update.Identity.UpdateID
+            Category = $Category
+            Size = $Update.MaxDownloadSize
+            Source = "windows_update"
+        }
+    }
+
+    $Updates | ConvertTo-Json -Depth 3
+} catch {
+    Write-Output "[]"
+}
+`
+
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	output, err := cmd.Output()
+	if err != nil {
+		// Fall back to empty list on error
+		return &UpdateList{
+			Updates: make([]Update, 0),
+			Source:  "windows_update",
+		}, nil
+	}
+
+	updates := &UpdateList{
 		Updates: make([]Update, 0),
 		Source:  "windows_update",
-	}, nil
+	}
+
+	// Parse JSON output
+	outputStr := strings.TrimSpace(string(output))
+	if outputStr == "" || outputStr == "[]" || outputStr == "null" {
+		updates.Count = 0
+		return updates, nil
+	}
+
+	// Try to parse as array
+	var rawUpdates []map[string]interface{}
+	if err := parseWindowsUpdateJSON(outputStr, &rawUpdates); err != nil {
+		// Try parsing as single object
+		var singleUpdate map[string]interface{}
+		if err := parseWindowsUpdateJSON(outputStr, &singleUpdate); err == nil {
+			rawUpdates = append(rawUpdates, singleUpdate)
+		}
+	}
+
+	for _, raw := range rawUpdates {
+		update := Update{
+			Source: "windows_update",
+		}
+
+		if name, ok := raw["Name"].(string); ok {
+			update.Name = name
+		}
+		if version, ok := raw["Version"].(string); ok {
+			update.Version = version
+		}
+		if category, ok := raw["Category"].(string); ok {
+			update.Category = category
+		}
+		if size, ok := raw["Size"].(float64); ok {
+			update.Size = int64(size)
+		}
+
+		if update.Name != "" {
+			updates.Updates = append(updates.Updates, update)
+		}
+	}
+
+	updates.Count = len(updates.Updates)
+	return updates, nil
+}
+
+// parseWindowsUpdateJSON is a helper to parse JSON from PowerShell output.
+func parseWindowsUpdateJSON(data string, v interface{}) error {
+	// Remove BOM if present
+	data = strings.TrimPrefix(data, "\xef\xbb\xbf")
+	data = strings.TrimSpace(data)
+
+	return json.Unmarshal([]byte(data), v)
 }

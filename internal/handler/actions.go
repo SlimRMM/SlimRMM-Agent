@@ -14,19 +14,22 @@ import (
 )
 
 // registerAllHandlers registers all action handlers.
+// Handler names match Python agent for API compatibility.
 func (h *Handler) registerHandlers() {
-	// Basic
+	// Basic - Python compatible names
 	h.handlers["ping"] = h.handlePing
 	h.handlers["heartbeat"] = h.handleHeartbeat
-	h.handlers["get_system_stats"] = h.handleGetSystemStats
+	h.handlers["system_stats"] = h.handleGetSystemStats      // Python: system_stats
+	h.handlers["get_system_stats"] = h.handleGetSystemStats  // Alias for compatibility
 
 	// Commands
 	h.handlers["custom_command"] = h.handleCustomCommand
 	h.handlers["execute_script"] = h.handleExecuteScript
 
-	// File operations
+	// File operations - Python compatible names
 	h.handlers["list_dir"] = h.handleListDir
-	h.handlers["create_folder"] = h.handleCreateFolder
+	h.handlers["create_dir"] = h.handleCreateFolder          // Python: create_dir
+	h.handlers["create_folder"] = h.handleCreateFolder       // Alias
 	h.handlers["delete_entry"] = h.handleDeleteEntry
 	h.handlers["rename_entry"] = h.handleRenameEntry
 	h.handlers["chmod"] = h.handleChmod
@@ -34,7 +37,7 @@ func (h *Handler) registerHandlers() {
 	h.handlers["zip_entry"] = h.handleZipEntry
 	h.handlers["unzip_entry"] = h.handleUnzipEntry
 
-	// File transfer
+	// File transfer - Python compatible names
 	h.handlers["start_upload"] = h.handleStartUpload
 	h.handlers["upload_chunk"] = h.handleUploadChunk
 	h.handlers["finish_upload"] = h.handleFinishUpload
@@ -54,18 +57,22 @@ func (h *Handler) registerHandlers() {
 	h.handlers["shutdown"] = h.handleShutdown
 	h.handlers["cancel_shutdown"] = h.handleCancelShutdown
 
-	// Terminal
-	h.handlers["start_terminal"] = h.handleStartTerminal
+	// Terminal - Python compatible names
+	h.handlers["terminal"] = h.handleStartTerminal           // Python: terminal
+	h.handlers["start_terminal"] = h.handleStartTerminal     // Alias
 	h.handlers["terminal_input"] = h.handleTerminalInput
 	h.handlers["terminal_output"] = h.handleTerminalOutput
 	h.handlers["terminal_resize"] = h.handleResizeTerminal
-	h.handlers["stop_terminal"] = h.handleStopTerminal
+	h.handlers["terminal_stop"] = h.handleStopTerminal       // Python: terminal_stop
+	h.handlers["stop_terminal"] = h.handleStopTerminal       // Alias
 
-	// osquery
-	h.handlers["run_osquery"] = h.handleRunOsquery
+	// osquery - Python compatible names
+	h.handlers["osquery"] = h.handleRunOsquery               // Python: osquery
+	h.handlers["run_osquery"] = h.handleRunOsquery           // Alias
 
-	// Agent update
+	// Agent management - Python compatible names
 	h.handlers["update_agent"] = h.handleUpdateAgent
+	h.handlers["update_osquery"] = h.handleUpdateOsquery     // Python: update_osquery
 }
 
 // Command handlers
@@ -783,5 +790,29 @@ func (h *Handler) handleUpdateAgent(ctx context.Context, data json.RawMessage) (
 		"version": req.Version,
 		"hash":    result.Hash,
 		"message": "agent update downloaded, restart required",
+	}, nil
+}
+
+// handleUpdateOsquery installs or updates osquery.
+func (h *Handler) handleUpdateOsquery(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	client := osquery.New()
+
+	// Check if already installed
+	if client.IsAvailable() {
+		return map[string]interface{}{
+			"status":    "already_installed",
+			"available": true,
+			"message":   "osquery is already installed",
+		}, nil
+	}
+
+	// Install osquery based on platform
+	if err := osquery.Install(ctx); err != nil {
+		return nil, fmt.Errorf("installing osquery: %w", err)
+	}
+
+	return map[string]interface{}{
+		"status":  "installed",
+		"message": "osquery installed successfully",
 	}, nil
 }
