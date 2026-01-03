@@ -37,18 +37,50 @@ var ForbiddenPaths = []string{
 	// Sensitive authentication files
 	"/etc/shadow",
 	"/etc/gshadow",
+	"/etc/passwd",
+	"/etc/group",
 	"/etc/sudoers",
 	"/etc/sudoers.d",
-	// SSH keys
+	"/etc/crypttab",
+	// SSH keys and config
 	"/etc/ssh/ssh_host",
 	"/root/.ssh",
-	// Agent's own directories
+	// Home directory SSH keys (validated separately with pattern matching)
+	// Agent's own directories and config
 	"/var/lib/slimrmm",
 	"/var/lib/rmm",
-	"/opt/slimrmm/agent/.proxmox_token.json",
-	// Kubernetes secrets
+	"/opt/slimrmm",
+	"/etc/slimrmm",
+	// Kubernetes and container secrets
 	"/var/run/secrets",
 	"/run/secrets",
+	// Process information that could leak secrets
+	"/proc/1/environ",
+	"/proc/self/environ",
+	// System security
+	"/boot",
+	"/sys/firmware",
+}
+
+// ForbiddenPatterns contains filename patterns that should never be accessed.
+var ForbiddenPatterns = []string{
+	".ssh",
+	".gnupg",
+	".env",
+	".pem",
+	".key",
+	".p12",
+	".pfx",
+	"id_rsa",
+	"id_ed25519",
+	"id_ecdsa",
+	"id_dsa",
+	"known_hosts",
+	"authorized_keys",
+	"shadow",
+	"gshadow",
+	"passwd",
+	".proxmox_token",
 }
 
 // ForbiddenPathsWindows contains forbidden paths for Windows.
@@ -56,12 +88,33 @@ var ForbiddenPathsWindows = []string{
 	"C:\\Windows\\System32\\config",
 	"C:\\Windows\\System32\\SAM",
 	"C:\\ProgramData\\SlimRMM",
+	"C:\\Windows\\System32\\drivers\\etc",
+	"C:\\Users\\*\\.ssh",
+	"C:\\Users\\*\\.gnupg",
+}
+
+// ForbiddenPatternsWindows contains filename patterns forbidden on Windows.
+var ForbiddenPatternsWindows = []string{
+	".ssh",
+	".gnupg",
+	".env",
+	".pem",
+	".key",
+	".p12",
+	".pfx",
+	"id_rsa",
+	"id_ed25519",
+	"id_ecdsa",
+	"id_dsa",
+	"known_hosts",
+	"authorized_keys",
 }
 
 // Validator validates file paths.
 type Validator struct {
-	allowedPaths   []string
-	forbiddenPaths []string
+	allowedPaths      []string
+	forbiddenPaths    []string
+	forbiddenPatterns []string
 }
 
 // New creates a new path validator with OS-appropriate paths.
@@ -71,19 +124,22 @@ func New() *Validator {
 	if runtime.GOOS == "windows" {
 		v.allowedPaths = AllowedPathsWindows
 		v.forbiddenPaths = ForbiddenPathsWindows
+		v.forbiddenPatterns = ForbiddenPatternsWindows
 	} else {
 		v.allowedPaths = AllowedPaths
 		v.forbiddenPaths = ForbiddenPaths
+		v.forbiddenPatterns = ForbiddenPatterns
 	}
 
 	return v
 }
 
 // NewWithPaths creates a validator with custom path lists.
-func NewWithPaths(allowed, forbidden []string) *Validator {
+func NewWithPaths(allowed, forbidden, patterns []string) *Validator {
 	return &Validator{
-		allowedPaths:   allowed,
-		forbiddenPaths: forbidden,
+		allowedPaths:      allowed,
+		forbiddenPaths:    forbidden,
+		forbiddenPatterns: patterns,
 	}
 }
 
@@ -105,6 +161,21 @@ func (v *Validator) Validate(path string) error {
 	// Check forbidden paths first
 	for _, forbidden := range v.forbiddenPaths {
 		if strings.HasPrefix(cleanPath, forbidden) {
+			return ErrForbiddenPath
+		}
+	}
+
+	// Check forbidden patterns in filename and path components
+	pathLower := strings.ToLower(cleanPath)
+	for _, pattern := range v.forbiddenPatterns {
+		patternLower := strings.ToLower(pattern)
+		// Check if pattern appears in the path
+		if strings.Contains(pathLower, patternLower) {
+			return ErrForbiddenPath
+		}
+		// Also check the base filename
+		baseLower := strings.ToLower(filepath.Base(cleanPath))
+		if strings.Contains(baseLower, patternLower) {
 			return ErrForbiddenPath
 		}
 	}
