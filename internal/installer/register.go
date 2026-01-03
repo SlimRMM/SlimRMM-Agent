@@ -69,11 +69,16 @@ type EnrollmentStatusResponse struct {
 }
 
 // CertificateResponse is returned when fetching certificates after approval.
+// Matches backend's /api/v1/enrollment/certificate/{uuid} response.
 type CertificateResponse struct {
-	CACert     string `json:"ca_cert"`
-	ClientCert string `json:"client_cert"`
-	ClientKey  string `json:"client_key"`
-	Error      string `json:"error,omitempty"`
+	UUID   string `json:"uuid"`
+	Status string `json:"status"`
+	MTLS   struct {
+		CertificatePEM   string `json:"certificate_pem"`
+		PrivateKeyPEM    string `json:"private_key_pem"`
+		CACertificatePEM string `json:"ca_certificate_pem"`
+	} `json:"mtls"`
+	Error string `json:"error,omitempty"`
 }
 
 // AgentConfig extends config.Config with enrollment-specific fields.
@@ -396,7 +401,12 @@ func fetchCertificatesAndSave(ctx context.Context, cfg *config.Config, serverURL
 		return nil, fmt.Errorf("certificate error: %s", certResp.Error)
 	}
 
-	return saveCertificatesAndConfig(cfg, certResp.CACert, certResp.ClientCert, certResp.ClientKey, paths)
+	// Validate response has certificate data
+	if certResp.MTLS.CACertificatePEM == "" || certResp.MTLS.CertificatePEM == "" || certResp.MTLS.PrivateKeyPEM == "" {
+		return nil, errors.New("certificate response missing required certificate data")
+	}
+
+	return saveCertificatesAndConfig(cfg, certResp.MTLS.CACertificatePEM, certResp.MTLS.CertificatePEM, certResp.MTLS.PrivateKeyPEM, paths)
 }
 
 // saveCertificatesAndConfig saves certificates and updates the configuration.
