@@ -408,39 +408,50 @@ jobs:
           PREINSTALL
           chmod +x scripts/preinstall
 
-          # Postinstall - set permissions, create symlink, and auto-start if configured
-          cat > scripts/postinstall << 'POSTINSTALL'
-          #!/bin/bash
-          APP_PATH="/Applications/SlimRMM.app"
-          BINARY_PATH="${APP_PATH}/Contents/MacOS/slimrmm-agent"
-          DATA_DIR="/Library/Application Support/SlimRMM"
-
-          chmod 755 "${BINARY_PATH}"
-          chmod 700 "${DATA_DIR}/certs"
-          mkdir -p /Library/Logs/SlimRMM
-
-          # Create symlink for CLI access
-          ln -sf "${BINARY_PATH}" /usr/local/bin/slimrmm-agent 2>/dev/null || true
-
-          # Auto-install service if SLIMRMM_SERVER is set or config exists
-          if [ -n "$SLIMRMM_SERVER" ]; then
-              "${BINARY_PATH}" --install-service
-          elif [ -f "${DATA_DIR}/.slimrmm_config.json" ]; then
-              "${BINARY_PATH}" --install-service
-          else
-              echo "SlimRMM Agent installed to ${APP_PATH}"
-              echo "To complete setup: sudo SLIMRMM_SERVER=https://your-server.com slimrmm-agent --install-service"
-          fi
-          exit 0
-          POSTINSTALL
+          # Copy postinstall script from repo (with AppleScript dialogs)
+          cp build/macos/postinstall scripts/postinstall
           chmod +x scripts/postinstall
 
-          # Build PKG
+          # Build component PKG
           pkgbuild --root "${PKGROOT}" \
             --scripts scripts \
             --identifier ${LAUNCHD_LABEL} \
             --version ${VERSION} \
             --install-location / \
+            slimrmm-agent-component.pkg
+
+          # Create distribution XML for product archive
+          cat > distribution.xml << DISTXML
+          <?xml version="1.0" encoding="utf-8"?>
+          <installer-gui-script minSpecVersion="2">
+              <title>SlimRMM Agent</title>
+              <organization>io.slimrmm</organization>
+              <welcome file="welcome.html"/>
+              <readme file="readme.html"/>
+              <license file="license.html"/>
+              <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
+              <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+              <choices-outline>
+                  <line choice="default">
+                      <line choice="io.slimrmm.agent"/>
+                  </line>
+              </choices-outline>
+              <choice id="default"/>
+              <choice id="io.slimrmm.agent" visible="false">
+                  <pkg-ref id="io.slimrmm.agent"/>
+              </choice>
+              <pkg-ref id="io.slimrmm.agent" version="${VERSION}" onConclusion="none">slimrmm-agent-component.pkg</pkg-ref>
+          </installer-gui-script>
+          DISTXML
+
+          # Copy resources
+          mkdir -p resources
+          cp build/macos/resources/*.html resources/
+
+          # Build product archive with installer UI
+          productbuild --distribution distribution.xml \
+            --resources resources \
+            --package-path . \
             slimrmm-agent_${VERSION}_darwin_arm64.pkg
 
       - name: Upload PKG artifact

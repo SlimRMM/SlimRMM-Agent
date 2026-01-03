@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>SlimRMM Agent</title>
+    <organization>io.slimrmm</organization>
+    <welcome file="welcome.html"/>
+    <license file="license.html"/>
+    <readme file="readme.html"/>
+
+    <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
+
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+
+    <choices-outline>
+        <line choice="default">
+            <line choice="io.slimrmm.agent"/>
+        </line>
+    </choices-outline>
+
+    <choice id="default"/>
+    <choice id="io.slimrmm.agent" visible="false">
+        <pkg-ref id="io.slimrmm.agent"/>
+    </choice>
+
+    <pkg-ref id="io.slimrmm.agent" version="VERSION_PLACEHOLDER" onConclusion="none">slimrmm-agent.pkg</pkg-ref>
+
+    <installation-check script="installCheck()"/>
+    <script>
+    function installCheck() {
+        return true;
+    }
+    </script>
+</installer-gui-script>

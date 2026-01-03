@@ -7,6 +7,7 @@ set -e
 APP_PATH="/Applications/SlimRMM.app"
 BINARY_PATH="${APP_PATH}/Contents/MacOS/slimrmm-agent"
 DATA_DIR="/Library/Application Support/SlimRMM"
+CONFIG_FILE="${DATA_DIR}/.slimrmm_config.json"
 LOG_DIR="/Library/Logs/SlimRMM"
 
 echo "Installing SlimRMM Agent..."
@@ -20,29 +21,64 @@ chmod 755 "${LOG_DIR}"
 # Create symlink for CLI access
 ln -sf "${BINARY_PATH}" /usr/local/bin/slimrmm-agent 2>/dev/null || true
 
-# Check for server URL (can be passed via installer variables or environment)
-if [ -n "$SLIMRMM_SERVER" ]; then
-    echo "Server URL provided: $SLIMRMM_SERVER"
-    export SLIMRMM_SERVER
+# Check if already configured (update scenario)
+if [ -f "${CONFIG_FILE}" ]; then
+    echo "Existing configuration found, updating service..."
     "${BINARY_PATH}" --install-service
-else
-    # Check if already configured (update scenario)
-    if [ -f "${DATA_DIR}/.slimrmm_config.json" ]; then
-        echo "Existing configuration found, updating service..."
-        "${BINARY_PATH}" --install-service
-    else
-        echo ""
-        echo "================================================"
-        echo "SlimRMM Agent installed to ${APP_PATH}"
-        echo ""
-        echo "To complete setup, run:"
-        echo "  sudo SLIMRMM_SERVER=https://your-server.com slimrmm-agent --install-service"
-        echo ""
-        echo "Or start manually with:"
-        echo "  sudo SLIMRMM_SERVER=https://your-server.com slimrmm-agent"
-        echo "================================================"
-    fi
+    echo "SlimRMM Agent updated successfully"
+    exit 0
 fi
+
+# Check if server URL was provided via environment variable
+if [ -n "$SLIMRMM_SERVER" ]; then
+    echo "Server URL provided via environment: $SLIMRMM_SERVER"
+    export SLIMRMM_SERVER
+    if [ -n "$SLIMRMM_TOKEN" ]; then
+        export SLIMRMM_TOKEN
+    fi
+    "${BINARY_PATH}" --install-service
+    echo "SlimRMM Agent installed successfully"
+    exit 0
+fi
+
+# Prompt user for server URL using AppleScript
+echo "Prompting user for server configuration..."
+
+SERVER_URL=$(osascript -e 'display dialog "Enter your SlimRMM Server URL:" & return & return & "Example: https://rmm.example.com" default answer "https://" with title "SlimRMM Agent Setup" with icon note buttons {"Cancel", "Continue"} default button "Continue"' -e 'text returned of result' 2>/dev/null) || {
+    echo "User cancelled server URL input"
+    echo ""
+    echo "================================================"
+    echo "SlimRMM Agent installed but not configured."
+    echo ""
+    echo "To complete setup later, run:"
+    echo "  sudo SLIMRMM_SERVER=https://your-server.com slimrmm-agent --install-service"
+    echo "================================================"
+    exit 0
+}
+
+# Validate server URL
+if [ -z "$SERVER_URL" ] || [ "$SERVER_URL" = "https://" ]; then
+    osascript -e 'display alert "Invalid Server URL" message "Please provide a valid server URL." as critical' 2>/dev/null || true
+    echo "Invalid server URL provided"
+    exit 0
+fi
+
+# Prompt for enrollment token
+ENROLL_TOKEN=$(osascript -e 'display dialog "Enter your Enrollment Token:" & return & return & "(Optional - leave empty if not required)" default answer "" with title "SlimRMM Agent Setup" with icon note buttons {"Skip", "Continue"} default button "Continue"' -e 'text returned of result' 2>/dev/null) || {
+    ENROLL_TOKEN=""
+}
+
+# Set environment and install service
+export SLIMRMM_SERVER="$SERVER_URL"
+if [ -n "$ENROLL_TOKEN" ]; then
+    export SLIMRMM_TOKEN="$ENROLL_TOKEN"
+fi
+
+echo "Configuring agent with server: $SLIMRMM_SERVER"
+"${BINARY_PATH}" --install-service
+
+# Show success message
+osascript -e 'display notification "Agent registered and running" with title "SlimRMM Agent" subtitle "Installation Complete"' 2>/dev/null || true
 
 echo "SlimRMM Agent installation complete"
 exit 0
