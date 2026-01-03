@@ -53,14 +53,28 @@ func HasDisplayServer() bool {
 func CheckDependencies() map[string]bool {
 	displayAvailable := HasDisplayServer()
 
+	// On macOS, also check permissions
+	screenRecordingOK := true
+	accessibilityOK := true
+	if runtime.GOOS == "darwin" {
+		screenRecordingOK = CheckScreenRecordingPermission()
+		accessibilityOK = CheckAccessibilityPermission()
+	}
+
+	screenCaptureOK := displayAvailable && screenRecordingOK
+	inputControlOK := displayAvailable && accessibilityOK
+
 	return map[string]bool{
-		"screen_capture": displayAvailable,
-		"webrtc":         true,
-		"input_control":  displayAvailable,
-		"clipboard":      displayAvailable,
-		"display_server": displayAvailable,
-		"all_required":   displayAvailable,
-		"full_control":   displayAvailable,
+		"screen_capture":         screenCaptureOK,
+		"webrtc":                 true,
+		"input_control":          inputControlOK,
+		"clipboard":              displayAvailable,
+		"display_server":         displayAvailable,
+		"screen_recording_perm":  screenRecordingOK,
+		"accessibility_perm":     accessibilityOK,
+		"all_required":           screenCaptureOK,
+		"full_control":           screenCaptureOK && inputControlOK,
+		"cgo_enabled":            true,
 	}
 }
 
@@ -92,11 +106,27 @@ func GetMonitors() map[string]interface{} {
 
 // StartSession starts a new remote desktop session.
 func StartSession(sessionID string, sendCallback SendCallback, logger *slog.Logger) *StartResult {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	if !HasDisplayServer() {
 		return &StartResult{
 			Success: false,
 			Error:   "No display server (X11/Wayland) available. Remote desktop requires a graphical environment.",
 		}
+	}
+
+	// Check platform-specific permissions (especially important on macOS)
+	if runtime.GOOS == "darwin" {
+		if !CheckScreenRecordingPermission() {
+			logger.Warn("macOS screen recording permission not granted")
+			return &StartResult{
+				Success: false,
+				Error:   "Screen Recording permission required. Please grant permission in System Settings > Privacy & Security > Screen Recording, then restart the agent.",
+			}
+		}
+		logger.Debug("macOS screen recording permission granted")
 	}
 
 	sessionsMu.Lock()

@@ -21,14 +21,16 @@ func HasDisplayServer() bool {
 // CheckDependencies returns all features as unavailable when CGO is disabled.
 func CheckDependencies() map[string]bool {
 	return map[string]bool{
-		"screen_capture": false,
-		"webrtc":         false,
-		"input_control":  false,
-		"clipboard":      false,
-		"display_server": false,
-		"all_required":   false,
-		"full_control":   false,
-		"cgo_enabled":    false,
+		"screen_capture":        false,
+		"webrtc":                false,
+		"input_control":         false,
+		"clipboard":             false,
+		"display_server":        false,
+		"screen_recording_perm": false,
+		"accessibility_perm":    false,
+		"all_required":          false,
+		"full_control":          false,
+		"cgo_enabled":           false,
 	}
 }
 

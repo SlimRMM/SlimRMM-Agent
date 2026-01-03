@@ -38,6 +38,12 @@ func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMes
 		req.SessionID = h.cfg.GetUUID()
 	}
 
+	h.logger.Info("starting remote desktop session", "session_id", req.SessionID)
+
+	// Check platform-specific permissions first
+	permStatus := remotedesktop.GetPermissionStatus()
+	h.logger.Info("permission status", "permissions", permStatus)
+
 	// Create send callback that forwards messages via WebSocket
 	sendCallback := func(msg []byte) error {
 		h.SendRaw(json.RawMessage(msg))
@@ -48,6 +54,7 @@ func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMes
 
 	// Send offer to frontend via WebSocket
 	if result.Success {
+		h.logger.Info("remote desktop session started successfully", "session_id", req.SessionID)
 		h.SendRaw(map[string]interface{}{
 			"action":     "webrtc_offer",
 			"session_id": req.SessionID,
@@ -60,9 +67,15 @@ func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMes
 			"action": "remote_desktop_started",
 		})
 	} else {
+		h.logger.Error("remote desktop session failed to start",
+			"session_id", req.SessionID,
+			"error", result.Error,
+			"permissions", permStatus,
+		)
 		h.SendRaw(map[string]interface{}{
-			"action": "remote_desktop_error",
-			"error":  result.Error,
+			"action":      "remote_desktop_error",
+			"error":       result.Error,
+			"permissions": permStatus,
 		})
 	}
 
