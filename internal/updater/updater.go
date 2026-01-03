@@ -199,13 +199,42 @@ func matchesAssetPattern(assetName, pattern string) bool {
 	return strings.HasPrefix(assetName, prefix) && strings.HasSuffix(assetName, suffix)
 }
 
-// isNewerVersion compares two version strings.
+// isNewerVersion compares two semantic version strings.
 func isNewerVersion(latest, current string) bool {
-	// Simple comparison - could be enhanced with semver library
 	if current == "unknown" || current == "dev" {
 		return true
 	}
-	return latest > current
+
+	// Parse version strings into numeric parts
+	latestParts := parseVersion(latest)
+	currentParts := parseVersion(current)
+
+	// Compare each part
+	for i := 0; i < len(latestParts) && i < len(currentParts); i++ {
+		if latestParts[i] > currentParts[i] {
+			return true
+		}
+		if latestParts[i] < currentParts[i] {
+			return false
+		}
+	}
+
+	// If all compared parts are equal, newer if latest has more parts
+	return len(latestParts) > len(currentParts)
+}
+
+// parseVersion parses a version string into numeric parts.
+func parseVersion(v string) []int {
+	parts := strings.Split(v, ".")
+	result := make([]int, 0, len(parts))
+	for _, p := range parts {
+		// Handle pre-release suffixes like "1.0.0-beta"
+		p = strings.Split(p, "-")[0]
+		var num int
+		fmt.Sscanf(p, "%d", &num)
+		result = append(result, num)
+	}
+	return result
 }
 
 // PerformUpdate downloads and installs the update with rollback support.
