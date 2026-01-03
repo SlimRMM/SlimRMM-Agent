@@ -5,14 +5,16 @@
 
 echo "Preparing SlimRMM Agent installation..."
 
-# Stop existing service if running
+# Stop existing service if running (modern launchctl)
+launchctl bootout system/io.slimrmm.agent 2>/dev/null || true
+
+# Fallback for older systems
 if [ -f "/Library/LaunchDaemons/io.slimrmm.agent.plist" ]; then
-    echo "Stopping existing agent service..."
     launchctl unload "/Library/LaunchDaemons/io.slimrmm.agent.plist" 2>/dev/null || true
 fi
 
-# Also try to stop by label in case plist path changed
-launchctl remove io.slimrmm.agent 2>/dev/null || true
+# Give the service time to stop
+sleep 1
 
 echo "Ready for installation"
 exit 0

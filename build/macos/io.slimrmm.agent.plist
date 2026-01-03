@@ -6,7 +6,7 @@
     <string>io.slimrmm.agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Library/Application Support/SlimRMM/slimrmm-agent</string>
+        <string>/Applications/SlimRMM.app/Contents/MacOS/slimrmm-agent</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

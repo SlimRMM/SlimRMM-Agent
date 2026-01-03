@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>slimrmm-agent</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.slimrmm.agent</string>
+    <key>CFBundleName</key>
+    <string>SlimRMM</string>
+    <key>CFBundleDisplayName</key>
+    <string>SlimRMM Agent</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1.0.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSBackgroundOnly</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>SlimRMM Agent requires screen recording access for remote desktop functionality.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>SlimRMM Agent requires accessibility access for remote control functionality.</string>
+</dict>
+</plist>

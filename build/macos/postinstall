@@ -4,33 +4,42 @@ set -e
 # SlimRMM Agent Post-Installation Script for macOS
 # This script runs after the PKG installer copies files
 
+APP_PATH="/Applications/SlimRMM.app"
+BINARY_PATH="${APP_PATH}/Contents/MacOS/slimrmm-agent"
+DATA_DIR="/Library/Application Support/SlimRMM"
+LOG_DIR="/Library/Logs/SlimRMM"
+
 echo "Installing SlimRMM Agent..."
 
-# Create log directory
-mkdir -p "/Library/Logs/SlimRMM"
-chmod 755 "/Library/Logs/SlimRMM"
+# Create data and log directories
+mkdir -p "${DATA_DIR}/certs"
+chmod 700 "${DATA_DIR}/certs"
+mkdir -p "${LOG_DIR}"
+chmod 755 "${LOG_DIR}"
 
-# The agent handles directory creation, registration, and service installation
+# Create symlink for CLI access
+ln -sf "${BINARY_PATH}" /usr/local/bin/slimrmm-agent 2>/dev/null || true
+
 # Check for server URL (can be passed via installer variables or environment)
 if [ -n "$SLIMRMM_SERVER" ]; then
     echo "Server URL provided: $SLIMRMM_SERVER"
     export SLIMRMM_SERVER
-    /usr/local/bin/slimrmm-agent --install-service
+    "${BINARY_PATH}" --install-service
 else
     # Check if already configured (update scenario)
-    if [ -f "/Library/Application Support/SlimRMM/.slimrmm_config.json" ]; then
+    if [ -f "${DATA_DIR}/.slimrmm_config.json" ]; then
         echo "Existing configuration found, updating service..."
-        /usr/local/bin/slimrmm-agent --install-service
+        "${BINARY_PATH}" --install-service
     else
         echo ""
         echo "================================================"
-        echo "SlimRMM Agent installed but not configured."
+        echo "SlimRMM Agent installed to ${APP_PATH}"
         echo ""
         echo "To complete setup, run:"
-        echo "  sudo SLIMRMM_SERVER=https://your-server.com /usr/local/bin/slimrmm-agent --install-service"
+        echo "  sudo SLIMRMM_SERVER=https://your-server.com slimrmm-agent --install-service"
         echo ""
         echo "Or start manually with:"
-        echo "  sudo SLIMRMM_SERVER=https://your-server.com /usr/local/bin/slimrmm-agent"
+        echo "  sudo SLIMRMM_SERVER=https://your-server.com slimrmm-agent"
         echo "================================================"
     fi
 fi

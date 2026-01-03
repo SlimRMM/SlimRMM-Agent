@@ -293,7 +293,7 @@ jobs:
           name: package-rpm
           path: "*.rpm"
 
-  # Build macOS PKG (Apple Silicon only)
+  # Build macOS PKG with App Bundle (Apple Silicon only)
   build-macos-pkg:
     needs: [version, build-macos]
     runs-on: macos-14
@@ -306,28 +306,66 @@ jobs:
           name: binary-darwin-arm64
           path: .
 
-      - name: Build PKG
+      - name: Build PKG with App Bundle
         run: |
           VERSION=${{ needs.version.outputs.version }}
           LAUNCHD_LABEL="io.slimrmm.agent"
-          APP_SUPPORT="/Library/Application Support/SlimRMM"
-          LOG_DIR="/Library/Logs/SlimRMM"
           PKGROOT="_pkgroot"
 
           # Extract binary from tar.gz
           tar -xzf slimrmm-agent_${VERSION}_darwin_arm64.tar.gz
 
-          # Create package structure using standard macOS locations
-          mkdir -p "${PKGROOT}${APP_SUPPORT}/certs"
-          mkdir -p "${PKGROOT}${LOG_DIR}"
+          # Create App Bundle structure
+          mkdir -p "${PKGROOT}/Applications/SlimRMM.app/Contents/MacOS"
+          mkdir -p "${PKGROOT}/Applications/SlimRMM.app/Contents/Resources"
+          mkdir -p "${PKGROOT}/Library/Application Support/SlimRMM/certs"
+          mkdir -p "${PKGROOT}/Library/Logs/SlimRMM"
           mkdir -p "${PKGROOT}/Library/LaunchDaemons"
           mkdir -p scripts
 
-          # Copy binary
-          cp slimrmm-agent "${PKGROOT}${APP_SUPPORT}/slimrmm-agent"
-          chmod 755 "${PKGROOT}${APP_SUPPORT}/slimrmm-agent"
+          # Copy binary into app bundle
+          cp slimrmm-agent "${PKGROOT}/Applications/SlimRMM.app/Contents/MacOS/slimrmm-agent"
+          chmod 755 "${PKGROOT}/Applications/SlimRMM.app/Contents/MacOS/slimrmm-agent"
 
-          # Create LaunchDaemon plist with proper macOS paths
+          # Create Info.plist for app bundle
+          cat > "${PKGROOT}/Applications/SlimRMM.app/Contents/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>slimrmm-agent</string>
+              <key>CFBundleIdentifier</key>
+              <string>io.slimrmm.agent</string>
+              <key>CFBundleName</key>
+              <string>SlimRMM</string>
+              <key>CFBundleDisplayName</key>
+              <string>SlimRMM Agent</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleVersion</key>
+              <string>VERSION_PLACEHOLDER</string>
+              <key>CFBundleShortVersionString</key>
+              <string>VERSION_PLACEHOLDER</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>11.0</string>
+              <key>LSUIElement</key>
+              <true/>
+              <key>LSBackgroundOnly</key>
+              <true/>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>NSScreenCaptureUsageDescription</key>
+              <string>SlimRMM Agent requires screen recording access for remote desktop functionality.</string>
+              <key>NSAppleEventsUsageDescription</key>
+              <string>SlimRMM Agent requires accessibility access for remote control functionality.</string>
+          </dict>
+          </plist>
+          PLIST
+          # Replace version placeholder
+          sed -i '' "s/VERSION_PLACEHOLDER/${VERSION}/g" "${PKGROOT}/Applications/SlimRMM.app/Contents/Info.plist"
+
+          # Create LaunchDaemon plist pointing to app bundle
           cat > "${PKGROOT}/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist" << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -337,7 +375,7 @@ jobs:
               <string>io.slimrmm.agent</string>
               <key>ProgramArguments</key>
               <array>
-                  <string>/Library/Application Support/SlimRMM/slimrmm-agent</string>
+                  <string>/Applications/SlimRMM.app/Contents/MacOS/slimrmm-agent</string>
               </array>
               <key>RunAtLoad</key>
               <true/>
@@ -365,6 +403,7 @@ jobs:
           cat > scripts/preinstall << 'PREINSTALL'
           #!/bin/bash
           launchctl bootout system/io.slimrmm.agent 2>/dev/null || true
+          sleep 1
           exit 0
           PREINSTALL
           chmod +x scripts/preinstall
@@ -372,19 +411,24 @@ jobs:
           # Postinstall - set permissions, create symlink, and auto-start if configured
           cat > scripts/postinstall << 'POSTINSTALL'
           #!/bin/bash
-          APP_SUPPORT="/Library/Application Support/SlimRMM"
-          chmod 755 "${APP_SUPPORT}/slimrmm-agent"
-          chmod 700 "${APP_SUPPORT}/certs"
+          APP_PATH="/Applications/SlimRMM.app"
+          BINARY_PATH="${APP_PATH}/Contents/MacOS/slimrmm-agent"
+          DATA_DIR="/Library/Application Support/SlimRMM"
+
+          chmod 755 "${BINARY_PATH}"
+          chmod 700 "${DATA_DIR}/certs"
           mkdir -p /Library/Logs/SlimRMM
-          # Create symlink for easy CLI access
-          ln -sf "${APP_SUPPORT}/slimrmm-agent" /usr/local/bin/slimrmm-agent 2>/dev/null || true
+
+          # Create symlink for CLI access
+          ln -sf "${BINARY_PATH}" /usr/local/bin/slimrmm-agent 2>/dev/null || true
+
           # Auto-install service if SLIMRMM_SERVER is set or config exists
           if [ -n "$SLIMRMM_SERVER" ]; then
-              /usr/local/bin/slimrmm-agent --install-service
-          elif [ -f "${APP_SUPPORT}/.slimrmm_config.json" ]; then
-              /usr/local/bin/slimrmm-agent --install-service
+              "${BINARY_PATH}" --install-service
+          elif [ -f "${DATA_DIR}/.slimrmm_config.json" ]; then
+              "${BINARY_PATH}" --install-service
           else
-              echo "SlimRMM Agent installed."
+              echo "SlimRMM Agent installed to ${APP_PATH}"
               echo "To complete setup: sudo SLIMRMM_SERVER=https://your-server.com slimrmm-agent --install-service"
           fi
           exit 0
