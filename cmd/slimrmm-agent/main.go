@@ -248,6 +248,8 @@ func runInstallService(paths config.Paths, logger *slog.Logger) error {
 
 	// Check for server URL
 	serverURL := os.Getenv("SLIMRMM_SERVER")
+	var existingUUID string
+
 	if serverURL == "" {
 		// Try to load existing config
 		cfg, err := config.Load(paths.ConfigFile)
@@ -255,7 +257,15 @@ func runInstallService(paths config.Paths, logger *slog.Logger) error {
 			return fmt.Errorf("SLIMRMM_SERVER not set and no existing config found")
 		}
 		serverURL = cfg.GetServer()
-		logger.Info("using server from existing config", "url", serverURL)
+		existingUUID = cfg.GetUUID()
+		logger.Info("using server from existing config", "url", serverURL, "uuid", existingUUID)
+	} else {
+		// Server URL provided, but check for existing UUID to re-use
+		cfg, err := config.Load(paths.ConfigFile)
+		if err == nil && cfg.GetUUID() != "" {
+			existingUUID = cfg.GetUUID()
+			logger.Info("found existing UUID for re-registration", "uuid", existingUUID)
+		}
 	}
 
 	// Create directories
@@ -275,7 +285,18 @@ func runInstallService(paths config.Paths, logger *slog.Logger) error {
 	} else if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	} else {
-		logger.Info("using existing registration", "uuid", cfg.GetUUID())
+		// Agent already has a UUID - re-register to get new certificates
+		// This is needed when the agent is reinstalled or updated
+		if existingUUID != "" {
+			logger.Info("re-registering with existing UUID to obtain new certificates", "uuid", existingUUID)
+			cfg, err = installer.RegisterWithExistingUUID(serverURL, "", paths, existingUUID)
+			if err != nil {
+				return fmt.Errorf("re-registration failed: %w", err)
+			}
+			logger.Info("re-registration successful", "uuid", cfg.GetUUID())
+		} else {
+			logger.Info("using existing registration", "uuid", cfg.GetUUID())
+		}
 	}
 
 	// Install and start service

@@ -39,13 +39,14 @@ var (
 	ErrApprovalTimeout = errors.New("approval timeout exceeded")
 )
 
-// RegistrationRequest matches Python agent exactly:
-// os, arch, hostname, agent_version
+// RegistrationRequest matches backend schema.
+// Includes optional existing_uuid for re-registration after update/reinstall.
 type RegistrationRequest struct {
 	OS           string `json:"os"`
 	Arch         string `json:"arch"`
 	Hostname     string `json:"hostname"`
 	AgentVersion string `json:"agent_version"`
+	ExistingUUID string `json:"existing_uuid,omitempty"`
 }
 
 // RegistrationResponse is received from the server after initial registration.
@@ -98,23 +99,41 @@ func getArch() string {
 	return arch
 }
 
+// RegisterOptions contains optional parameters for registration.
+type RegisterOptions struct {
+	// ExistingUUID is the UUID from a previous installation.
+	// If provided and the agent was previously approved, auto-approval will occur.
+	ExistingUUID string
+}
+
 // Register registers the agent with the server using the enrollment workflow.
 // This implements the full 3-step approval process:
 // 1. POST /api/v1/enrollment/register - Initial registration
 // 2. GET /api/v1/enrollment/status/{uuid} - Poll for approval
 // 3. GET /api/v1/enrollment/certificate/{uuid} - Fetch certificates
 func Register(serverURL string, regKey string, paths config.Paths) (*config.Config, error) {
-	return RegisterWithContext(context.Background(), serverURL, regKey, paths, nil)
+	return RegisterWithContext(context.Background(), serverURL, regKey, paths, nil, nil)
+}
+
+// RegisterWithExistingUUID registers the agent with an existing UUID for re-registration.
+// This allows previously approved agents to be auto-approved after reinstall/update.
+func RegisterWithExistingUUID(serverURL string, regKey string, paths config.Paths, existingUUID string) (*config.Config, error) {
+	opts := &RegisterOptions{ExistingUUID: existingUUID}
+	return RegisterWithContext(context.Background(), serverURL, regKey, paths, nil, opts)
 }
 
 // RegisterWithContext registers the agent with cancellation support.
-func RegisterWithContext(ctx context.Context, serverURL string, regKey string, paths config.Paths, logger *slog.Logger) (*config.Config, error) {
+func RegisterWithContext(ctx context.Context, serverURL string, regKey string, paths config.Paths, logger *slog.Logger, opts *RegisterOptions) (*config.Config, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
 	// Step 1: Initial registration
-	regResp, err := registerAgent(ctx, serverURL, regKey, logger)
+	var existingUUID string
+	if opts != nil {
+		existingUUID = opts.ExistingUUID
+	}
+	regResp, err := registerAgent(ctx, serverURL, regKey, existingUUID, logger)
 	if err != nil {
 		return nil, fmt.Errorf("registration failed: %w", err)
 	}
@@ -161,7 +180,7 @@ func RegisterWithContext(ctx context.Context, serverURL string, regKey string, p
 }
 
 // registerAgent performs the initial registration request.
-func registerAgent(ctx context.Context, serverURL string, regKey string, logger *slog.Logger) (*RegistrationResponse, error) {
+func registerAgent(ctx context.Context, serverURL string, regKey string, existingUUID string, logger *slog.Logger) (*RegistrationResponse, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = "unknown"
@@ -172,6 +191,11 @@ func registerAgent(ctx context.Context, serverURL string, regKey string, logger 
 		Arch:         getArch(),
 		Hostname:     hostname,
 		AgentVersion: version.Get().Version,
+		ExistingUUID: existingUUID,
+	}
+
+	if existingUUID != "" {
+		logger.Info("re-registering with existing UUID", "uuid", existingUUID)
 	}
 
 	reqBody, err := json.Marshal(req)
