@@ -34,13 +34,6 @@ RestartSec=10
 User=root
 Environment="SLIMRMM_SERVICE=1"
 
-# Security hardening
-NoNewPrivileges=false
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/var/lib/slimrmm /var/log
-PrivateTmp=true
-
 [Install]
 WantedBy=multi-user.target
 `

@@ -29,13 +29,6 @@ Group={{.Group}}
 Environment="{{$key}}={{$value}}"
 {{end}}
 
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=read-only
-PrivateTmp=true
-ReadWritePaths=/var/lib/slimrmm /var/log/slimrmm
-
 # Logging - use standard log location
 StandardOutput=append:/var/log/slimrmm/agent.log
 StandardError=append:/var/log/slimrmm/agent.log
