@@ -27,11 +27,14 @@ const launchdPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
     <key>StandardOutPath</key>
-    <string>/var/lib/slimrmm/log/agent.log</string>
+    <string>/Library/Logs/SlimRMM/stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/var/lib/slimrmm/log/agent.log</string>
+    <string>/Library/Logs/SlimRMM/stderr.log</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
 </dict>
@@ -50,7 +53,7 @@ func (m *LaunchdManager) Install(name, displayName, description, execPath string
 	cfg := &ServiceConfig{
 		Name:       name,
 		ExecPath:   execPath,
-		WorkingDir: "/var/lib/slimrmm",
+		WorkingDir: "/Library/Application Support/SlimRMM",
 	}
 
 	return m.InstallWithConfig(cfg)

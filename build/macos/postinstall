@@ -12,6 +12,7 @@ BINARY_PATH="${APP_PATH}/Contents/MacOS/slimrmm-agent"
 DATA_DIR="/Library/Application Support/SlimRMM"
 CONFIG_FILE="${DATA_DIR}/.slimrmm_config.json"
 LOG_DIR="/Library/Logs/SlimRMM"
+LAUNCHD_PLIST="/Library/LaunchDaemons/io.slimrmm.agent.plist"
 
 echo "Installing SlimRMM Agent..."
 
@@ -28,15 +29,17 @@ ln -sf "${BINARY_PATH}" /usr/local/bin/slimrmm-agent 2>/dev/null || true
 if [ -f "${CONFIG_FILE}" ]; then
     echo "Existing configuration found, restarting service..."
 
-    # Stop old service if running
-    launchctl bootout system /Library/LaunchDaemons/io.slimrmm.agent.plist 2>/dev/null || \
-        launchctl unload /Library/LaunchDaemons/io.slimrmm.agent.plist 2>/dev/null || true
+    # Stop old service if running (don't run binary directly - just use launchctl)
+    launchctl bootout system "${LAUNCHD_PLIST}" 2>/dev/null || \
+        launchctl unload "${LAUNCHD_PLIST}" 2>/dev/null || true
 
     # Wait for service to stop
     sleep 1
 
-    # Re-install and start service with existing config
-    "${BINARY_PATH}" install 2>/dev/null || true
+    # Start service via launchctl (NOT by running the binary directly)
+    # Running the binary in postinstall context would associate permissions with Terminal
+    launchctl bootstrap system "${LAUNCHD_PLIST}" 2>/dev/null || \
+        launchctl load -w "${LAUNCHD_PLIST}" 2>/dev/null || true
 
     echo "SlimRMM Agent upgraded successfully"
     exit 0

@@ -297,6 +297,9 @@ jobs:
   build-macos-pkg:
     needs: [version, build-macos]
     runs-on: macos-14
+    env:
+      # Code signing is optional - only runs if secrets are configured
+      SIGNING_ENABLED: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -305,6 +308,34 @@ jobs:
         with:
           name: binary-darwin-arm64
           path: .
+
+      - name: Import Code Signing Certificate
+        if: env.SIGNING_ENABLED == 'true'
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # Create temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate
+          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          security import $RUNNER_TEMP/certificate.p12 -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+
+          # Allow codesign to access keychain
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
+
+          # Find Developer ID identity
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          echo "SIGNING_IDENTITY=$IDENTITY" >> $GITHUB_ENV
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
 
       - name: Build PKG with App Bundle
         run: |
@@ -453,6 +484,73 @@ jobs:
             --resources resources \
             --package-path . \
             slimrmm-agent_${VERSION}_darwin_arm64.pkg
+
+      - name: Sign App Bundle and PKG
+        if: env.SIGNING_ENABLED == 'true'
+        run: |
+          VERSION=${{ needs.version.outputs.version }}
+          APP_PATH="_pkgroot/Applications/SlimRMM.app"
+
+          # Sign the binary first
+          codesign --force --options runtime --timestamp \
+            --sign "$SIGNING_IDENTITY" \
+            --entitlements build/macos/entitlements.plist \
+            "${APP_PATH}/Contents/MacOS/slimrmm-agent"
+
+          # Sign the entire app bundle
+          codesign --force --options runtime --timestamp \
+            --sign "$SIGNING_IDENTITY" \
+            --entitlements build/macos/entitlements.plist \
+            "$APP_PATH"
+
+          # Verify signature
+          codesign --verify --deep --strict "$APP_PATH"
+
+          # Rebuild the PKG with signed app
+          rm -f slimrmm-agent-component.pkg slimrmm-agent_${VERSION}_darwin_arm64.pkg
+
+          pkgbuild --root "_pkgroot" \
+            --scripts scripts \
+            --identifier io.slimrmm.agent \
+            --version ${VERSION} \
+            --install-location / \
+            slimrmm-agent-component.pkg
+
+          productbuild --distribution distribution.xml \
+            --resources resources \
+            --package-path . \
+            --sign "$SIGNING_IDENTITY" \
+            slimrmm-agent_${VERSION}_darwin_arm64.pkg
+
+      - name: Notarize PKG
+        if: env.SIGNING_ENABLED == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          VERSION=${{ needs.version.outputs.version }}
+          PKG_FILE="slimrmm-agent_${VERSION}_darwin_arm64.pkg"
+
+          # Submit for notarization
+          xcrun notarytool submit "$PKG_FILE" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          # Staple the notarization ticket
+          xcrun stapler staple "$PKG_FILE"
+
+          # Verify stapling
+          xcrun stapler validate "$PKG_FILE"
+
+      - name: Cleanup Keychain
+        if: always() && env.SIGNING_ENABLED == 'true'
+        run: |
+          if [ -n "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          fi
 
       - name: Upload PKG artifact
         uses: actions/upload-artifact@v4
