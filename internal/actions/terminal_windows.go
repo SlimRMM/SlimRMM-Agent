@@ -57,6 +57,7 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 	}
 
 	cmd := exec.Command(shell)
+	cmd.Dir = "C:\\" // Start terminal in C:\ on Windows
 	cmd.Env = os.Environ()
 
 	stdin, err := cmd.StdinPipe()

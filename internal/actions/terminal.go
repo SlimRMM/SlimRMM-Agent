@@ -60,9 +60,11 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 
 	// Create command with login shell
 	cmd := exec.Command(shell, "-l")
+	cmd.Dir = "/" // Start terminal in root directory
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
+		"HOME=/root", // Ensure HOME is set correctly for root
 	)
 
 	// Start with PTY

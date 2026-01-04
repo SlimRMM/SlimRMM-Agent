@@ -36,9 +36,9 @@ ProtectHome=read-only
 PrivateTmp=true
 ReadWritePaths=/var/lib/slimrmm /var/log/slimrmm
 
-# Logging
-StandardOutput=append:/var/lib/slimrmm/log/agent.log
-StandardError=append:/var/lib/slimrmm/log/agent.log
+# Logging - use standard log location
+StandardOutput=append:/var/log/slimrmm/agent.log
+StandardError=append:/var/log/slimrmm/agent.log
 
 [Install]
 WantedBy=multi-user.target
