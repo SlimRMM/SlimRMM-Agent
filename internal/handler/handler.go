@@ -589,6 +589,7 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		// File browser actions - path, old_path, new_path at root
 		"list_dir":      true,
 		"create_folder": true,
+		"create_dir":    true,
 		"delete_entry":  true,
 		"rename_entry":  true,
 		"zip_entry":     true,
@@ -596,6 +597,13 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		"download_file": true,
 		"chmod":         true,
 		"chown":         true,
+		// Upload actions - path, data, offset, is_last at root
+		"upload_chunk":   true,
+		"start_upload":   true,
+		"finish_upload":  true,
+		"cancel_upload":  true,
+		"download_chunk": true,
+		"download_url":   true,
 	}
 	if rootLevelActions[msg.Action] {
 		handlerData = msg.Raw
