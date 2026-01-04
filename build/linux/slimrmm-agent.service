@@ -11,13 +11,7 @@ Restart=always
 RestartSec=10
 User=root
 Group=root
-
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=read-only
-PrivateTmp=true
-ReadWritePaths=/var/lib/slimrmm /var/log/slimrmm
+Environment="SLIMRMM_SERVICE=1"
 
 # Logging to system-typical location
 StandardOutput=append:/var/log/slimrmm/agent.log
