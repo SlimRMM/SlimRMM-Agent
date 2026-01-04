@@ -100,6 +100,23 @@ func (h *Handler) registerHandlers() {
 	h.handlers["get_tamper_status"] = h.handleGetTamperStatus
 	h.handlers["install_watchdog"] = h.handleInstallWatchdog
 	h.handlers["uninstall_watchdog"] = h.handleUninstallWatchdog
+
+	// Docker handlers
+	h.handlers["docker_info"] = h.handleDockerInfo
+	h.handlers["docker_list_containers"] = h.handleDockerListContainers
+	h.handlers["docker_container_action"] = h.handleDockerContainerAction
+	h.handlers["docker_remove_container"] = h.handleDockerRemoveContainer
+	h.handlers["docker_container_logs"] = h.handleDockerContainerLogs
+	h.handlers["docker_container_stats"] = h.handleDockerContainerStats
+	h.handlers["docker_inspect_container"] = h.handleDockerInspectContainer
+	h.handlers["docker_exec"] = h.handleDockerExec
+	h.handlers["docker_list_images"] = h.handleDockerListImages
+	h.handlers["docker_remove_image"] = h.handleDockerRemoveImage
+	h.handlers["docker_pull_image"] = h.handleDockerPullImage
+	h.handlers["docker_list_volumes"] = h.handleDockerListVolumes
+	h.handlers["docker_remove_volume"] = h.handleDockerRemoveVolume
+	h.handlers["docker_list_networks"] = h.handleDockerListNetworks
+	h.handlers["docker_compose_action"] = h.handleDockerComposeAction
 }
 
 // Command handlers
@@ -1346,4 +1363,203 @@ func (h *Handler) handleUninstallWatchdog(ctx context.Context, data json.RawMess
 	h.logger.Info("watchdog service uninstalled successfully")
 
 	return map[string]string{"status": "watchdog_uninstalled"}, nil
+}
+
+// Docker handlers
+
+func (h *Handler) handleDockerInfo(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	return actions.GetDockerInfo(ctx)
+}
+
+type dockerListContainersRequest struct {
+	All bool `json:"all"`
+}
+
+func (h *Handler) handleDockerListContainers(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerListContainersRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	return actions.ListDockerContainers(ctx, req.All)
+}
+
+type dockerContainerActionRequest struct {
+	ContainerID string `json:"container_id"`
+	Action      string `json:"action"`
+}
+
+func (h *Handler) handleDockerContainerAction(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerContainerActionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if err := actions.DockerContainerAction(ctx, req.ContainerID, req.Action); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"status": "success", "action": req.Action, "container_id": req.ContainerID}, nil
+}
+
+type dockerRemoveContainerRequest struct {
+	ContainerID string `json:"container_id"`
+	Force       bool   `json:"force"`
+}
+
+func (h *Handler) handleDockerRemoveContainer(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerRemoveContainerRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if err := actions.RemoveDockerContainer(ctx, req.ContainerID, req.Force); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"status": "removed", "container_id": req.ContainerID}, nil
+}
+
+type dockerContainerLogsRequest struct {
+	ContainerID string `json:"container_id"`
+	Tail        int    `json:"tail"`
+	Timestamps  bool   `json:"timestamps"`
+}
+
+func (h *Handler) handleDockerContainerLogs(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerContainerLogsRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	return actions.GetDockerContainerLogs(ctx, req.ContainerID, req.Tail, req.Timestamps)
+}
+
+type dockerContainerStatsRequest struct {
+	ContainerID string `json:"container_id"`
+}
+
+func (h *Handler) handleDockerContainerStats(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerContainerStatsRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	return actions.GetDockerContainerStats(ctx, req.ContainerID)
+}
+
+type dockerInspectContainerRequest struct {
+	ContainerID string `json:"container_id"`
+}
+
+func (h *Handler) handleDockerInspectContainer(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerInspectContainerRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	return actions.InspectDockerContainer(ctx, req.ContainerID)
+}
+
+type dockerExecRequest struct {
+	ContainerID string   `json:"container_id"`
+	Command     []string `json:"command"`
+	Timeout     int      `json:"timeout"`
+}
+
+func (h *Handler) handleDockerExec(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerExecRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	timeout := time.Duration(req.Timeout) * time.Second
+	if timeout == 0 {
+		timeout = actions.DefaultCommandTimeout
+	}
+
+	return actions.ExecInDockerContainer(ctx, req.ContainerID, req.Command, timeout)
+}
+
+func (h *Handler) handleDockerListImages(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	return actions.ListDockerImages(ctx)
+}
+
+type dockerRemoveImageRequest struct {
+	ImageID string `json:"image_id"`
+	Force   bool   `json:"force"`
+}
+
+func (h *Handler) handleDockerRemoveImage(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerRemoveImageRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if err := actions.RemoveDockerImage(ctx, req.ImageID, req.Force); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"status": "removed", "image_id": req.ImageID}, nil
+}
+
+type dockerPullImageRequest struct {
+	ImageName string `json:"image_name"`
+}
+
+func (h *Handler) handleDockerPullImage(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerPullImageRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if err := actions.PullDockerImage(ctx, req.ImageName); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"status": "pulled", "image_name": req.ImageName}, nil
+}
+
+func (h *Handler) handleDockerListVolumes(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	return actions.ListDockerVolumes(ctx)
+}
+
+type dockerRemoveVolumeRequest struct {
+	VolumeName string `json:"volume_name"`
+	Force      bool   `json:"force"`
+}
+
+func (h *Handler) handleDockerRemoveVolume(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerRemoveVolumeRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if err := actions.RemoveDockerVolume(ctx, req.VolumeName, req.Force); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"status": "removed", "volume_name": req.VolumeName}, nil
+}
+
+func (h *Handler) handleDockerListNetworks(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	return actions.ListDockerNetworks(ctx)
+}
+
+type dockerComposeActionRequest struct {
+	ProjectPath string `json:"project_path"`
+	Action      string `json:"action"`
+}
+
+func (h *Handler) handleDockerComposeAction(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerComposeActionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if err := actions.DockerComposeAction(ctx, req.ProjectPath, req.Action); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"status": "success", "action": req.Action, "project_path": req.ProjectPath}, nil
 }
