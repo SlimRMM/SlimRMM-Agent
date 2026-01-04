@@ -705,7 +705,14 @@ func (u *Updater) waitForServiceStopped(timeout time.Duration) error {
 func (u *Updater) startService() error {
 	switch runtime.GOOS {
 	case "linux":
-		return exec.Command("systemctl", "start", u.serviceName).Run()
+		cmd := exec.Command("systemctl", "start", u.serviceName)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			u.logger.Error("systemctl start failed", "error", err, "output", string(output))
+			return err
+		}
+		u.logger.Info("systemctl start completed", "output", string(output))
+		return nil
 	case "darwin":
 		// Use bootstrap to properly load the service (modern macOS 10.10+)
 		// This loads the plist and starts the service with the new binary
@@ -734,6 +741,7 @@ func (u *Updater) startService() error {
 // healthCheck verifies the new version is running correctly.
 func (u *Updater) healthCheck(ctx context.Context) error {
 	// Wait a bit for service to start
+	u.logger.Info("starting health check, waiting 5 seconds for service startup")
 	time.Sleep(5 * time.Second)
 
 	for i := 0; i < HealthCheckRetries; i++ {
@@ -748,6 +756,15 @@ func (u *Updater) healthCheck(ctx context.Context) error {
 		if running {
 			u.logger.Info("health check passed")
 			return nil
+		}
+
+		u.logger.Warn("service not running", "attempt", i+1, "max_attempts", HealthCheckRetries)
+
+		// Check systemd status for more info on Linux
+		if runtime.GOOS == "linux" {
+			cmd := exec.Command("systemctl", "status", u.serviceName)
+			output, _ := cmd.CombinedOutput()
+			u.logger.Debug("systemctl status output", "output", string(output))
 		}
 
 		time.Sleep(5 * time.Second)
