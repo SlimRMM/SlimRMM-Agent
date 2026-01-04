@@ -571,9 +571,33 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		return
 	}
 
-	// For run_osquery, pass the raw message as the handler needs scan_type and query from root
+	// Determine what data to pass to the handler
+	// Some actions have fields at the root level rather than in a nested "data" object
 	var handlerData json.RawMessage
-	if msg.Action == "run_osquery" {
+	rootLevelActions := map[string]bool{
+		// osquery
+		"run_osquery": true,
+		"osquery":     true,
+		// Terminal actions - fields are at root level (rows, cols, data, etc.)
+		"terminal":        true,
+		"terminal_input":  true,
+		"terminal_resize": true,
+		"start_terminal":  true,
+		"stop_terminal":   true,
+		"terminal_stop":   true,
+		"terminal_output": true,
+		// File browser actions - path, old_path, new_path at root
+		"list_dir":      true,
+		"create_folder": true,
+		"delete_entry":  true,
+		"rename_entry":  true,
+		"zip_entry":     true,
+		"unzip_entry":   true,
+		"download_file": true,
+		"chmod":         true,
+		"chown":         true,
+	}
+	if rootLevelActions[msg.Action] {
 		handlerData = msg.Raw
 	} else if len(msg.Data) > 0 {
 		handlerData = msg.Data
