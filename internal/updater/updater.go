@@ -532,30 +532,68 @@ func (u *Updater) extractZip(archivePath, destPath string) error {
 // replaceBinary replaces the current binary with the new one.
 // Uses rename trick to avoid "text file busy" error on running executables.
 func (u *Updater) replaceBinary(newPath string) error {
+	// On macOS, we need to update both the App bundle binary (used by launchd)
+	// and the CLI binary (used for manual commands)
+	if runtime.GOOS == "darwin" {
+		return u.replaceBinaryDarwin(newPath)
+	}
+
+	return u.replaceSingleBinary(newPath, u.binaryPath)
+}
+
+// replaceBinaryDarwin handles macOS-specific binary replacement.
+// macOS has two binaries: the App bundle (launchd service) and CLI (/usr/local/bin).
+func (u *Updater) replaceBinaryDarwin(newPath string) error {
+	appBinaryPath := "/Applications/SlimRMM.app/Contents/MacOS/slimrmm-agent"
+	cliBinaryPath := "/usr/local/bin/slimrmm-agent"
+
+	// Always update the App bundle binary (this is what launchd runs)
+	if _, err := os.Stat(appBinaryPath); err == nil {
+		u.logger.Info("updating App bundle binary", "path", appBinaryPath)
+		if err := u.replaceSingleBinary(newPath, appBinaryPath); err != nil {
+			return fmt.Errorf("replacing App bundle binary: %w", err)
+		}
+	}
+
+	// Also update CLI binary if it exists and is different from App bundle
+	if _, err := os.Stat(cliBinaryPath); err == nil {
+		u.logger.Info("updating CLI binary", "path", cliBinaryPath)
+		// Need to copy the binary since newPath was already moved
+		if err := u.copyBinary(appBinaryPath, cliBinaryPath); err != nil {
+			u.logger.Warn("failed to update CLI binary", "error", err)
+			// Not fatal - App bundle is the important one
+		}
+	}
+
+	return nil
+}
+
+// replaceSingleBinary replaces a single binary file.
+func (u *Updater) replaceSingleBinary(srcPath, destPath string) error {
 	// Rename current binary first - this works even when the binary is running
 	// because the running process keeps the inode open, not the filename.
-	oldPath := u.binaryPath + ".old"
+	oldPath := destPath + ".old"
 	os.Remove(oldPath) // Remove any previous .old file
 
-	if err := os.Rename(u.binaryPath, oldPath); err != nil {
+	if err := os.Rename(destPath, oldPath); err != nil {
 		// If rename fails (e.g., file doesn't exist on fresh install), continue
 		u.logger.Warn("rename of current binary failed (may be fresh install)", "error", err)
 	}
 
 	// Use rename to atomically move new binary into place
 	// This avoids "text file busy" because rename doesn't open the file
-	if err := os.Rename(newPath, u.binaryPath); err != nil {
+	if err := os.Rename(srcPath, destPath); err != nil {
 		// Cross-device rename not supported, fall back to copy
 		u.logger.Warn("rename failed (cross-device?), falling back to copy", "error", err)
 
-		src, err := os.Open(newPath)
+		src, err := os.Open(srcPath)
 		if err != nil {
 			return err
 		}
 		defer src.Close()
 
 		// Create with a temporary name first, then rename
-		tmpPath := u.binaryPath + ".new"
+		tmpPath := destPath + ".new"
 		dst, err := os.Create(tmpPath)
 		if err != nil {
 			return err
@@ -574,13 +612,13 @@ func (u *Updater) replaceBinary(newPath string) error {
 		}
 
 		// Final rename of .new to target
-		if err := os.Rename(tmpPath, u.binaryPath); err != nil {
+		if err := os.Rename(tmpPath, destPath); err != nil {
 			os.Remove(tmpPath)
 			return err
 		}
 	}
 
-	if err := os.Chmod(u.binaryPath, 0755); err != nil {
+	if err := os.Chmod(destPath, 0755); err != nil {
 		u.logger.Warn("chmod failed", "error", err)
 	}
 
@@ -590,20 +628,85 @@ func (u *Updater) replaceBinary(newPath string) error {
 	return nil
 }
 
+// copyBinary copies a binary from src to dest.
+func (u *Updater) copyBinary(srcPath, destPath string) error {
+	oldPath := destPath + ".old"
+	os.Remove(oldPath)
+
+	// Rename existing binary first
+	if err := os.Rename(destPath, oldPath); err != nil {
+		u.logger.Warn("rename of binary failed", "error", err)
+	}
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	tmpPath := destPath + ".new"
+	dst, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	dst.Close()
+
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	os.Remove(oldPath)
+	return nil
+}
+
 // rollback restores the backup binary.
 func (u *Updater) rollback(backupPath string) error {
 	u.logger.Info("rolling back to previous version", "backup", backupPath)
 
+	// On macOS, rollback both binaries
+	if runtime.GOOS == "darwin" {
+		appBinaryPath := "/Applications/SlimRMM.app/Contents/MacOS/slimrmm-agent"
+		cliBinaryPath := "/usr/local/bin/slimrmm-agent"
+
+		if err := u.rollbackSingleBinary(backupPath, appBinaryPath); err != nil {
+			return err
+		}
+		// Also rollback CLI binary
+		if _, err := os.Stat(cliBinaryPath); err == nil {
+			if err := u.copyBinary(appBinaryPath, cliBinaryPath); err != nil {
+				u.logger.Warn("failed to rollback CLI binary", "error", err)
+			}
+		}
+		return nil
+	}
+
+	return u.rollbackSingleBinary(backupPath, u.binaryPath)
+}
+
+// rollbackSingleBinary restores a single binary from backup.
+func (u *Updater) rollbackSingleBinary(backupPath, destPath string) error {
 	// Use rename trick to avoid "text file busy" error
-	oldPath := u.binaryPath + ".failed"
+	oldPath := destPath + ".failed"
 	os.Remove(oldPath)
 
-	if err := os.Rename(u.binaryPath, oldPath); err != nil {
+	if err := os.Rename(destPath, oldPath); err != nil {
 		u.logger.Warn("rename failed during rollback", "error", err)
 	}
 
 	// Try to rename backup directly into place (atomic, no "text file busy")
-	if err := os.Rename(backupPath, u.binaryPath); err != nil {
+	if err := os.Rename(backupPath, destPath); err != nil {
 		// Cross-device or other issue, fall back to copy
 		u.logger.Warn("rename failed during rollback, falling back to copy", "error", err)
 
@@ -614,7 +717,7 @@ func (u *Updater) rollback(backupPath string) error {
 		defer src.Close()
 
 		// Copy to temporary file first
-		tmpPath := u.binaryPath + ".rollback"
+		tmpPath := destPath + ".rollback"
 		dst, err := os.Create(tmpPath)
 		if err != nil {
 			return err
@@ -633,13 +736,13 @@ func (u *Updater) rollback(backupPath string) error {
 		}
 
 		// Final rename
-		if err := os.Rename(tmpPath, u.binaryPath); err != nil {
+		if err := os.Rename(tmpPath, destPath); err != nil {
 			os.Remove(tmpPath)
 			return err
 		}
 	}
 
-	if err := os.Chmod(u.binaryPath, 0755); err != nil {
+	if err := os.Chmod(destPath, 0755); err != nil {
 		u.logger.Warn("chmod failed during rollback", "error", err)
 	}
 
