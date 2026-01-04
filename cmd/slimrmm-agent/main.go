@@ -243,11 +243,28 @@ func cmdInstall(args arguments, paths config.Paths, logger *slog.Logger) int {
 	fmt.Printf("Connecting to %s...\n", args.server)
 	if args.key != "" {
 		fmt.Println("Using enrollment token for auto-approval")
+	} else {
+		fmt.Println("No enrollment token provided - manual approval required")
+		fmt.Println("An admin must approve this agent in the web UI")
+		fmt.Println("")
 	}
 
-	cfg, err := installer.Register(args.server, args.key, paths)
+	// Progress callback for approval wait
+	progressCb := func(status string, message string) {
+		fmt.Printf("\r\033[K  %s", message) // Clear line and print status
+		if status != "pending" {
+			fmt.Println() // New line when done
+		}
+	}
+
+	cfg, err := installer.RegisterWithProgress(args.server, args.key, paths, progressCb)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Registration failed: %v\n", err)
+		fmt.Println() // Ensure we're on a new line
+		if err == installer.ErrRejected {
+			fmt.Fprintln(os.Stderr, "Registration rejected by admin")
+		} else {
+			fmt.Fprintf(os.Stderr, "Registration failed: %v\n", err)
+		}
 		return 1
 	}
 

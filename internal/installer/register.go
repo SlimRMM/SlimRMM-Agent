@@ -109,6 +109,9 @@ func getArch() string {
 	return arch
 }
 
+// ProgressCallback is called during the approval wait to report status.
+type ProgressCallback func(status string, message string)
+
 // RegisterOptions contains optional parameters for registration.
 type RegisterOptions struct {
 	// ExistingUUID is the UUID from a previous installation.
@@ -117,6 +120,8 @@ type RegisterOptions struct {
 	// ReregistrationSecret is the secret from the previous approval.
 	// Required for secure re-registration to prevent UUID spoofing.
 	ReregistrationSecret string
+	// ProgressCallback is called to report progress during approval wait.
+	ProgressCallback ProgressCallback
 }
 
 // Register registers the agent with the server using the enrollment workflow.
@@ -126,6 +131,15 @@ type RegisterOptions struct {
 // 3. GET /api/v1/enrollment/certificate/{uuid} - Fetch certificates
 func Register(serverURL string, regKey string, paths config.Paths) (*config.Config, error) {
 	return RegisterWithContext(context.Background(), serverURL, regKey, paths, nil, nil)
+}
+
+// RegisterWithProgress registers the agent and calls progressCb during approval wait.
+// Use this for interactive installations to show progress to the user.
+func RegisterWithProgress(serverURL string, regKey string, paths config.Paths, progressCb ProgressCallback) (*config.Config, error) {
+	opts := &RegisterOptions{
+		ProgressCallback: progressCb,
+	}
+	return RegisterWithContext(context.Background(), serverURL, regKey, paths, nil, opts)
 }
 
 // RegisterWithExistingUUID registers the agent with an existing UUID for re-registration.
@@ -206,7 +220,11 @@ func RegisterWithContext(ctx context.Context, serverURL string, enrollmentToken 
 
 	// Step 2: Poll for approval
 	logger.Info("waiting for server approval", "uuid", regResp.UUID)
-	if err := waitForApproval(ctx, serverURL, regResp.UUID, regResp.RegistrationToken, logger); err != nil {
+	var progressCb ProgressCallback
+	if opts != nil && opts.ProgressCallback != nil {
+		progressCb = opts.ProgressCallback
+	}
+	if err := waitForApproval(ctx, serverURL, regResp.UUID, regResp.RegistrationToken, logger, progressCb); err != nil {
 		return nil, err
 	}
 
@@ -349,7 +367,7 @@ func registerAgentLegacy(ctx context.Context, serverURL string, reqBody []byte, 
 }
 
 // waitForApproval polls the server until the agent is approved or rejected.
-func waitForApproval(ctx context.Context, serverURL, uuid, regToken string, logger *slog.Logger) error {
+func waitForApproval(ctx context.Context, serverURL, uuid, regToken string, logger *slog.Logger, progressCb ProgressCallback) error {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
@@ -360,6 +378,12 @@ func waitForApproval(ctx context.Context, serverURL, uuid, regToken string, logg
 	}
 
 	pollInterval := InitialPollInterval
+	pollCount := 0
+
+	// Initial progress notification
+	if progressCb != nil {
+		progressCb(StatusPending, "Waiting for admin approval...")
+	}
 
 	for {
 		select {
@@ -368,6 +392,7 @@ func waitForApproval(ctx context.Context, serverURL, uuid, regToken string, logg
 		case <-time.After(pollInterval):
 		}
 
+		pollCount++
 		status, err := checkApprovalStatus(ctx, client, serverURL, uuid, regToken)
 		if err != nil {
 			logger.Warn("error checking approval status", "error", err)
@@ -378,11 +403,21 @@ func waitForApproval(ctx context.Context, serverURL, uuid, regToken string, logg
 
 		switch status {
 		case StatusApproved:
+			if progressCb != nil {
+				progressCb(StatusApproved, "Agent approved!")
+			}
 			return nil
 		case StatusRejected:
+			if progressCb != nil {
+				progressCb(StatusRejected, "Agent rejected by admin")
+			}
 			return ErrRejected
 		case StatusPending:
 			logger.Debug("still waiting for approval", "interval", pollInterval)
+			if progressCb != nil {
+				nextPollSec := int(pollInterval.Seconds())
+				progressCb(StatusPending, fmt.Sprintf("Still waiting... (check %d, next in %ds)", pollCount, nextPollSec))
+			}
 			pollInterval = increasePollInterval(pollInterval)
 		default:
 			logger.Warn("unknown status received", "status", status)
