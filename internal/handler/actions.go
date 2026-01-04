@@ -1138,6 +1138,12 @@ func (h *Handler) handleEnableTamperProtection(ctx context.Context, data json.Ra
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	h.logger.Info("enabling tamper protection",
+		"watchdog_requested", req.Watchdog,
+		"alerts_enabled", req.AlertEnabled,
+		"uninstall_key_provided", req.UninstallKey != "",
+	)
+
 	// Enable tamper protection in config
 	h.cfg.SetTamperProtection(true)
 	h.cfg.SetTamperAlertEnabled(req.AlertEnabled)
@@ -1146,6 +1152,7 @@ func (h *Handler) handleEnableTamperProtection(ctx context.Context, data json.Ra
 	if req.UninstallKey != "" {
 		hash := h.tamperProtection.SetUninstallKey(req.UninstallKey)
 		h.cfg.SetUninstallKeyHash(hash)
+		h.logger.Info("uninstall key configured during tamper protection enable")
 	}
 
 	// Install watchdog if requested
@@ -1154,6 +1161,7 @@ func (h *Handler) handleEnableTamperProtection(ctx context.Context, data json.Ra
 			h.logger.Warn("failed to install watchdog", "error", err)
 		} else {
 			h.cfg.SetWatchdogEnabled(true)
+			h.logger.Info("watchdog service installed and enabled")
 		}
 	}
 
@@ -1166,6 +1174,11 @@ func (h *Handler) handleEnableTamperProtection(ctx context.Context, data json.Ra
 	if h.tamperProtection != nil {
 		h.tamperProtection.Start()
 	}
+
+	h.logger.Info("tamper protection enabled successfully",
+		"watchdog_enabled", h.cfg.IsWatchdogEnabled(),
+		"alerts_enabled", h.cfg.IsTamperAlertEnabled(),
+	)
 
 	return map[string]interface{}{
 		"status":           "enabled",
@@ -1185,9 +1198,14 @@ func (h *Handler) handleDisableTamperProtection(ctx context.Context, data json.R
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	h.logger.Info("attempting to disable tamper protection",
+		"uninstall_key_provided", req.UninstallKey != "",
+	)
+
 	// Validate uninstall key if set
 	if h.tamperProtection != nil {
 		if err := h.tamperProtection.ValidateUninstallKey(req.UninstallKey); err != nil {
+			h.logger.Warn("failed to disable tamper protection: invalid uninstall key")
 			return nil, fmt.Errorf("unauthorized: %w", err)
 		}
 	}
@@ -1195,12 +1213,15 @@ func (h *Handler) handleDisableTamperProtection(ctx context.Context, data json.R
 	// Stop tamper protection
 	if h.tamperProtection != nil {
 		h.tamperProtection.Stop()
+		h.logger.Info("tamper protection monitoring stopped")
 	}
 
 	// Uninstall watchdog
 	if h.cfg.IsWatchdogEnabled() {
 		if err := h.uninstallWatchdog(); err != nil {
 			h.logger.Warn("failed to uninstall watchdog", "error", err)
+		} else {
+			h.logger.Info("watchdog service uninstalled")
 		}
 	}
 
@@ -1213,6 +1234,8 @@ func (h *Handler) handleDisableTamperProtection(ctx context.Context, data json.R
 	if err := h.cfg.Save(); err != nil {
 		return nil, fmt.Errorf("saving config: %w", err)
 	}
+
+	h.logger.Info("tamper protection disabled successfully")
 
 	return map[string]string{"status": "disabled"}, nil
 }
@@ -1228,10 +1251,14 @@ func (h *Handler) handleSetUninstallKey(ctx context.Context, data json.RawMessag
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	hadPreviousKey := h.cfg.GetUninstallKeyHash() != ""
+	h.logger.Info("attempting to set uninstall key", "has_previous_key", hadPreviousKey)
+
 	// Validate current key if one exists
-	if h.cfg.GetUninstallKeyHash() != "" {
+	if hadPreviousKey {
 		if h.tamperProtection != nil {
 			if err := h.tamperProtection.ValidateUninstallKey(req.CurrentKey); err != nil {
+				h.logger.Warn("failed to set uninstall key: invalid current key")
 				return nil, fmt.Errorf("unauthorized: current key invalid")
 			}
 		}
@@ -1249,6 +1276,12 @@ func (h *Handler) handleSetUninstallKey(ctx context.Context, data json.RawMessag
 		return nil, fmt.Errorf("saving config: %w", err)
 	}
 
+	if hadPreviousKey {
+		h.logger.Info("uninstall key updated successfully")
+	} else {
+		h.logger.Info("uninstall key configured successfully")
+	}
+
 	return map[string]string{"status": "key_updated"}, nil
 }
 
@@ -1262,7 +1295,10 @@ func (h *Handler) handleGetTamperStatus(ctx context.Context, data json.RawMessag
 }
 
 func (h *Handler) handleInstallWatchdog(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	h.logger.Info("installing watchdog service")
+
 	if err := h.installWatchdog(); err != nil {
+		h.logger.Error("failed to install watchdog service", "error", err)
 		return nil, err
 	}
 
@@ -1271,10 +1307,14 @@ func (h *Handler) handleInstallWatchdog(ctx context.Context, data json.RawMessag
 		return nil, fmt.Errorf("saving config: %w", err)
 	}
 
+	h.logger.Info("watchdog service installed and enabled successfully")
+
 	return map[string]string{"status": "watchdog_installed"}, nil
 }
 
 func (h *Handler) handleUninstallWatchdog(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	h.logger.Info("attempting to uninstall watchdog service")
+
 	// Validate uninstall key if tamper protection is enabled
 	if h.cfg.IsTamperProtectionEnabled() && h.cfg.GetUninstallKeyHash() != "" {
 		var req struct {
@@ -1283,15 +1323,18 @@ func (h *Handler) handleUninstallWatchdog(ctx context.Context, data json.RawMess
 		if err := json.Unmarshal(data, &req); err == nil && req.UninstallKey != "" {
 			if h.tamperProtection != nil {
 				if err := h.tamperProtection.ValidateUninstallKey(req.UninstallKey); err != nil {
+					h.logger.Warn("failed to uninstall watchdog: invalid uninstall key")
 					return nil, fmt.Errorf("unauthorized: %w", err)
 				}
 			}
 		} else {
+			h.logger.Warn("failed to uninstall watchdog: uninstall key required but not provided")
 			return nil, fmt.Errorf("uninstall key required when tamper protection is enabled")
 		}
 	}
 
 	if err := h.uninstallWatchdog(); err != nil {
+		h.logger.Error("failed to uninstall watchdog service", "error", err)
 		return nil, err
 	}
 
@@ -1299,6 +1342,8 @@ func (h *Handler) handleUninstallWatchdog(ctx context.Context, data json.RawMess
 	if err := h.cfg.Save(); err != nil {
 		return nil, fmt.Errorf("saving config: %w", err)
 	}
+
+	h.logger.Info("watchdog service uninstalled successfully")
 
 	return map[string]string{"status": "watchdog_uninstalled"}, nil
 }
