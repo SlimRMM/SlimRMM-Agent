@@ -570,14 +570,24 @@ func (u *Updater) replaceBinaryDarwin(newPath string) error {
 
 // replaceSingleBinary replaces a single binary file.
 func (u *Updater) replaceSingleBinary(srcPath, destPath string) error {
+	// Remove immutable attribute if set (Linux tamper protection)
+	// This must be done before any rename/delete operations
+	if runtime.GOOS == "linux" {
+		u.removeImmutableAttr(destPath)
+	}
+
 	// Rename current binary first - this works even when the binary is running
 	// because the running process keeps the inode open, not the filename.
 	oldPath := destPath + ".old"
-	os.Remove(oldPath) // Remove any previous .old file
+	u.removeImmutableAttr(oldPath) // Also remove from .old if it exists
+	os.Remove(oldPath)             // Remove any previous .old file
 
 	if err := os.Rename(destPath, oldPath); err != nil {
-		// If rename fails (e.g., file doesn't exist on fresh install), continue
-		u.logger.Warn("rename of current binary failed (may be fresh install)", "error", err)
+		// If rename fails, try removing the file directly
+		u.logger.Warn("rename of current binary failed, trying remove", "error", err)
+		if rmErr := os.Remove(destPath); rmErr != nil {
+			u.logger.Warn("remove also failed", "error", rmErr)
+		}
 	}
 
 	// Use rename to atomically move new binary into place
@@ -586,34 +596,7 @@ func (u *Updater) replaceSingleBinary(srcPath, destPath string) error {
 		// Cross-device rename not supported, fall back to copy
 		u.logger.Warn("rename failed (cross-device?), falling back to copy", "error", err)
 
-		src, err := os.Open(srcPath)
-		if err != nil {
-			return err
-		}
-		defer src.Close()
-
-		// Create with a temporary name first, then rename
-		tmpPath := destPath + ".new"
-		dst, err := os.Create(tmpPath)
-		if err != nil {
-			return err
-		}
-
-		if _, err := io.Copy(dst, src); err != nil {
-			dst.Close()
-			os.Remove(tmpPath)
-			return err
-		}
-		dst.Close()
-
-		if err := os.Chmod(tmpPath, 0755); err != nil {
-			os.Remove(tmpPath)
-			return err
-		}
-
-		// Final rename of .new to target
-		if err := os.Rename(tmpPath, destPath); err != nil {
-			os.Remove(tmpPath)
+		if err := u.copyFileDirect(srcPath, destPath); err != nil {
 			return err
 		}
 	}
@@ -628,14 +611,73 @@ func (u *Updater) replaceSingleBinary(srcPath, destPath string) error {
 	return nil
 }
 
+// copyFileDirect copies a file directly, removing the destination first if needed.
+func (u *Updater) copyFileDirect(srcPath, destPath string) error {
+	// Remove immutable attribute and delete destination
+	u.removeImmutableAttr(destPath)
+	os.Remove(destPath)
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("opening source: %w", err)
+	}
+	defer src.Close()
+
+	dst, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("creating destination: %w", err)
+	}
+
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		os.Remove(destPath)
+		return fmt.Errorf("copying file: %w", err)
+	}
+	dst.Close()
+
+	if err := os.Chmod(destPath, 0755); err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("chmod: %w", err)
+	}
+
+	return nil
+}
+
+// removeImmutableAttr removes the immutable attribute from a file (Linux only).
+// This is needed to update files protected by tamper protection.
+func (u *Updater) removeImmutableAttr(path string) {
+	if runtime.GOOS != "linux" {
+		return
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return
+	}
+
+	// Use chattr -i to remove immutable attribute
+	cmd := exec.Command("chattr", "-i", path)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		u.logger.Debug("chattr -i failed (may not have immutable attr)", "path", path, "error", err, "output", string(output))
+	} else {
+		u.logger.Info("removed immutable attribute", "path", path)
+	}
+}
+
 // copyBinary copies a binary from src to dest.
 func (u *Updater) copyBinary(srcPath, destPath string) error {
+	// Remove immutable attribute if set
+	u.removeImmutableAttr(destPath)
+
 	oldPath := destPath + ".old"
+	u.removeImmutableAttr(oldPath)
 	os.Remove(oldPath)
 
 	// Rename existing binary first
 	if err := os.Rename(destPath, oldPath); err != nil {
-		u.logger.Warn("rename of binary failed", "error", err)
+		u.logger.Warn("rename of binary failed, trying direct copy", "error", err)
+		// Fall back to direct copy
+		return u.copyFileDirect(srcPath, destPath)
 	}
 
 	src, err := os.Open(srcPath)
@@ -697,49 +739,24 @@ func (u *Updater) rollback(backupPath string) error {
 
 // rollbackSingleBinary restores a single binary from backup.
 func (u *Updater) rollbackSingleBinary(backupPath, destPath string) error {
+	// Remove immutable attributes first
+	u.removeImmutableAttr(destPath)
+
 	// Use rename trick to avoid "text file busy" error
 	oldPath := destPath + ".failed"
+	u.removeImmutableAttr(oldPath)
 	os.Remove(oldPath)
 
 	if err := os.Rename(destPath, oldPath); err != nil {
-		u.logger.Warn("rename failed during rollback", "error", err)
+		u.logger.Warn("rename failed during rollback, trying remove", "error", err)
+		os.Remove(destPath)
 	}
 
 	// Try to rename backup directly into place (atomic, no "text file busy")
 	if err := os.Rename(backupPath, destPath); err != nil {
-		// Cross-device or other issue, fall back to copy
+		// Cross-device or other issue, fall back to direct copy
 		u.logger.Warn("rename failed during rollback, falling back to copy", "error", err)
-
-		src, err := os.Open(backupPath)
-		if err != nil {
-			return err
-		}
-		defer src.Close()
-
-		// Copy to temporary file first
-		tmpPath := destPath + ".rollback"
-		dst, err := os.Create(tmpPath)
-		if err != nil {
-			return err
-		}
-
-		if _, err := io.Copy(dst, src); err != nil {
-			dst.Close()
-			os.Remove(tmpPath)
-			return err
-		}
-		dst.Close()
-
-		if err := os.Chmod(tmpPath, 0755); err != nil {
-			os.Remove(tmpPath)
-			return err
-		}
-
-		// Final rename
-		if err := os.Rename(tmpPath, destPath); err != nil {
-			os.Remove(tmpPath)
-			return err
-		}
+		return u.copyFileDirect(backupPath, destPath)
 	}
 
 	if err := os.Chmod(destPath, 0755); err != nil {

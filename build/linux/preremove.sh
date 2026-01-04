@@ -9,6 +9,26 @@ set -e
 CONFIG_DIR="/var/lib/slimrmm"
 CONFIG_FILE="$CONFIG_DIR/.slimrmm_config.json"
 BACKUP_DIR="/tmp/slimrmm-upgrade-backup"
+BINARY_PATH="/usr/local/bin/slimrmm-agent"
+SERVICE_FILE="/etc/systemd/system/slimrmm-agent.service"
+
+# Remove immutable attributes from tamper-protected files
+# This is necessary for upgrades to succeed
+remove_immutable_attrs() {
+    echo "Removing tamper protection for upgrade/removal..."
+    # Remove immutable attribute from all protected files
+    chattr -i "$BINARY_PATH" 2>/dev/null || true
+    chattr -i "$SERVICE_FILE" 2>/dev/null || true
+    chattr -i "$CONFIG_FILE" 2>/dev/null || true
+    chattr -i "$CONFIG_DIR/ca.crt" 2>/dev/null || true
+    chattr -i "$CONFIG_DIR/client.crt" 2>/dev/null || true
+    chattr -i "$CONFIG_DIR/client.key" 2>/dev/null || true
+    chattr -i "$CONFIG_DIR/.proxmox_token.json" 2>/dev/null || true
+    # Also try to disable tamper protection through the agent
+    if [ -x "$BINARY_PATH" ]; then
+        "$BINARY_PATH" --disable-tamper-protection 2>/dev/null || true
+    fi
+}
 
 # Determine if this is an upgrade or complete removal
 is_upgrade() {
@@ -22,6 +42,9 @@ is_upgrade() {
     fi
     return 1
 }
+
+# Always remove immutable attributes first
+remove_immutable_attrs
 
 if is_upgrade "$1"; then
     echo "Upgrading SlimRMM Agent - preserving configuration..."
@@ -52,13 +75,13 @@ else
     echo "Removing SlimRMM Agent..."
 
     # Full uninstall - remove everything
-    if [ -x "/usr/local/bin/slimrmm-agent" ]; then
-        /usr/local/bin/slimrmm-agent --uninstall || true
+    if [ -x "$BINARY_PATH" ]; then
+        "$BINARY_PATH" --uninstall || true
     else
         # Fallback if binary is missing
         systemctl stop slimrmm-agent 2>/dev/null || true
         systemctl disable slimrmm-agent 2>/dev/null || true
-        rm -f /etc/systemd/system/slimrmm-agent.service
+        rm -f "$SERVICE_FILE"
         systemctl daemon-reload
     fi
 

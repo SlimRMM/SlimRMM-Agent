@@ -18,11 +18,25 @@ BINARY="/usr/local/bin/slimrmm-agent"
 
 echo "Installing SlimRMM Agent..."
 
+# Remove immutable attributes that may still be set
+remove_immutable_attrs() {
+    chattr -i "${BINARY}" 2>/dev/null || true
+    chattr -i "${CONFIG_FILE}" 2>/dev/null || true
+    chattr -i "${CONFIG_DIR}/ca.crt" 2>/dev/null || true
+    chattr -i "${CONFIG_DIR}/client.crt" 2>/dev/null || true
+    chattr -i "${CONFIG_DIR}/client.key" 2>/dev/null || true
+    chattr -i "${CONFIG_DIR}/.proxmox_token.json" 2>/dev/null || true
+    chattr -i /etc/systemd/system/slimrmm-agent.service 2>/dev/null || true
+}
+
 # Restore configuration from upgrade backup if available
 restore_backup() {
     if [ -d "${BACKUP_DIR}" ] && [ -f "${BACKUP_DIR}/.slimrmm_config.json" ]; then
         echo "Restoring configuration from upgrade backup..."
         mkdir -p "${CONFIG_DIR}"
+
+        # Remove immutable attributes before restoring
+        remove_immutable_attrs
 
         # Restore config file
         cp -p "${BACKUP_DIR}/.slimrmm_config.json" "${CONFIG_FILE}"
