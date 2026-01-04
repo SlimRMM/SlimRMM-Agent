@@ -42,6 +42,7 @@ type UploadManager struct {
 	sessions map[string]*UploadSession
 	mu       sync.RWMutex
 	stopChan chan struct{}
+	stopOnce sync.Once
 }
 
 // NewUploadManager creates a new upload manager.
@@ -59,7 +60,9 @@ func (m *UploadManager) StartCleanup() {
 
 // Stop stops the cleanup goroutine.
 func (m *UploadManager) Stop() {
-	close(m.stopChan)
+	m.stopOnce.Do(func() {
+		close(m.stopChan)
+	})
 }
 
 // cleanupLoop periodically cleans up stale upload sessions.
