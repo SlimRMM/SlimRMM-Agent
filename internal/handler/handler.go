@@ -18,6 +18,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/config"
 	"github.com/slimrmm/slimrmm-agent/internal/monitor"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
+	"github.com/slimrmm/slimrmm-agent/internal/tamper"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
@@ -136,24 +137,37 @@ type Handler struct {
 
 	// Auto-updater
 	updater *updater.Updater
+
+	// Tamper protection
+	tamperProtection *tamper.Protection
 }
 
 // New creates a new Handler.
 func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *slog.Logger) *Handler {
 	uploadManager := actions.NewUploadManager()
 
+	// Initialize tamper protection
+	tamperConfig := tamper.Config{
+		Enabled:         cfg.IsTamperProtectionEnabled(),
+		UninstallKeyHash: cfg.GetUninstallKeyHash(),
+		WatchdogEnabled: cfg.IsWatchdogEnabled(),
+		AlertOnTamper:   cfg.IsTamperAlertEnabled(),
+	}
+	tamperProtection := tamper.New(tamperConfig, logger)
+
 	h := &Handler{
-		cfg:             cfg,
-		paths:           paths,
-		tlsConfig:       tlsConfig,
-		monitor:         monitor.New(),
-		logger:          logger,
-		handlers:        make(map[string]ActionHandler),
-		terminalManager: actions.NewTerminalManager(),
-		uploadManager:   uploadManager,
-		sendCh:          make(chan []byte, 256),
-		done:            make(chan struct{}),
-		updater:         updater.New(logger),
+		cfg:              cfg,
+		paths:            paths,
+		tlsConfig:        tlsConfig,
+		monitor:          monitor.New(),
+		logger:           logger,
+		handlers:         make(map[string]ActionHandler),
+		terminalManager:  actions.NewTerminalManager(),
+		uploadManager:    uploadManager,
+		sendCh:           make(chan []byte, 256),
+		done:             make(chan struct{}),
+		updater:          updater.New(logger),
+		tamperProtection: tamperProtection,
 	}
 
 	h.registerHandlers()
@@ -161,8 +175,18 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	// Set up maintenance callback for updater
 	h.updater.SetMaintenanceCallback(h.sendMaintenanceStatus)
 
+	// Set up tamper detection callback
+	tamperProtection.SetTamperCallback(h.sendTamperAlert)
+
 	// Start background cleanup for stale upload sessions
 	uploadManager.StartCleanup()
+
+	// Start tamper protection if enabled
+	if cfg.IsTamperProtectionEnabled() {
+		if err := tamperProtection.Start(); err != nil {
+			logger.Warn("failed to start tamper protection", "error", err)
+		}
+	}
 
 	return h
 }
@@ -174,6 +198,27 @@ func (h *Handler) sendMaintenanceStatus(enabled bool, reason string) {
 		"enabled": enabled,
 		"reason":  reason,
 	})
+}
+
+// sendTamperAlert sends a tamper detection alert to the backend.
+func (h *Handler) sendTamperAlert(event tamper.TamperEvent) {
+	h.SendRaw(map[string]interface{}{
+		"action":    "tamper_alert",
+		"type":      event.Type,
+		"path":      event.Path,
+		"details":   event.Details,
+		"timestamp": event.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
+	})
+}
+
+// installWatchdog installs the platform-specific watchdog service.
+func (h *Handler) installWatchdog() error {
+	return tamper.InstallWatchdog()
+}
+
+// uninstallWatchdog removes the platform-specific watchdog service.
+func (h *Handler) uninstallWatchdog() error {
+	return tamper.UninstallWatchdog()
 }
 
 // Note: registerHandlers is defined in actions.go

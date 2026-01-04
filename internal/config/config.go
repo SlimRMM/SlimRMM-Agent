@@ -21,13 +21,19 @@ const (
 
 // Config holds the agent configuration.
 type Config struct {
-	Server                 string `json:"server"`
-	UUID                   string `json:"uuid"`
-	MTLSEnabled            bool   `json:"mtls_enabled"`
-	InstallDate            string `json:"install_date,omitempty"`
-	LastConnection         string `json:"last_connection,omitempty"`
-	LastHeartbeat          string `json:"last_heartbeat,omitempty"`
-	ReregistrationSecret   string `json:"reregistration_secret,omitempty"`
+	Server               string `json:"server"`
+	UUID                 string `json:"uuid"`
+	MTLSEnabled          bool   `json:"mtls_enabled"`
+	InstallDate          string `json:"install_date,omitempty"`
+	LastConnection       string `json:"last_connection,omitempty"`
+	LastHeartbeat        string `json:"last_heartbeat,omitempty"`
+	ReregistrationSecret string `json:"reregistration_secret,omitempty"`
+
+	// Tamper protection settings
+	TamperProtection   bool   `json:"tamper_protection,omitempty"`
+	UninstallKeyHash   string `json:"uninstall_key_hash,omitempty"`
+	WatchdogEnabled    bool   `json:"watchdog_enabled,omitempty"`
+	TamperAlertEnabled bool   `json:"tamper_alert_enabled,omitempty"`
 
 	mu       sync.RWMutex
 	filePath string
@@ -207,6 +213,62 @@ func (c *Config) SetReregistrationSecret(secret string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ReregistrationSecret = secret
+}
+
+// IsTamperProtectionEnabled returns whether tamper protection is enabled.
+func (c *Config) IsTamperProtectionEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.TamperProtection
+}
+
+// SetTamperProtection enables or disables tamper protection.
+func (c *Config) SetTamperProtection(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.TamperProtection = enabled
+}
+
+// GetUninstallKeyHash returns the hashed uninstall key.
+func (c *Config) GetUninstallKeyHash() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.UninstallKeyHash
+}
+
+// SetUninstallKeyHash sets the hashed uninstall key.
+func (c *Config) SetUninstallKeyHash(hash string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.UninstallKeyHash = hash
+}
+
+// IsWatchdogEnabled returns whether the watchdog is enabled.
+func (c *Config) IsWatchdogEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.WatchdogEnabled
+}
+
+// SetWatchdogEnabled enables or disables the watchdog.
+func (c *Config) SetWatchdogEnabled(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.WatchdogEnabled = enabled
+}
+
+// IsTamperAlertEnabled returns whether tamper alerts are enabled.
+func (c *Config) IsTamperAlertEnabled() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.TamperAlertEnabled
+}
+
+// SetTamperAlertEnabled enables or disables tamper alerts.
+func (c *Config) SetTamperAlertEnabled(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.TamperAlertEnabled = enabled
 }
 
 // New creates a new configuration with the given server.

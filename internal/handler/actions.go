@@ -92,6 +92,14 @@ func (h *Handler) registerHandlers() {
 
 	// Remote desktop handlers
 	h.registerRemoteDesktopHandlers()
+
+	// Tamper protection handlers
+	h.handlers["enable_tamper_protection"] = h.handleEnableTamperProtection
+	h.handlers["disable_tamper_protection"] = h.handleDisableTamperProtection
+	h.handlers["set_uninstall_key"] = h.handleSetUninstallKey
+	h.handlers["get_tamper_status"] = h.handleGetTamperStatus
+	h.handlers["install_watchdog"] = h.handleInstallWatchdog
+	h.handlers["uninstall_watchdog"] = h.handleUninstallWatchdog
 }
 
 // Command handlers
@@ -1114,4 +1122,183 @@ func (h *Handler) handleRestartService(ctx context.Context, data json.RawMessage
 	}
 
 	return map[string]string{"status": "restarted", "service": req.Name}, nil
+}
+
+// Tamper protection handlers
+
+type enableTamperProtectionRequest struct {
+	UninstallKey string `json:"uninstall_key,omitempty"`
+	Watchdog     bool   `json:"watchdog,omitempty"`
+	AlertEnabled bool   `json:"alert_enabled,omitempty"`
+}
+
+func (h *Handler) handleEnableTamperProtection(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req enableTamperProtectionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Enable tamper protection in config
+	h.cfg.SetTamperProtection(true)
+	h.cfg.SetTamperAlertEnabled(req.AlertEnabled)
+
+	// Set uninstall key if provided
+	if req.UninstallKey != "" {
+		hash := h.tamperProtection.SetUninstallKey(req.UninstallKey)
+		h.cfg.SetUninstallKeyHash(hash)
+	}
+
+	// Install watchdog if requested
+	if req.Watchdog {
+		if err := h.installWatchdog(); err != nil {
+			h.logger.Warn("failed to install watchdog", "error", err)
+		} else {
+			h.cfg.SetWatchdogEnabled(true)
+		}
+	}
+
+	// Save config
+	if err := h.cfg.Save(); err != nil {
+		return nil, fmt.Errorf("saving config: %w", err)
+	}
+
+	// Start tamper protection
+	if h.tamperProtection != nil {
+		h.tamperProtection.Start()
+	}
+
+	return map[string]interface{}{
+		"status":           "enabled",
+		"watchdog":         h.cfg.IsWatchdogEnabled(),
+		"alert_enabled":    h.cfg.IsTamperAlertEnabled(),
+		"uninstall_key_set": h.cfg.GetUninstallKeyHash() != "",
+	}, nil
+}
+
+type disableTamperProtectionRequest struct {
+	UninstallKey string `json:"uninstall_key"`
+}
+
+func (h *Handler) handleDisableTamperProtection(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req disableTamperProtectionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Validate uninstall key if set
+	if h.tamperProtection != nil {
+		if err := h.tamperProtection.ValidateUninstallKey(req.UninstallKey); err != nil {
+			return nil, fmt.Errorf("unauthorized: %w", err)
+		}
+	}
+
+	// Stop tamper protection
+	if h.tamperProtection != nil {
+		h.tamperProtection.Stop()
+	}
+
+	// Uninstall watchdog
+	if h.cfg.IsWatchdogEnabled() {
+		if err := h.uninstallWatchdog(); err != nil {
+			h.logger.Warn("failed to uninstall watchdog", "error", err)
+		}
+	}
+
+	// Disable in config
+	h.cfg.SetTamperProtection(false)
+	h.cfg.SetWatchdogEnabled(false)
+	h.cfg.SetTamperAlertEnabled(false)
+
+	// Save config
+	if err := h.cfg.Save(); err != nil {
+		return nil, fmt.Errorf("saving config: %w", err)
+	}
+
+	return map[string]string{"status": "disabled"}, nil
+}
+
+type setUninstallKeyRequest struct {
+	CurrentKey string `json:"current_key,omitempty"`
+	NewKey     string `json:"new_key"`
+}
+
+func (h *Handler) handleSetUninstallKey(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req setUninstallKeyRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Validate current key if one exists
+	if h.cfg.GetUninstallKeyHash() != "" {
+		if h.tamperProtection != nil {
+			if err := h.tamperProtection.ValidateUninstallKey(req.CurrentKey); err != nil {
+				return nil, fmt.Errorf("unauthorized: current key invalid")
+			}
+		}
+	}
+
+	// Set new key
+	if req.NewKey == "" {
+		return nil, fmt.Errorf("new key is required")
+	}
+
+	hash := h.tamperProtection.SetUninstallKey(req.NewKey)
+	h.cfg.SetUninstallKeyHash(hash)
+
+	if err := h.cfg.Save(); err != nil {
+		return nil, fmt.Errorf("saving config: %w", err)
+	}
+
+	return map[string]string{"status": "key_updated"}, nil
+}
+
+func (h *Handler) handleGetTamperStatus(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	return map[string]interface{}{
+		"enabled":           h.cfg.IsTamperProtectionEnabled(),
+		"watchdog":          h.cfg.IsWatchdogEnabled(),
+		"alert_enabled":     h.cfg.IsTamperAlertEnabled(),
+		"uninstall_key_set": h.cfg.GetUninstallKeyHash() != "",
+	}, nil
+}
+
+func (h *Handler) handleInstallWatchdog(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if err := h.installWatchdog(); err != nil {
+		return nil, err
+	}
+
+	h.cfg.SetWatchdogEnabled(true)
+	if err := h.cfg.Save(); err != nil {
+		return nil, fmt.Errorf("saving config: %w", err)
+	}
+
+	return map[string]string{"status": "watchdog_installed"}, nil
+}
+
+func (h *Handler) handleUninstallWatchdog(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	// Validate uninstall key if tamper protection is enabled
+	if h.cfg.IsTamperProtectionEnabled() && h.cfg.GetUninstallKeyHash() != "" {
+		var req struct {
+			UninstallKey string `json:"uninstall_key"`
+		}
+		if err := json.Unmarshal(data, &req); err == nil && req.UninstallKey != "" {
+			if h.tamperProtection != nil {
+				if err := h.tamperProtection.ValidateUninstallKey(req.UninstallKey); err != nil {
+					return nil, fmt.Errorf("unauthorized: %w", err)
+				}
+			}
+		} else {
+			return nil, fmt.Errorf("uninstall key required when tamper protection is enabled")
+		}
+	}
+
+	if err := h.uninstallWatchdog(); err != nil {
+		return nil, err
+	}
+
+	h.cfg.SetWatchdogEnabled(false)
+	if err := h.cfg.Save(); err != nil {
+		return nil, fmt.Errorf("saving config: %w", err)
+	}
+
+	return map[string]string{"status": "watchdog_uninstalled"}, nil
 }
