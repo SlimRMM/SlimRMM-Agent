@@ -349,8 +349,8 @@ jobs:
           # Create App Bundle structure
           mkdir -p "${PKGROOT}/Applications/SlimRMM.app/Contents/MacOS"
           mkdir -p "${PKGROOT}/Applications/SlimRMM.app/Contents/Resources"
-          mkdir -p "${PKGROOT}/Library/Application Support/SlimRMM/certs"
-          mkdir -p "${PKGROOT}/Library/Logs/SlimRMM"
+          mkdir -p "${PKGROOT}/Applications/SlimRMM.app/Contents/Data/certs"
+          mkdir -p "${PKGROOT}/var/log/slimrmm"
           mkdir -p "${PKGROOT}/Library/LaunchDaemons"
           mkdir -p scripts
 
@@ -416,15 +416,15 @@ jobs:
                   <false/>
               </dict>
               <key>WorkingDirectory</key>
-              <string>/Library/Application Support/SlimRMM</string>
+              <string>/Applications/SlimRMM.app/Contents/Data</string>
               <key>StandardOutPath</key>
-              <string>/Library/Logs/SlimRMM/stdout.log</string>
+              <string>/var/log/slimrmm/stdout.log</string>
               <key>StandardErrorPath</key>
-              <string>/Library/Logs/SlimRMM/stderr.log</string>
+              <string>/var/log/slimrmm/stderr.log</string>
               <key>EnvironmentVariables</key>
               <dict>
                   <key>PATH</key>
-                  <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+                  <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
               </dict>
           </dict>
           </plist>

@@ -51,7 +51,7 @@ var (
 
 // DefaultPaths returns the default paths for the current OS.
 // Uses OS-native locations:
-// - macOS: /Library/Application Support/SlimRMM/
+// - macOS: /Applications/SlimRMM.app/Contents/Data/
 // - Linux: /var/lib/slimrmm/
 // - Windows: C:\Program Files\SlimRMM\
 func DefaultPaths() Paths {
@@ -59,14 +59,14 @@ func DefaultPaths() Paths {
 
 	switch runtime.GOOS {
 	case "darwin":
-		baseDir = "/Library/Application Support/SlimRMM"
-		logDir = "/Library/Logs/SlimRMM"
+		baseDir = "/Applications/SlimRMM.app/Contents/Data"
+		logDir = "/var/log/slimrmm"
 	case "windows":
 		baseDir = filepath.Join(os.Getenv("ProgramFiles"), "SlimRMM")
 		logDir = filepath.Join(baseDir, "log")
 	default: // linux
 		baseDir = "/var/lib/slimrmm"
-		logDir = filepath.Join(baseDir, "log")
+		logDir = "/var/log/slimrmm"
 	}
 
 	certsDir := filepath.Join(baseDir, "certs")

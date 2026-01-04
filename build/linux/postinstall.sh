@@ -49,6 +49,8 @@ restore_backup() {
 # Create directories
 mkdir -p "${CONFIG_DIR}"
 chmod 700 "${CONFIG_DIR}"
+mkdir -p /var/log/slimrmm
+chmod 755 /var/log/slimrmm
 
 # Check for upgrade backup
 if restore_backup; then

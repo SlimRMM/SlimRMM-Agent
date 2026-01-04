@@ -82,7 +82,7 @@ func New(logger *slog.Logger) *Updater {
 	var dataDir string
 	switch runtime.GOOS {
 	case "darwin":
-		dataDir = "/Library/Application Support/SlimRMM"
+		dataDir = "/Applications/SlimRMM.app/Contents/Data"
 	case "windows":
 		dataDir = filepath.Join(os.Getenv("ProgramData"), "SlimRMM")
 	default: // linux

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -486,6 +487,13 @@ func (h *Handler) handleUploadChunk(ctx context.Context, data json.RawMessage) (
 
 	if req.IsLast {
 		response["status"] = "complete"
+		// Send upload_complete action that frontend expects
+		h.SendRaw(map[string]interface{}{
+			"action":   "upload_complete",
+			"path":     req.Path,
+			"filename": filepath.Base(req.Path),
+			"status":   "complete",
+		})
 	}
 
 	return response, nil
@@ -533,7 +541,21 @@ func (h *Handler) handleDownloadFile(ctx context.Context, data json.RawMessage) 
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	return actions.DownloadFile(req.Path, req.Offset, req.Limit)
+	result, err := actions.DownloadFile(req.Path, req.Offset, req.Limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// For small files with content, send download_data action that frontend expects
+	if result.Content != "" {
+		h.SendRaw(map[string]interface{}{
+			"action":   "download_data",
+			"data":     result.Content,
+			"filename": filepath.Base(req.Path),
+		})
+	}
+
+	return result, nil
 }
 
 type downloadChunkRequest struct {
@@ -692,13 +714,22 @@ type startTerminalRequest struct {
 	Cols       uint16 `json:"cols,omitempty"`
 }
 
+// defaultTerminalID is used when frontend doesn't provide a terminal_id
+const defaultTerminalID = "default"
+
 func (h *Handler) handleStartTerminal(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req startTerminalRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	term, err := h.terminalManager.StartTerminal(req.TerminalID)
+	// Use default terminal ID if not provided (frontend compatibility)
+	terminalID := req.TerminalID
+	if terminalID == "" {
+		terminalID = defaultTerminalID
+	}
+
+	term, err := h.terminalManager.StartTerminal(terminalID)
 	if err != nil {
 		return nil, err
 	}
@@ -709,9 +740,9 @@ func (h *Handler) handleStartTerminal(ctx context.Context, data json.RawMessage)
 	}
 
 	// Start output streaming goroutine
-	go h.streamTerminalOutput(req.TerminalID)
+	go h.streamTerminalOutput(terminalID)
 
-	return map[string]string{"status": "started", "terminal_id": req.TerminalID}, nil
+	return map[string]string{"status": "started", "terminal_id": terminalID}, nil
 }
 
 // streamTerminalOutput continuously sends terminal output to the backend.
@@ -769,6 +800,12 @@ func (h *Handler) handleTerminalInput(ctx context.Context, data json.RawMessage)
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	// Use default terminal ID if not provided (frontend compatibility)
+	terminalID := req.TerminalID
+	if terminalID == "" {
+		terminalID = defaultTerminalID
+	}
+
 	// Support both "input" (Go) and "data" (Python) fields
 	inputData := req.Input
 	if inputData == "" {
@@ -782,9 +819,9 @@ func (h *Handler) handleTerminalInput(ctx context.Context, data json.RawMessage)
 		if decErr != nil {
 			return nil, fmt.Errorf("decoding base64 input: %w", decErr)
 		}
-		err = h.terminalManager.SendInputRaw(req.TerminalID, rawData)
+		err = h.terminalManager.SendInputRaw(terminalID, rawData)
 	} else {
-		err = h.terminalManager.SendInput(req.TerminalID, inputData)
+		err = h.terminalManager.SendInput(terminalID, inputData)
 	}
 
 	if err != nil {
@@ -835,13 +872,19 @@ func (h *Handler) handleResizeTerminal(ctx context.Context, data json.RawMessage
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	if err := h.terminalManager.ResizeTerminal(req.TerminalID, req.Rows, req.Cols); err != nil {
+	// Use default terminal ID if not provided
+	terminalID := req.TerminalID
+	if terminalID == "" {
+		terminalID = defaultTerminalID
+	}
+
+	if err := h.terminalManager.ResizeTerminal(terminalID, req.Rows, req.Cols); err != nil {
 		return nil, err
 	}
 
 	return map[string]interface{}{
 		"status":      "resized",
-		"terminal_id": req.TerminalID,
+		"terminal_id": terminalID,
 		"rows":        req.Rows,
 		"cols":        req.Cols,
 	}, nil
@@ -857,11 +900,17 @@ func (h *Handler) handleStopTerminal(ctx context.Context, data json.RawMessage) 
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	if err := h.terminalManager.StopTerminal(req.TerminalID); err != nil {
+	// Use default terminal ID if not provided
+	terminalID := req.TerminalID
+	if terminalID == "" {
+		terminalID = defaultTerminalID
+	}
+
+	if err := h.terminalManager.StopTerminal(terminalID); err != nil {
 		return nil, err
 	}
 
-	return map[string]string{"status": "stopped", "terminal_id": req.TerminalID}, nil
+	return map[string]string{"status": "stopped", "terminal_id": terminalID}, nil
 }
 
 // Agent update handlers
