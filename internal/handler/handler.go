@@ -231,6 +231,11 @@ func (h *Handler) Run(ctx context.Context) error {
 		return fmt.Errorf("not connected")
 	}
 
+	// Exit maintenance mode on successful startup (handles post-update scenario)
+	// This is safe to call even if we weren't in maintenance mode
+	h.sendMaintenanceStatus(false, "Agent started successfully")
+	h.logger.Info("sent maintenance mode exit signal")
+
 	conn.SetReadLimit(maxMessageSize)
 	conn.SetReadDeadline(time.Now().Add(pongWait))
 	conn.SetPongHandler(func(string) error {

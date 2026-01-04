@@ -62,8 +62,8 @@ func main() {
 	// Parse arguments
 	args := parseArgs(os.Args[1:])
 
-	// Handle help
-	if args.help || len(os.Args) == 1 {
+	// Handle help (only when explicitly requested)
+	if args.help {
 		fmt.Print(helpText)
 		os.Exit(0)
 	}
