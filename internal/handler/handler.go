@@ -19,6 +19,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/monitor"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
+	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
 
 const (
@@ -54,10 +55,11 @@ type Response struct {
 
 // HeartbeatMessage is the format expected by the backend (Python-compatible).
 type HeartbeatMessage struct {
-	Action     string              `json:"action"`
-	Stats      HeartbeatStats      `json:"stats"`
-	ExternalIP string              `json:"external_ip,omitempty"`
-	Proxmox    *HeartbeatProxmox   `json:"proxmox,omitempty"`
+	Action       string              `json:"action"`
+	AgentVersion string              `json:"agent_version"`
+	Stats        HeartbeatStats      `json:"stats"`
+	ExternalIP   string              `json:"external_ip,omitempty"`
+	Proxmox      *HeartbeatProxmox   `json:"proxmox,omitempty"`
 }
 
 // HeartbeatProxmox contains Proxmox host information.
@@ -456,7 +458,8 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 
 	// Format heartbeat in the structure expected by the backend (Python-compatible)
 	heartbeat := HeartbeatMessage{
-		Action: "heartbeat",
+		Action:       "heartbeat",
+		AgentVersion: version.Version,
 		Stats: HeartbeatStats{
 			CPUPercent:    stats.CPU.UsagePercent,
 			MemoryPercent: stats.Memory.UsedPercent,

@@ -651,38 +651,48 @@ func (u *Updater) rollback(backupPath string) error {
 
 // stopService stops the agent service.
 func (u *Updater) stopService() error {
-	var cmd *exec.Cmd
-
 	switch runtime.GOOS {
 	case "linux":
-		cmd = exec.Command("systemctl", "stop", u.serviceName)
+		return exec.Command("systemctl", "stop", u.serviceName).Run()
 	case "darwin":
-		cmd = exec.Command("launchctl", "stop", u.serviceName)
+		// Use bootout to properly unload the service (modern macOS 10.10+)
+		// This fully stops and unloads the service, allowing binary replacement
+		plistPath := "/Library/LaunchDaemons/" + u.serviceName + ".plist"
+		err := exec.Command("launchctl", "bootout", "system", plistPath).Run()
+		if err != nil {
+			// Fallback to legacy unload for older macOS
+			u.logger.Debug("bootout failed, trying unload", "error", err)
+			return exec.Command("launchctl", "unload", "-w", plistPath).Run()
+		}
+		return nil
 	case "windows":
-		cmd = exec.Command("sc", "stop", u.serviceName)
+		return exec.Command("sc", "stop", u.serviceName).Run()
 	default:
 		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
-
-	return cmd.Run()
 }
 
 // startService starts the agent service.
 func (u *Updater) startService() error {
-	var cmd *exec.Cmd
-
 	switch runtime.GOOS {
 	case "linux":
-		cmd = exec.Command("systemctl", "start", u.serviceName)
+		return exec.Command("systemctl", "start", u.serviceName).Run()
 	case "darwin":
-		cmd = exec.Command("launchctl", "start", u.serviceName)
+		// Use bootstrap to properly load the service (modern macOS 10.10+)
+		// This loads the plist and starts the service with the new binary
+		plistPath := "/Library/LaunchDaemons/" + u.serviceName + ".plist"
+		err := exec.Command("launchctl", "bootstrap", "system", plistPath).Run()
+		if err != nil {
+			// Fallback to legacy load for older macOS
+			u.logger.Debug("bootstrap failed, trying load", "error", err)
+			return exec.Command("launchctl", "load", "-w", plistPath).Run()
+		}
+		return nil
 	case "windows":
-		cmd = exec.Command("sc", "start", u.serviceName)
+		return exec.Command("sc", "start", u.serviceName).Run()
 	default:
 		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
-
-	return cmd.Run()
 }
 
 // healthCheck verifies the new version is running correctly.
