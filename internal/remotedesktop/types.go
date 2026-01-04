@@ -25,6 +25,39 @@ type ICECandidate struct {
 	SDPMLineIndex *uint16 `json:"sdpMLineIndex"`
 }
 
+// ICEServer represents a STUN or TURN server configuration.
+type ICEServer struct {
+	URLs       []string `json:"urls"`
+	Username   string   `json:"username,omitempty"`
+	Credential string   `json:"credential,omitempty"`
+}
+
+// ConnectionType indicates how the WebRTC connection was established.
+type ConnectionType string
+
+const (
+	// ConnectionTypeHost indicates a direct local network connection
+	ConnectionTypeHost ConnectionType = "host"
+	// ConnectionTypeSRFLX indicates a server reflexive connection (through STUN)
+	ConnectionTypeSRFLX ConnectionType = "srflx"
+	// ConnectionTypePRFLX indicates a peer reflexive connection
+	ConnectionTypePRFLX ConnectionType = "prflx"
+	// ConnectionTypeRelay indicates a relayed connection through TURN
+	ConnectionTypeRelay ConnectionType = "relay"
+	// ConnectionTypeUnknown when the connection type cannot be determined
+	ConnectionTypeUnknown ConnectionType = "unknown"
+)
+
+// ConnectionInfo contains information about the WebRTC connection.
+type ConnectionInfo struct {
+	Type           ConnectionType `json:"type"`
+	LocalAddress   string         `json:"local_address,omitempty"`
+	RemoteAddress  string         `json:"remote_address,omitempty"`
+	Protocol       string         `json:"protocol,omitempty"`
+	IsP2P          bool           `json:"is_p2p"`
+	RelayProtocol  string         `json:"relay_protocol,omitempty"`
+}
+
 // StartResult contains the result of starting a remote desktop session.
 type StartResult struct {
 	Success  bool               `json:"success"`

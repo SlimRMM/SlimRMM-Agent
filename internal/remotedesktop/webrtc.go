@@ -11,14 +11,49 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-// getWebRTCConfig returns the WebRTC configuration with STUN servers.
+// Default STUN servers if none provided
+var defaultICEServers = []ICEServer{
+	{URLs: []string{"stun:stun.l.google.com:19302"}},
+	{URLs: []string{"stun:stun1.l.google.com:19302"}},
+}
+
+// configuredICEServers holds the ICE servers set via SetICEServers
+var (
+	configuredICEServers []ICEServer
+	iceServersMu         sync.RWMutex
+)
+
+// SetICEServers configures the ICE servers (STUN/TURN) to use for WebRTC.
+func SetICEServers(servers []ICEServer) {
+	iceServersMu.Lock()
+	defer iceServersMu.Unlock()
+	configuredICEServers = servers
+}
+
+// getWebRTCConfig returns the WebRTC configuration with STUN/TURN servers.
 func getWebRTCConfig() webrtc.Configuration {
+	iceServersMu.RLock()
+	servers := configuredICEServers
+	iceServersMu.RUnlock()
+
+	if len(servers) == 0 {
+		servers = defaultICEServers
+	}
+
+	var iceServers []webrtc.ICEServer
+	for _, s := range servers {
+		ice := webrtc.ICEServer{URLs: s.URLs}
+		if s.Username != "" {
+			ice.Username = s.Username
+		}
+		if s.Credential != "" {
+			ice.Credential = s.Credential
+		}
+		iceServers = append(iceServers, ice)
+	}
+
 	return webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{URLs: []string{"stun:stun.l.google.com:19302"}},
-			{URLs: []string{"stun:stun1.l.google.com:19302"}},
-			{URLs: []string{"stun:stun2.l.google.com:19302"}},
-		},
+		ICEServers: iceServers,
 	}
 }
 
@@ -39,6 +74,7 @@ type Session struct {
 	selectedMonitor int
 	quality         string
 	running         bool
+	connectionInfo  *ConnectionInfo
 	mu              sync.RWMutex
 }
 
@@ -122,6 +158,8 @@ func (s *Session) Start() (*StartResult, error) {
 			s.logger.Warn("WebRTC connection disconnected")
 		case webrtc.PeerConnectionStateConnected:
 			s.logger.Info("WebRTC connection established")
+			// Detect and report connection type
+			go s.detectAndReportConnectionType()
 		}
 	})
 
@@ -412,4 +450,124 @@ func (s *Session) IsRunning() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.running
+}
+
+// GetConnectionInfo returns the current connection information.
+func (s *Session) GetConnectionInfo() *ConnectionInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.connectionInfo
+}
+
+// detectAndReportConnectionType detects the connection type from ICE candidates
+// and sends it to the frontend.
+func (s *Session) detectAndReportConnectionType() {
+	s.mu.RLock()
+	pc := s.pc
+	s.mu.RUnlock()
+
+	if pc == nil {
+		return
+	}
+
+	// Get ICE connection stats to determine connection type
+	stats := pc.GetStats()
+
+	var connInfo *ConnectionInfo
+
+	for _, stat := range stats {
+		// Look for the selected candidate pair
+		if candidatePair, ok := stat.(webrtc.ICECandidatePairStats); ok {
+			if candidatePair.State == webrtc.StatsICECandidatePairStateSucceeded {
+				// Find the local candidate to get its type
+				for _, innerStat := range stats {
+					if localCandidate, ok := innerStat.(webrtc.ICECandidateStats); ok {
+						if localCandidate.ID == candidatePair.LocalCandidateID {
+							connType := mapCandidateType(localCandidate.CandidateType)
+							connInfo = &ConnectionInfo{
+								Type:          connType,
+								LocalAddress:  fmt.Sprintf("%s:%d", localCandidate.IP, localCandidate.Port),
+								Protocol:      localCandidate.Protocol,
+								IsP2P:         connType != ConnectionTypeRelay,
+								RelayProtocol: localCandidate.RelayProtocol,
+							}
+
+							// Find remote candidate for address
+							for _, remoteStat := range stats {
+								if remoteCandidate, ok := remoteStat.(webrtc.ICECandidateStats); ok {
+									if remoteCandidate.ID == candidatePair.RemoteCandidateID {
+										connInfo.RemoteAddress = fmt.Sprintf("%s:%d", remoteCandidate.IP, remoteCandidate.Port)
+										break
+									}
+								}
+							}
+							break
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+
+	if connInfo == nil {
+		connInfo = &ConnectionInfo{
+			Type:  ConnectionTypeUnknown,
+			IsP2P: false,
+		}
+	}
+
+	// Store connection info
+	s.mu.Lock()
+	s.connectionInfo = connInfo
+	s.mu.Unlock()
+
+	// Log connection type
+	if connInfo.IsP2P {
+		s.logger.Info("WebRTC connection type: P2P",
+			"type", connInfo.Type,
+			"local", connInfo.LocalAddress,
+			"remote", connInfo.RemoteAddress,
+			"protocol", connInfo.Protocol,
+		)
+	} else {
+		s.logger.Info("WebRTC connection type: Relay (TURN)",
+			"type", connInfo.Type,
+			"local", connInfo.LocalAddress,
+			"remote", connInfo.RemoteAddress,
+			"relay_protocol", connInfo.RelayProtocol,
+		)
+	}
+
+	// Send connection info to frontend
+	msg, _ := json.Marshal(map[string]interface{}{
+		"action":          "connection_info",
+		"session_id":      s.sessionID,
+		"connection_type": connInfo.Type,
+		"is_p2p":          connInfo.IsP2P,
+		"local_address":   connInfo.LocalAddress,
+		"remote_address":  connInfo.RemoteAddress,
+		"protocol":        connInfo.Protocol,
+		"relay_protocol":  connInfo.RelayProtocol,
+	})
+
+	if err := s.sendCallback(msg); err != nil {
+		s.logger.Error("sending connection info", "error", err)
+	}
+}
+
+// mapCandidateType maps WebRTC candidate type to our ConnectionType.
+func mapCandidateType(candidateType webrtc.ICECandidateType) ConnectionType {
+	switch candidateType {
+	case webrtc.ICECandidateTypeHost:
+		return ConnectionTypeHost
+	case webrtc.ICECandidateTypeSrflx:
+		return ConnectionTypeSRFLX
+	case webrtc.ICECandidateTypePrflx:
+		return ConnectionTypePRFLX
+	case webrtc.ICECandidateTypeRelay:
+		return ConnectionTypeRelay
+	default:
+		return ConnectionTypeUnknown
+	}
 }

@@ -136,3 +136,6 @@ func RequestAccessibilityPermission() {}
 func TriggerScreenRecordingPermission() bool {
 	return false
 }
+
+// SetICEServers is a no-op when CGO is disabled.
+func SetICEServers(servers []ICEServer) {}

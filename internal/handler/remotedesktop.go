@@ -22,9 +22,10 @@ func (h *Handler) registerRemoteDesktopHandlers() {
 }
 
 type startRemoteDesktopRequest struct {
-	SessionID string `json:"session_id"`
-	Quality   string `json:"quality"`
-	MonitorID int    `json:"monitor_id"`
+	SessionID  string                      `json:"session_id"`
+	Quality    string                      `json:"quality"`
+	MonitorID  int                         `json:"monitor_id"`
+	ICEServers []remotedesktop.ICEServer   `json:"ice_servers"`
 }
 
 func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMessage) (interface{}, error) {
@@ -39,6 +40,12 @@ func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMes
 	}
 
 	h.logger.Info("starting remote desktop session", "session_id", req.SessionID)
+
+	// Configure ICE servers if provided (includes STUN and TURN servers)
+	if len(req.ICEServers) > 0 {
+		h.logger.Info("configuring ICE servers", "count", len(req.ICEServers))
+		remotedesktop.SetICEServers(req.ICEServers)
+	}
 
 	// Check platform-specific permissions first
 	permStatus := remotedesktop.GetPermissionStatus()
