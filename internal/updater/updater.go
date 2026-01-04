@@ -666,10 +666,39 @@ func (u *Updater) stopService() error {
 		}
 		return nil
 	case "windows":
-		return exec.Command("sc", "stop", u.serviceName).Run()
+		// Use 'net stop' instead of 'sc stop' - net stop waits synchronously
+		// until the service is fully stopped, preventing "file in use" errors
+		// when replacing the binary
+		if err := exec.Command("net", "stop", u.serviceName).Run(); err != nil {
+			// Fallback to sc stop + wait
+			u.logger.Debug("net stop failed, trying sc stop with wait", "error", err)
+			if scErr := exec.Command("sc", "stop", u.serviceName).Run(); scErr != nil {
+				return scErr
+			}
+			// Wait for service to actually stop
+			return u.waitForServiceStopped(30 * time.Second)
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
+}
+
+// waitForServiceStopped polls until the Windows service is fully stopped.
+func (u *Updater) waitForServiceStopped(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		output, err := exec.Command("sc", "query", u.serviceName).Output()
+		if err != nil {
+			// Service might not exist or other error - consider it stopped
+			return nil
+		}
+		if strings.Contains(string(output), "STOPPED") {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("timeout waiting for service to stop")
 }
 
 // startService starts the agent service.
@@ -689,7 +718,14 @@ func (u *Updater) startService() error {
 		}
 		return nil
 	case "windows":
-		return exec.Command("sc", "start", u.serviceName).Run()
+		// Use 'net start' instead of 'sc start' - net start waits synchronously
+		// until the service is fully started
+		if err := exec.Command("net", "start", u.serviceName).Run(); err != nil {
+			// Fallback to sc start
+			u.logger.Debug("net start failed, trying sc start", "error", err)
+			return exec.Command("sc", "start", u.serviceName).Run()
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
