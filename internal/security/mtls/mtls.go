@@ -76,6 +76,8 @@ func NewTLSConfig(certPaths *CertPaths, cfg *Config) (*tls.Config, error) {
 }
 
 // loadCACert loads the CA certificate into the TLS config.
+// It starts with system root CAs and adds the custom CA, so both
+// public TLS certs (e.g., Let's Encrypt) and mTLS certs are trusted.
 func loadCACert(tlsConfig *tls.Config, caPath string) error {
 	caCert, err := os.ReadFile(caPath)
 	if err != nil {
@@ -85,7 +87,14 @@ func loadCACert(tlsConfig *tls.Config, caPath string) error {
 		return fmt.Errorf("reading CA cert: %w", err)
 	}
 
-	caCertPool := x509.NewCertPool()
+	// Start with system root CAs (for Let's Encrypt, etc.)
+	caCertPool, err := x509.SystemCertPool()
+	if err != nil {
+		// Fallback to empty pool if system certs unavailable
+		caCertPool = x509.NewCertPool()
+	}
+
+	// Add our custom mTLS CA
 	if !caCertPool.AppendCertsFromPEM(caCert) {
 		return fmt.Errorf("%w: failed to parse CA certificate", ErrInvalidCert)
 	}
