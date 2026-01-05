@@ -118,6 +118,9 @@ func (h *Handler) registerHandlers() {
 	h.handlers["docker_list_networks"] = h.handleDockerListNetworks
 	h.handlers["docker_compose_action"] = h.handleDockerComposeAction
 
+	// Compliance handlers
+	h.handlers["run_compliance_check"] = h.handleRunComplianceCheck
+
 	// Docker policy handlers
 	h.handlers["docker_policy_execute"] = h.handleDockerPolicyExecute
 	h.handlers["docker_prune_images"] = h.handleDockerPruneImages
@@ -1739,4 +1742,342 @@ func getIntVal(m map[string]interface{}, key string) int {
 		}
 	}
 	return 0
+}
+
+// Compliance check handlers
+
+type complianceCheckRequest struct {
+	PolicyID  string            `json:"policy_id"`
+	RequestID string            `json:"request_id,omitempty"`
+	Checks    []complianceCheck `json:"checks"`
+}
+
+type complianceCheck struct {
+	CheckID            string      `json:"check_id"`
+	CisID              string      `json:"cis_id"`
+	CheckType          string      `json:"check_type"`
+	Query              string      `json:"query"`
+	ExpectedResult     interface{} `json:"expected_result"`
+	ComparisonOperator string      `json:"comparison_operator"`
+}
+
+type complianceCheckResult struct {
+	CheckID     string      `json:"check_id"`
+	Status      string      `json:"status"` // passed, failed, error, skipped
+	ActualValue interface{} `json:"actual_value,omitempty"`
+	Details     string      `json:"details,omitempty"`
+}
+
+func (h *Handler) handleRunComplianceCheck(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req complianceCheckRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid compliance check request: %w", err)
+	}
+
+	h.logger.Info("running compliance checks",
+		"policy_id", req.PolicyID,
+		"check_count", len(req.Checks),
+	)
+
+	results := make([]complianceCheckResult, 0, len(req.Checks))
+	client := osquery.New()
+	osqueryAvailable := client.IsAvailable()
+
+	for _, check := range req.Checks {
+		result := complianceCheckResult{
+			CheckID: check.CheckID,
+		}
+
+		// Handle different check types
+		switch check.CheckType {
+		case "osquery":
+			if !osqueryAvailable {
+				result.Status = "error"
+				result.Details = "osquery not available on this system"
+				results = append(results, result)
+				continue
+			}
+
+			if check.Query == "" {
+				result.Status = "error"
+				result.Details = "no query provided"
+				results = append(results, result)
+				continue
+			}
+
+			// Execute osquery
+			queryResult, err := client.QueryWithTimeout(ctx, check.Query, osquery.DefaultTimeout)
+			if err != nil {
+				result.Status = "error"
+				result.Details = fmt.Sprintf("osquery error: %v", err)
+				results = append(results, result)
+				continue
+			}
+
+			result.ActualValue = queryResult
+
+			// Compare with expected result
+			passed, details := h.compareComplianceResult(queryResult, check.ExpectedResult, check.ComparisonOperator)
+			if passed {
+				result.Status = "passed"
+				result.Details = details
+			} else {
+				result.Status = "failed"
+				result.Details = details
+			}
+
+		case "command":
+			// For command-based checks, execute the command and check exit code
+			if check.Query == "" {
+				result.Status = "error"
+				result.Details = "no command provided"
+				results = append(results, result)
+				continue
+			}
+
+			cmdResult, err := actions.ExecuteCommand(ctx, check.Query, 30*time.Second)
+			if err != nil {
+				result.Status = "error"
+				result.Details = fmt.Sprintf("command error: %v", err)
+				results = append(results, result)
+				continue
+			}
+
+			result.ActualValue = cmdResult
+
+			// Check if command succeeded (exit code 0 usually means pass)
+			if cmdResult.ExitCode == 0 {
+				result.Status = "passed"
+				result.Details = "command executed successfully"
+			} else {
+				result.Status = "failed"
+				result.Details = fmt.Sprintf("command exited with code %d", cmdResult.ExitCode)
+			}
+
+		default:
+			result.Status = "skipped"
+			result.Details = fmt.Sprintf("unsupported check type: %s", check.CheckType)
+		}
+
+		results = append(results, result)
+	}
+
+	// Send results back to backend
+	response := map[string]interface{}{
+		"action":    "compliance_check_result",
+		"policy_id": req.PolicyID,
+		"results":   results,
+	}
+	if req.RequestID != "" {
+		response["request_id"] = req.RequestID
+	}
+
+	h.SendRaw(response)
+
+	h.logger.Info("compliance checks completed",
+		"policy_id", req.PolicyID,
+		"results_count", len(results),
+	)
+
+	return response, nil
+}
+
+// compareComplianceResult compares the actual result with the expected result.
+func (h *Handler) compareComplianceResult(actual interface{}, expected interface{}, operator string) (bool, string) {
+	if expected == nil {
+		return true, "no expected result specified"
+	}
+
+	// Convert actual to []map[string]interface{} if it's osquery result
+	actualRows, ok := actual.([]map[string]interface{})
+	if !ok {
+		// Try to convert from []interface{}
+		if arr, ok := actual.([]interface{}); ok {
+			actualRows = make([]map[string]interface{}, 0, len(arr))
+			for _, item := range arr {
+				if m, ok := item.(map[string]interface{}); ok {
+					actualRows = append(actualRows, m)
+				}
+			}
+		}
+	}
+
+	switch operator {
+	case "equals", "eq", "":
+		// Check if any row matches the expected result
+		expectedMap, ok := expected.(map[string]interface{})
+		if !ok {
+			return false, "expected result is not a valid map"
+		}
+
+		for _, row := range actualRows {
+			if h.mapsMatch(row, expectedMap) {
+				return true, "result matches expected value"
+			}
+		}
+		return false, "no matching result found"
+
+	case "not_equals", "ne", "neq":
+		expectedMap, ok := expected.(map[string]interface{})
+		if !ok {
+			return false, "expected result is not a valid map"
+		}
+
+		for _, row := range actualRows {
+			if h.mapsMatch(row, expectedMap) {
+				return false, "result matches value that should not match"
+			}
+		}
+		return true, "no matching result found (expected)"
+
+	case "exists", "not_empty":
+		if len(actualRows) > 0 {
+			return true, fmt.Sprintf("found %d matching rows", len(actualRows))
+		}
+		return false, "no results found"
+
+	case "not_exists", "empty":
+		if len(actualRows) == 0 {
+			return true, "no results found (expected)"
+		}
+		return false, fmt.Sprintf("found %d rows when none expected", len(actualRows))
+
+	case "contains":
+		expectedMap, ok := expected.(map[string]interface{})
+		if !ok {
+			return false, "expected result is not a valid map"
+		}
+
+		for _, row := range actualRows {
+			if h.mapContains(row, expectedMap) {
+				return true, "result contains expected values"
+			}
+		}
+		return false, "no result contains expected values"
+
+	case "gte", ">=":
+		// Compare numeric values
+		return h.compareNumeric(actualRows, expected, ">=")
+
+	case "lte", "<=":
+		return h.compareNumeric(actualRows, expected, "<=")
+
+	case "gt", ">":
+		return h.compareNumeric(actualRows, expected, ">")
+
+	case "lt", "<":
+		return h.compareNumeric(actualRows, expected, "<")
+
+	default:
+		return false, fmt.Sprintf("unsupported comparison operator: %s", operator)
+	}
+}
+
+// mapsMatch checks if all keys in expected exist in actual with matching values.
+func (h *Handler) mapsMatch(actual, expected map[string]interface{}) bool {
+	for key, expectedVal := range expected {
+		actualVal, exists := actual[key]
+		if !exists {
+			return false
+		}
+		if !h.valuesEqual(actualVal, expectedVal) {
+			return false
+		}
+	}
+	return true
+}
+
+// mapContains checks if actual contains all key-value pairs from expected.
+func (h *Handler) mapContains(actual, expected map[string]interface{}) bool {
+	return h.mapsMatch(actual, expected)
+}
+
+// valuesEqual compares two values for equality, handling type conversions.
+func (h *Handler) valuesEqual(a, b interface{}) bool {
+	// Handle nil cases
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+
+	// Convert to strings for comparison (osquery returns strings)
+	aStr := fmt.Sprintf("%v", a)
+	bStr := fmt.Sprintf("%v", b)
+	return aStr == bStr
+}
+
+// compareNumeric compares numeric values from query results.
+func (h *Handler) compareNumeric(rows []map[string]interface{}, expected interface{}, op string) (bool, string) {
+	expectedMap, ok := expected.(map[string]interface{})
+	if !ok {
+		return false, "expected result is not a valid map"
+	}
+
+	for key, expectedVal := range expectedMap {
+		for _, row := range rows {
+			if actualVal, exists := row[key]; exists {
+				passed, err := h.compareNumbers(actualVal, expectedVal, op)
+				if err != nil {
+					return false, err.Error()
+				}
+				if passed {
+					return true, fmt.Sprintf("%s %s %v: passed", key, op, expectedVal)
+				}
+				return false, fmt.Sprintf("%s %s %v: actual value is %v", key, op, expectedVal, actualVal)
+			}
+		}
+	}
+	return false, "key not found in results"
+}
+
+// compareNumbers compares two numbers with the given operator.
+func (h *Handler) compareNumbers(a, b interface{}, op string) (bool, error) {
+	aFloat, err := toFloat64(a)
+	if err != nil {
+		return false, err
+	}
+	bFloat, err := toFloat64(b)
+	if err != nil {
+		return false, err
+	}
+
+	switch op {
+	case ">=", "gte":
+		return aFloat >= bFloat, nil
+	case "<=", "lte":
+		return aFloat <= bFloat, nil
+	case ">", "gt":
+		return aFloat > bFloat, nil
+	case "<", "lt":
+		return aFloat < bFloat, nil
+	default:
+		return false, fmt.Errorf("unsupported numeric operator: %s", op)
+	}
+}
+
+// toFloat64 converts a value to float64.
+func toFloat64(v interface{}) (float64, error) {
+	switch n := v.(type) {
+	case float64:
+		return n, nil
+	case float32:
+		return float64(n), nil
+	case int:
+		return float64(n), nil
+	case int64:
+		return float64(n), nil
+	case int32:
+		return float64(n), nil
+	case string:
+		var f float64
+		_, err := fmt.Sscanf(n, "%f", &f)
+		if err != nil {
+			return 0, fmt.Errorf("cannot convert %q to number", n)
+		}
+		return f, nil
+	default:
+		return 0, fmt.Errorf("cannot convert %T to number", v)
+	}
 }

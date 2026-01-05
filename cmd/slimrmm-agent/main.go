@@ -8,15 +8,20 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/slimrmm/slimrmm-agent/internal/actions"
 	"github.com/slimrmm/slimrmm-agent/internal/config"
 	"github.com/slimrmm/slimrmm-agent/internal/handler"
 	"github.com/slimrmm/slimrmm-agent/internal/installer"
 	"github.com/slimrmm/slimrmm-agent/internal/logging"
+	"github.com/slimrmm/slimrmm-agent/internal/proxmox"
 	"github.com/slimrmm/slimrmm-agent/internal/remotedesktop"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
@@ -25,12 +30,13 @@ import (
 
 const helpText = `SlimRMM Agent - Remote Monitoring & Management
 
-Usage: slimrmm-agent [options] [command]
+Usage: slimrmm-agent [command] [options]
 
 Commands:
   install     Install and configure the agent as a system service
   uninstall   Stop and remove the agent service
-  status      Show agent status and configuration
+  info        Show agent status and configuration (alias: status)
+  status      Show agent status and configuration (alias: info)
   update      Check for and install updates
   run         Run the agent in foreground (for debugging)
 
@@ -51,7 +57,8 @@ Examples:
   # Uninstall completely
   sudo slimrmm-agent uninstall
 
-  # Check status
+  # Check status/info
+  slimrmm-agent info
   slimrmm-agent status
 
   # Update to latest version
@@ -95,7 +102,7 @@ func main() {
 		exitCode = cmdInstall(args, paths, logger)
 	case "uninstall":
 		exitCode = cmdUninstall(paths, logger)
-	case "status":
+	case "info", "status":
 		exitCode = cmdStatus(paths)
 	case "update":
 		exitCode = cmdUpdate(logger)
@@ -150,7 +157,7 @@ func parseArgs(args []string) arguments {
 			result.version = true
 		case "-h", "--help":
 			result.help = true
-		case "install", "uninstall", "status", "update", "run":
+		case "install", "uninstall", "status", "info", "update", "run":
 			result.command = arg
 		default:
 			// Check for legacy flags for backwards compatibility
@@ -158,8 +165,8 @@ func parseArgs(args []string) arguments {
 				result.command = "install"
 			} else if arg == "--uninstall" {
 				result.command = "uninstall"
-			} else if arg == "--info" {
-				result.command = "status"
+			} else if arg == "--info" || arg == "--status" {
+				result.command = "info"
 			} else if arg == "--update" {
 				result.command = "update"
 			}
@@ -351,6 +358,7 @@ func cmdStatus(paths config.Paths) int {
 	}
 
 	fmt.Printf("Config:      %s\n", paths.ConfigFile)
+	fmt.Printf("Log Path:    %s\n", filepath.Join(paths.LogDir, "agent.log"))
 	fmt.Println()
 
 	hostname, _ := os.Hostname()
@@ -359,8 +367,138 @@ func cmdStatus(paths config.Paths) int {
 	fmt.Printf("mTLS:        %v\n", cfg.IsMTLSEnabled())
 	fmt.Printf("Hostname:    %s\n", hostname)
 	fmt.Printf("Platform:    %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Println()
+
+	// Connection status
+	fmt.Println("Connection")
+	fmt.Println("----------")
+	fmt.Printf("Last Connection: %s\n", valueOrNA(cfg.GetLastConnection()))
+	fmt.Printf("Last Heartbeat:  %s\n", valueOrNA(cfg.GetLastHeartbeat()))
+	fmt.Println()
+
+	// Security status
+	fmt.Println("Security")
+	fmt.Println("--------")
+	tamperStatus := "Disabled"
+	if cfg.IsTamperProtectionEnabled() {
+		tamperStatus = "Enabled"
+		if cfg.IsWatchdogEnabled() {
+			tamperStatus += " (Watchdog active)"
+		}
+	}
+	fmt.Printf("Tamper Protection: %s\n", tamperStatus)
+	fmt.Println()
+
+	// System information
+	fmt.Println("System")
+	fmt.Println("------")
+	fmt.Printf("Boot Time:   %s\n", getSystemBootTime())
+
+	// Docker availability
+	dockerStatus := "Not available"
+	if actions.IsDockerAvailable() {
+		dockerStatus = "Available"
+	}
+	fmt.Printf("Docker:      %s\n", dockerStatus)
+
+	// Proxmox availability
+	proxmoxStatus := "Not available"
+	if proxmox.IsProxmoxHost() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		pveInfo := proxmox.Detect(ctx)
+		if pveInfo.Version != "" {
+			proxmoxStatus = fmt.Sprintf("Available (v%s)", pveInfo.Version)
+		} else {
+			proxmoxStatus = "Available"
+		}
+	}
+	fmt.Printf("Proxmox:     %s\n", proxmoxStatus)
 
 	return 0
+}
+
+// valueOrNA returns the value or "N/A" if empty.
+func valueOrNA(s string) string {
+	if s == "" {
+		return "N/A"
+	}
+	return s
+}
+
+// getSystemBootTime returns the system boot time as a formatted string.
+func getSystemBootTime() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return getDarwinBootTime()
+	case "linux":
+		return getLinuxBootTime()
+	case "windows":
+		return getWindowsBootTime()
+	default:
+		return "N/A"
+	}
+}
+
+// getDarwinBootTime gets boot time on macOS using sysctl.
+func getDarwinBootTime() string {
+	cmd := exec.Command("sysctl", "-n", "kern.boottime")
+	output, err := cmd.Output()
+	if err != nil {
+		return "N/A"
+	}
+	// Output format: { sec = 1704067200, usec = 0 } ...
+	var sec int64
+	_, err = fmt.Sscanf(string(output), "{ sec = %d,", &sec)
+	if err != nil {
+		return "N/A"
+	}
+	bootTime := time.Unix(sec, 0)
+	return bootTime.Format("2006-01-02 15:04:05")
+}
+
+// getLinuxBootTime gets boot time on Linux from /proc/stat.
+func getLinuxBootTime() string {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return "N/A"
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "btime ") {
+			var btime int64
+			_, err := fmt.Sscanf(line, "btime %d", &btime)
+			if err != nil {
+				return "N/A"
+			}
+			bootTime := time.Unix(btime, 0)
+			return bootTime.Format("2006-01-02 15:04:05")
+		}
+	}
+	return "N/A"
+}
+
+// getWindowsBootTime gets boot time on Windows using wmic.
+func getWindowsBootTime() string {
+	cmd := exec.Command("wmic", "os", "get", "LastBootUpTime", "/value")
+	output, err := cmd.Output()
+	if err != nil {
+		return "N/A"
+	}
+	// Output format: LastBootUpTime=20240101120000.000000+000
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, "LastBootUpTime=") {
+			timeStr := strings.TrimPrefix(line, "LastBootUpTime=")
+			timeStr = strings.TrimSpace(timeStr)
+			if len(timeStr) >= 14 {
+				// Parse WMI datetime format: YYYYMMDDHHMMSS
+				t, err := time.Parse("20060102150405", timeStr[:14])
+				if err == nil {
+					return t.Format("2006-01-02 15:04:05")
+				}
+			}
+		}
+	}
+	return "N/A"
 }
 
 // cmdUpdate checks for and installs updates

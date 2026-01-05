@@ -604,6 +604,8 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		"cancel_upload":  true,
 		"download_chunk": true,
 		"download_url":   true,
+		// Compliance checks - policy_id, checks at root
+		"run_compliance_check": true,
 	}
 	if rootLevelActions[msg.Action] {
 		handlerData = msg.Raw
