@@ -23,6 +23,15 @@ func (h *Handler) registerProxmoxHandlers() {
 	h.handlers["proxmox_resource"] = h.handleProxmoxResource
 	h.handlers["proxmox_token_status"] = h.handleProxmoxTokenStatus
 	h.handlers["proxmox_set_token"] = h.handleProxmoxSetToken
+
+	// Proxmox policy handlers
+	h.handlers["proxmox_policy_execute"] = h.handleProxmoxPolicyExecute
+	h.handlers["proxmox_backup"] = h.handleProxmoxBackup
+	h.handlers["proxmox_snapshot"] = h.handleProxmoxSnapshot
+	h.handlers["proxmox_prune_backups"] = h.handleProxmoxPruneBackups
+	h.handlers["proxmox_clean_storage"] = h.handleProxmoxCleanStorage
+	h.handlers["proxmox_ha_status"] = h.handleProxmoxHAStatus
+	h.handlers["proxmox_replication_status"] = h.handleProxmoxReplicationStatus
 }
 
 // getProxmoxClient returns the shared Proxmox client, creating it if needed.
@@ -214,4 +223,177 @@ func (h *Handler) handleProxmoxSetToken(ctx context.Context, data json.RawMessag
 		"success": true,
 		"message": "Token saved successfully",
 	}, nil
+}
+
+// handleProxmoxPolicyExecute executes a Proxmox policy based on configuration.
+func (h *Handler) handleProxmoxPolicyExecute(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if !proxmox.IsProxmoxHost() {
+		return nil, fmt.Errorf("not a Proxmox host")
+	}
+
+	var req struct {
+		Config      string `json:"config"`       // JSON config string
+		ExecutionID string `json:"execution_id"` // For tracking
+	}
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	client, err := h.getProxmoxClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := client.ExecutePolicy(ctx, req.Config)
+
+	h.logger.Info("proxmox policy executed",
+		"action", result.Action,
+		"success", result.Success,
+		"execution_id", req.ExecutionID,
+	)
+
+	return result, nil
+}
+
+// handleProxmoxBackup creates a backup of VMs/containers.
+func (h *Handler) handleProxmoxBackup(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if !proxmox.IsProxmoxHost() {
+		return nil, fmt.Errorf("not a Proxmox host")
+	}
+
+	var req proxmox.BackupRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Set defaults
+	if req.Mode == "" {
+		req.Mode = proxmox.BackupModeSnapshot
+	}
+	if req.Compress == "" {
+		req.Compress = proxmox.CompressionZSTD
+	}
+
+	client, err := h.getProxmoxClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	results := client.CreateBackup(ctx, req)
+
+	h.logger.Info("proxmox backup completed",
+		"storage", req.Storage,
+		"count", len(results),
+	)
+
+	return results, nil
+}
+
+// handleProxmoxSnapshot creates a snapshot of a VM or container.
+func (h *Handler) handleProxmoxSnapshot(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if !proxmox.IsProxmoxHost() {
+		return nil, fmt.Errorf("not a Proxmox host")
+	}
+
+	var req proxmox.SnapshotRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	client, err := h.getProxmoxClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := client.CreateSnapshot(ctx, req)
+
+	h.logger.Info("proxmox snapshot created",
+		"vmid", req.VMID,
+		"name", req.Name,
+		"success", result.Success,
+	)
+
+	return result, nil
+}
+
+// handleProxmoxPruneBackups removes old backups based on retention policy.
+func (h *Handler) handleProxmoxPruneBackups(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if !proxmox.IsProxmoxHost() {
+		return nil, fmt.Errorf("not a Proxmox host")
+	}
+
+	var req proxmox.PruneRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	client, err := h.getProxmoxClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := client.PruneBackups(ctx, req)
+
+	h.logger.Info("proxmox prune completed",
+		"storage", req.Storage,
+		"deleted", result.DeletedCount,
+		"dry_run", req.DryRun,
+	)
+
+	return result, nil
+}
+
+// handleProxmoxCleanStorage cleans up orphaned and unused volumes.
+func (h *Handler) handleProxmoxCleanStorage(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if !proxmox.IsProxmoxHost() {
+		return nil, fmt.Errorf("not a Proxmox host")
+	}
+
+	var req proxmox.StorageCleanRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	client, err := h.getProxmoxClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := client.CleanStorage(ctx, req)
+
+	h.logger.Info("proxmox storage cleanup completed",
+		"storage", req.Storage,
+		"cleaned", result.CleanedCount,
+		"dry_run", req.DryRun,
+	)
+
+	return result, nil
+}
+
+// handleProxmoxHAStatus retrieves the HA cluster status.
+func (h *Handler) handleProxmoxHAStatus(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if !proxmox.IsProxmoxHost() {
+		return nil, fmt.Errorf("not a Proxmox host")
+	}
+
+	client, err := h.getProxmoxClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.GetHAStatus(ctx), nil
+}
+
+// handleProxmoxReplicationStatus retrieves replication job status.
+func (h *Handler) handleProxmoxReplicationStatus(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if !proxmox.IsProxmoxHost() {
+		return nil, fmt.Errorf("not a Proxmox host")
+	}
+
+	client, err := h.getProxmoxClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.GetReplicationStatus(ctx), nil
 }
