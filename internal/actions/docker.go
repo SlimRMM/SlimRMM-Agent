@@ -636,3 +636,256 @@ func parseSize(sizeStr string) int64 {
 
 	return 0
 }
+
+// =============================================================================
+// Docker Policy Actions
+// =============================================================================
+
+// DockerPruneResult represents the result of a prune operation.
+type DockerPruneResult struct {
+	Type           string   `json:"type"`
+	ReclaimedSpace int64    `json:"reclaimed_space"`
+	DeletedItems   []string `json:"deleted_items"`
+}
+
+// PruneDockerImages removes unused Docker images.
+func PruneDockerImages(ctx context.Context, danglingOnly bool, olderThanHours int) (*DockerPruneResult, error) {
+	args := []string{"image", "prune", "-f"}
+	if !danglingOnly {
+		args = append(args, "-a")
+	}
+	if olderThanHours > 0 {
+		args = append(args, "--filter", fmt.Sprintf("until=%dh", olderThanHours))
+	}
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to prune images: %s", string(output))
+	}
+
+	return &DockerPruneResult{
+		Type:         "images",
+		DeletedItems: parseDeletedItems(string(output)),
+	}, nil
+}
+
+// PruneDockerVolumes removes unused Docker volumes.
+func PruneDockerVolumes(ctx context.Context) (*DockerPruneResult, error) {
+	cmd := exec.CommandContext(ctx, "docker", "volume", "prune", "-f")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to prune volumes: %s", string(output))
+	}
+
+	return &DockerPruneResult{
+		Type:         "volumes",
+		DeletedItems: parseDeletedItems(string(output)),
+	}, nil
+}
+
+// PruneDockerNetworks removes unused Docker networks.
+func PruneDockerNetworks(ctx context.Context) (*DockerPruneResult, error) {
+	cmd := exec.CommandContext(ctx, "docker", "network", "prune", "-f")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to prune networks: %s", string(output))
+	}
+
+	return &DockerPruneResult{
+		Type:         "networks",
+		DeletedItems: parseDeletedItems(string(output)),
+	}, nil
+}
+
+// PruneDockerSystem removes all unused Docker resources.
+func PruneDockerSystem(ctx context.Context, danglingOnly bool, olderThanHours int) (*DockerPruneResult, error) {
+	args := []string{"system", "prune", "-f"}
+	if !danglingOnly {
+		args = append(args, "-a")
+	}
+	args = append(args, "--volumes")
+	if olderThanHours > 0 {
+		args = append(args, "--filter", fmt.Sprintf("until=%dh", olderThanHours))
+	}
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to prune system: %s", string(output))
+	}
+
+	return &DockerPruneResult{
+		Type:         "system",
+		DeletedItems: parseDeletedItems(string(output)),
+	}, nil
+}
+
+// RestartUnhealthyContainers restarts containers with failed health checks.
+func RestartUnhealthyContainers(ctx context.Context, timeout int, maxRetries int) ([]map[string]interface{}, error) {
+	// Get all containers with health status
+	cmd := exec.CommandContext(ctx, "docker", "ps", "-a", "--filter", "health=unhealthy", "--format", "{{.ID}}")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list unhealthy containers: %w", err)
+	}
+
+	var results []map[string]interface{}
+	containerIDs := strings.Split(strings.TrimSpace(string(output)), "\n")
+
+	for _, containerID := range containerIDs {
+		if containerID == "" {
+			continue
+		}
+
+		result := map[string]interface{}{
+			"container_id": containerID,
+			"action":       "restart",
+		}
+
+		// Try to restart with retries
+		var lastErr error
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			restartCmd := exec.CommandContext(ctx, "docker", "restart", "-t", strconv.Itoa(timeout), containerID)
+			if _, err := restartCmd.CombinedOutput(); err == nil {
+				result["success"] = true
+				result["attempts"] = attempt + 1
+				lastErr = nil
+				break
+			} else {
+				lastErr = err
+			}
+		}
+
+		if lastErr != nil {
+			result["success"] = false
+			result["error"] = lastErr.Error()
+		}
+
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
+// UpdateDockerImages pulls latest images and optionally recreates containers.
+func UpdateDockerImages(ctx context.Context, pullLatest bool, recreateContainers bool) ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	if !pullLatest {
+		return results, nil
+	}
+
+	// Get list of running containers with their images
+	cmd := exec.CommandContext(ctx, "docker", "ps", "--format", "{{.ID}}:{{.Image}}")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	pulledImages := make(map[string]bool)
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		containerID := parts[0]
+		imageName := parts[1]
+
+		result := map[string]interface{}{
+			"container_id": containerID,
+			"image":        imageName,
+		}
+
+		// Pull the image if not already pulled
+		if !pulledImages[imageName] {
+			pullCmd := exec.CommandContext(ctx, "docker", "pull", imageName)
+			if _, err := pullCmd.CombinedOutput(); err != nil {
+				result["pull_success"] = false
+				result["pull_error"] = err.Error()
+				results = append(results, result)
+				continue
+			}
+			pulledImages[imageName] = true
+			result["pull_success"] = true
+		}
+
+		// Recreate container if requested
+		if recreateContainers {
+			// This would need docker-compose or manual recreation
+			// For now just report that the image was updated
+			result["recreated"] = false
+			result["note"] = "container recreation requires docker-compose"
+		}
+
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
+// GetDockerHealthCheck checks health status of all containers.
+func GetDockerHealthCheck(ctx context.Context) ([]map[string]interface{}, error) {
+	cmd := exec.CommandContext(ctx, "docker", "ps", "-a", "--format", "{{json .}}")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var results []map[string]interface{}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		var raw map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			continue
+		}
+
+		status := getString(raw, "Status")
+		health := "none"
+
+		// Parse health from status string
+		if strings.Contains(status, "(healthy)") {
+			health = "healthy"
+		} else if strings.Contains(status, "(unhealthy)") {
+			health = "unhealthy"
+		} else if strings.Contains(status, "(starting)") {
+			health = "starting"
+		}
+
+		results = append(results, map[string]interface{}{
+			"container_id": getString(raw, "ID"),
+			"name":         strings.TrimPrefix(getString(raw, "Names"), "/"),
+			"state":        getString(raw, "State"),
+			"status":       status,
+			"health":       health,
+		})
+	}
+
+	return results, nil
+}
+
+func parseDeletedItems(output string) []string {
+	var items []string
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Skip summary lines
+		if line == "" || strings.HasPrefix(line, "Total") || strings.HasPrefix(line, "deleted") {
+			continue
+		}
+		// SHA256 hashes are deleted items
+		if len(line) == 64 || len(line) == 12 {
+			items = append(items, line)
+		}
+	}
+	return items
+}

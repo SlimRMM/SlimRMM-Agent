@@ -117,6 +117,16 @@ func (h *Handler) registerHandlers() {
 	h.handlers["docker_remove_volume"] = h.handleDockerRemoveVolume
 	h.handlers["docker_list_networks"] = h.handleDockerListNetworks
 	h.handlers["docker_compose_action"] = h.handleDockerComposeAction
+
+	// Docker policy handlers
+	h.handlers["docker_policy_execute"] = h.handleDockerPolicyExecute
+	h.handlers["docker_prune_images"] = h.handleDockerPruneImages
+	h.handlers["docker_prune_volumes"] = h.handleDockerPruneVolumes
+	h.handlers["docker_prune_networks"] = h.handleDockerPruneNetworks
+	h.handlers["docker_prune_all"] = h.handleDockerPruneAll
+	h.handlers["docker_restart_unhealthy"] = h.handleDockerRestartUnhealthy
+	h.handlers["docker_update_images"] = h.handleDockerUpdateImages
+	h.handlers["docker_health_check"] = h.handleDockerHealthCheck
 }
 
 // Command handlers
@@ -1562,4 +1572,171 @@ func (h *Handler) handleDockerComposeAction(ctx context.Context, data json.RawMe
 	}
 
 	return map[string]string{"status": "success", "action": req.Action, "project_path": req.ProjectPath}, nil
+}
+
+// Docker policy handlers
+
+type dockerPolicyExecuteRequest struct {
+	ExecutionID string                 `json:"execution_id"`
+	PolicyID    string                 `json:"policy_id"`
+	Config      map[string]interface{} `json:"config"`
+}
+
+func (h *Handler) handleDockerPolicyExecute(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerPolicyExecuteRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	action := ""
+	if a, ok := req.Config["action"].(string); ok {
+		action = a
+	}
+
+	startedAt := time.Now()
+	var result interface{}
+	var err error
+
+	switch action {
+	case "prune_images":
+		danglingOnly := getBool(req.Config, "prune_dangling_only")
+		olderThan := getIntVal(req.Config, "prune_until_hours")
+		result, err = actions.PruneDockerImages(ctx, danglingOnly, olderThan)
+	case "prune_volumes":
+		result, err = actions.PruneDockerVolumes(ctx)
+	case "prune_networks":
+		result, err = actions.PruneDockerNetworks(ctx)
+	case "prune_all":
+		danglingOnly := getBool(req.Config, "prune_dangling_only")
+		olderThan := getIntVal(req.Config, "prune_until_hours")
+		result, err = actions.PruneDockerSystem(ctx, danglingOnly, olderThan)
+	case "restart_unhealthy":
+		timeout := getIntVal(req.Config, "restart_timeout_seconds")
+		if timeout == 0 {
+			timeout = 30
+		}
+		maxRetries := getIntVal(req.Config, "restart_max_retries")
+		if maxRetries == 0 {
+			maxRetries = 3
+		}
+		result, err = actions.RestartUnhealthyContainers(ctx, timeout, maxRetries)
+	case "update_images":
+		pullLatest := getBool(req.Config, "update_pull_latest")
+		recreate := getBool(req.Config, "update_recreate_containers")
+		result, err = actions.UpdateDockerImages(ctx, pullLatest, recreate)
+	case "container_health_check":
+		result, err = actions.GetDockerHealthCheck(ctx)
+	default:
+		err = fmt.Errorf("unknown docker policy action: %s", action)
+	}
+
+	completedAt := time.Now()
+	durationMs := completedAt.Sub(startedAt).Milliseconds()
+
+	response := map[string]interface{}{
+		"action":       "docker_policy_result",
+		"execution_id": req.ExecutionID,
+		"policy_id":    req.PolicyID,
+		"duration_ms":  durationMs,
+		"started_at":   startedAt.UTC().Format(time.RFC3339),
+		"completed_at": completedAt.UTC().Format(time.RFC3339),
+	}
+
+	if err != nil {
+		response["status"] = "failed"
+		response["error"] = err.Error()
+	} else {
+		response["status"] = "completed"
+		response["result"] = result
+	}
+
+	h.SendRaw(response)
+	return response, nil
+}
+
+type dockerPruneRequest struct {
+	DanglingOnly   bool `json:"dangling_only"`
+	OlderThanHours int  `json:"older_than_hours"`
+}
+
+func (h *Handler) handleDockerPruneImages(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerPruneRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	return actions.PruneDockerImages(ctx, req.DanglingOnly, req.OlderThanHours)
+}
+
+func (h *Handler) handleDockerPruneVolumes(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	return actions.PruneDockerVolumes(ctx)
+}
+
+func (h *Handler) handleDockerPruneNetworks(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	return actions.PruneDockerNetworks(ctx)
+}
+
+func (h *Handler) handleDockerPruneAll(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerPruneRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	return actions.PruneDockerSystem(ctx, req.DanglingOnly, req.OlderThanHours)
+}
+
+type dockerRestartUnhealthyRequest struct {
+	Timeout    int `json:"timeout"`
+	MaxRetries int `json:"max_retries"`
+}
+
+func (h *Handler) handleDockerRestartUnhealthy(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerRestartUnhealthyRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	if req.Timeout == 0 {
+		req.Timeout = 30
+	}
+	if req.MaxRetries == 0 {
+		req.MaxRetries = 3
+	}
+	return actions.RestartUnhealthyContainers(ctx, req.Timeout, req.MaxRetries)
+}
+
+type dockerUpdateImagesRequest struct {
+	PullLatest          bool `json:"pull_latest"`
+	RecreateContainers  bool `json:"recreate_containers"`
+}
+
+func (h *Handler) handleDockerUpdateImages(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req dockerUpdateImagesRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+	return actions.UpdateDockerImages(ctx, req.PullLatest, req.RecreateContainers)
+}
+
+func (h *Handler) handleDockerHealthCheck(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	return actions.GetDockerHealthCheck(ctx)
+}
+
+// Helper functions for config parsing
+func getBool(m map[string]interface{}, key string) bool {
+	if v, ok := m[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+func getIntVal(m map[string]interface{}, key string) int {
+	if v, ok := m[key]; ok {
+		switch n := v.(type) {
+		case float64:
+			return int(n)
+		case int:
+			return n
+		}
+	}
+	return 0
 }
