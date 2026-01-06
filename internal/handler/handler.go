@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
@@ -244,9 +245,18 @@ func (h *Handler) Connect(ctx context.Context) error {
 	u.Path = "/api/v1/ws/agent"
 	u.RawQuery = "uuid=" + h.cfg.GetUUID()
 
+	// Create custom dialer with TCP keepalive for better connection stability
+	// This helps with NAT timeout issues and dead connection detection
+	netDialer := &net.Dialer{
+		Timeout:   30 * time.Second, // Connection timeout
+		KeepAlive: 30 * time.Second, // TCP keepalive interval
+	}
+
 	dialer := websocket.Dialer{
-		TLSClientConfig:  h.tlsConfig,
-		HandshakeTimeout: 10 * time.Second,
+		TLSClientConfig:   h.tlsConfig,
+		HandshakeTimeout:  15 * time.Second,
+		NetDialContext:    netDialer.DialContext,
+		EnableCompression: true, // Enable compression for better performance over slow links
 	}
 
 	headers := http.Header{}

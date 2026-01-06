@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -599,12 +600,20 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 		cancel()
 	}()
 
-	// Connection loop with exponential backoff
+	// Connection loop with exponential backoff and jitter
+	// Jitter prevents thundering herd when many agents reconnect simultaneously
 	const (
 		initialReconnectDelay = 5 * time.Second
 		maxReconnectDelay     = 5 * time.Minute
 		backoffMultiplier     = 2.0
+		jitterFactor          = 0.3 // Add up to 30% random jitter
 	)
+
+	// addJitter adds random jitter to delay to prevent thundering herd
+	addJitter := func(delay time.Duration) time.Duration {
+		jitter := time.Duration(float64(delay) * jitterFactor * rand.Float64())
+		return delay + jitter
+	}
 
 	reconnectDelay := initialReconnectDelay
 
@@ -617,11 +626,12 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 		}
 
 		if err := h.Connect(ctx); err != nil {
-			logger.Error("connection failed", "error", err, "retry_in", reconnectDelay)
+			delayWithJitter := addJitter(reconnectDelay)
+			logger.Error("connection failed", "error", err, "retry_in", delayWithJitter.Round(time.Second))
 			select {
 			case <-ctx.Done():
 				return 0
-			case <-time.After(reconnectDelay):
+			case <-time.After(delayWithJitter):
 				reconnectDelay = time.Duration(float64(reconnectDelay) * backoffMultiplier)
 				if reconnectDelay > maxReconnectDelay {
 					reconnectDelay = maxReconnectDelay
@@ -640,13 +650,14 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 			if ctx.Err() != nil {
 				return 0
 			}
-			logger.Error("handler error", "error", err, "retry_in", reconnectDelay)
+			delayWithJitter := addJitter(reconnectDelay)
+			logger.Error("handler error", "error", err, "retry_in", delayWithJitter.Round(time.Second))
 			h.Close()
 
 			select {
 			case <-ctx.Done():
 				return 0
-			case <-time.After(reconnectDelay):
+			case <-time.After(delayWithJitter):
 				reconnectDelay = time.Duration(float64(reconnectDelay) * backoffMultiplier)
 				if reconnectDelay > maxReconnectDelay {
 					reconnectDelay = maxReconnectDelay
