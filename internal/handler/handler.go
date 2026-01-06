@@ -140,6 +140,9 @@ type Handler struct {
 
 	// Tamper protection
 	tamperProtection *tamper.Protection
+
+	// Heartbeat counter for periodic config saves
+	heartbeatCount int
 }
 
 // New creates a new Handler.
@@ -545,6 +548,15 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 
 	// Update last heartbeat time in config
 	h.cfg.SetLastHeartbeat(time.Now().UTC().Format(time.RFC3339))
+
+	// Periodically save config to persist LastHeartbeat (every 10 heartbeats = ~5 minutes)
+	h.heartbeatCount++
+	if h.heartbeatCount >= 10 {
+		h.heartbeatCount = 0
+		if err := h.cfg.Save(); err != nil {
+			h.logger.Warn("failed to save config with heartbeat", "error", err)
+		}
+	}
 }
 
 // handleMessage processes an incoming message.

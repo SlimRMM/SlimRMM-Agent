@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
@@ -74,6 +75,7 @@ type Updater struct {
 	dataDir             string
 	serviceName         string
 	maintenanceCallback MaintenanceCallback
+	backgroundOnce      sync.Once // Ensures background updater only starts once
 }
 
 // New creates a new Updater.
@@ -969,37 +971,42 @@ func (u *Updater) logError(message, details string) {
 }
 
 // StartBackgroundUpdater starts a goroutine that periodically checks for updates.
+// Uses sync.Once to ensure only one background updater runs, even across reconnections.
 func (u *Updater) StartBackgroundUpdater(ctx context.Context) {
-	go func() {
-		// Initial delay before first check
-		time.Sleep(5 * time.Minute)
+	u.backgroundOnce.Do(func() {
+		u.logger.Info("starting background update checker")
+		go func() {
+			// Initial delay before first check
+			time.Sleep(5 * time.Minute)
 
-		ticker := time.NewTicker(UpdateCheckInterval)
-		defer ticker.Stop()
+			ticker := time.NewTicker(UpdateCheckInterval)
+			defer ticker.Stop()
 
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				info, err := u.CheckForUpdate(ctx)
-				if err != nil {
-					u.logger.Error("update check failed", "error", err)
-					continue
-				}
-
-				if info != nil {
-					u.logger.Info("auto-update starting", "version", info.Version)
-					result, err := u.PerformUpdate(ctx, info)
+			for {
+				select {
+				case <-ctx.Done():
+					u.logger.Info("background update checker stopped")
+					return
+				case <-ticker.C:
+					info, err := u.CheckForUpdate(ctx)
 					if err != nil {
-						u.logger.Error("auto-update failed", "error", err)
-					} else if result.Success {
-						u.logger.Info("auto-update completed", "version", result.NewVersion)
+						u.logger.Error("update check failed", "error", err)
+						continue
+					}
+
+					if info != nil {
+						u.logger.Info("auto-update starting", "version", info.Version)
+						result, err := u.PerformUpdate(ctx, info)
+						if err != nil {
+							u.logger.Error("auto-update failed", "error", err)
+						} else if result.Success {
+							u.logger.Info("auto-update completed", "version", result.NewVersion)
+						}
 					}
 				}
 			}
-		}
-	}()
+		}()
+	})
 }
 
 // GetChecksumFromRelease fetches the checksum for a release asset.
