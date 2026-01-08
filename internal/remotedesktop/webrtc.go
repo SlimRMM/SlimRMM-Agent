@@ -132,8 +132,11 @@ func (s *Session) Start() (*StartResult, error) {
 	// Handle ICE candidates
 	s.pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
+			s.logger.Info("ICE gathering complete")
 			return
 		}
+
+		s.logger.Info("ICE candidate generated", "type", c.Typ.String(), "address", c.Address, "port", c.Port, "protocol", c.Protocol.String())
 
 		candidate := c.ToJSON()
 		msg, _ := json.Marshal(map[string]interface{}{
@@ -170,7 +173,7 @@ func (s *Session) Start() (*StartResult, error) {
 
 	// Handle ICE connection state changes
 	s.pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
-		s.logger.Debug("ICE connection state changed", "state", state.String())
+		s.logger.Info("ICE connection state changed", "state", state.String())
 	})
 
 	// Create video track
@@ -282,8 +285,15 @@ func (s *Session) HandleICECandidate(candidate ICECandidate) error {
 
 	// Empty candidate signals end of candidates
 	if candidate.Candidate == "" {
+		s.logger.Info("received end-of-candidates signal from frontend")
 		return nil
 	}
+
+	candidatePreview := candidate.Candidate
+	if len(candidatePreview) > 80 {
+		candidatePreview = candidatePreview[:80] + "..."
+	}
+	s.logger.Info("received ICE candidate from frontend", "candidate", candidatePreview)
 
 	init := webrtc.ICECandidateInit{
 		Candidate: candidate.Candidate,

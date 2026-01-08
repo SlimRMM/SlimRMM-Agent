@@ -107,6 +107,7 @@ func (t *VideoTrack) captureLoop() {
 	ticker := time.NewTicker(time.Second / time.Duration(fps))
 	defer ticker.Stop()
 
+	frameCount := 0
 	for {
 		select {
 		case <-t.stopCh:
@@ -158,6 +159,11 @@ func (t *VideoTrack) captureLoop() {
 				Duration: time.Second / time.Duration(fps),
 			}); err != nil {
 				t.logger.Debug("writing sample", "error", err)
+			}
+
+			frameCount++
+			if frameCount <= 3 || frameCount%100 == 0 {
+				t.logger.Info("frame sent", "frame", frameCount, "size", len(data), "width", frame.Bounds().Dx(), "height", frame.Bounds().Dy())
 			}
 		}
 	}
