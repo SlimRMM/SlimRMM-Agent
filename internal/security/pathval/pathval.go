@@ -24,12 +24,12 @@ var AllowedPaths = []string{
 }
 
 // AllowedPathsWindows contains allowed paths for Windows.
-// Allow common drive letters, with ForbiddenPathsWindows blocking sensitive areas.
+// Allow all drive letters (A-Z), with ForbiddenPathsWindows blocking sensitive areas.
 var AllowedPathsWindows = []string{
-	"C:\\",
-	"D:\\",
-	"E:\\",
-	"F:\\",
+	"A:\\", "B:\\", "C:\\", "D:\\", "E:\\", "F:\\", "G:\\", "H:\\",
+	"I:\\", "J:\\", "K:\\", "L:\\", "M:\\", "N:\\", "O:\\", "P:\\",
+	"Q:\\", "R:\\", "S:\\", "T:\\", "U:\\", "V:\\", "W:\\", "X:\\",
+	"Y:\\", "Z:\\",
 }
 
 // ForbiddenPaths contains paths that should never be accessed.
