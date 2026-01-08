@@ -400,7 +400,12 @@ func cmdStatus(paths config.Paths) int {
 	osqueryClient := osquery.New()
 	osqueryStatus := "Not available"
 	if osqueryClient.IsAvailable() {
-		osqueryStatus = fmt.Sprintf("Available (%s)", osqueryClient.GetBinaryPath())
+		version := osqueryClient.GetVersion()
+		if version != "" {
+			osqueryStatus = fmt.Sprintf("v%s (%s)", version, osqueryClient.GetBinaryPath())
+		} else {
+			osqueryStatus = fmt.Sprintf("Available (%s)", osqueryClient.GetBinaryPath())
+		}
 	}
 	fmt.Printf("osquery:     %s\n", osqueryStatus)
 

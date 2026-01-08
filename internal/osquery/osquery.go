@@ -88,6 +88,38 @@ func (c *Client) GetBinaryPath() string {
 	return c.binaryPath
 }
 
+// GetVersion returns the installed osquery version.
+func (c *Client) GetVersion() string {
+	if !c.IsAvailable() {
+		return ""
+	}
+
+	cmd := exec.Command(c.binaryPath, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	// Output format: "osqueryi version 5.15.0" or "osquery version 5.15.0"
+	line := strings.TrimSpace(string(output))
+	parts := strings.Fields(line)
+	if len(parts) >= 3 && parts[1] == "version" {
+		return parts[2]
+	}
+
+	// Try alternate parsing for different formats
+	if strings.Contains(line, "version") {
+		for _, part := range parts {
+			// Look for version-like string (x.y.z)
+			if strings.Count(part, ".") >= 1 && part[0] >= '0' && part[0] <= '9' {
+				return part
+			}
+		}
+	}
+
+	return ""
+}
+
 // Query executes an osquery query and returns the results.
 func (c *Client) Query(ctx context.Context, query string) (*QueryResult, error) {
 	if !c.IsAvailable() {
