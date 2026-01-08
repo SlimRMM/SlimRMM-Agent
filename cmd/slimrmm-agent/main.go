@@ -26,6 +26,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/proxmox"
 	"github.com/slimrmm/slimrmm-agent/internal/remotedesktop"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
+	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
@@ -112,8 +113,12 @@ func main() {
 		exitCode = cmdRun(paths, logger)
 	case "":
 		// No command - check if this is being run as a service
-		// Services call the binary without arguments
-		if installer.IsServiceInstalled() {
+		// On Windows, check if we're running as a Windows Service
+		if runtime.GOOS == "windows" && service.IsRunningAsService() {
+			// Running as Windows Service - use SCM handler
+			exitCode = cmdRunAsWindowsService(paths, logger)
+		} else if installer.IsServiceInstalled() {
+			// Running from service manager (systemd/launchd) or manual start
 			exitCode = cmdRun(paths, logger)
 		} else {
 			fmt.Print(helpText)
@@ -633,6 +638,12 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 		cancel()
 	}()
 
+	// Run the agent loop
+	return runAgentLoop(ctx, h, cfg, logger)
+}
+
+// runAgentLoop contains the main connection loop logic, shared between cmdRun and Windows service mode
+func runAgentLoop(ctx context.Context, h *handler.Handler, cfg *config.Config, logger *slog.Logger) int {
 	// Connection loop with exponential backoff and jitter
 	// Jitter prevents thundering herd when many agents reconnect simultaneously
 	const (
@@ -699,4 +710,104 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 			}
 		}
 	}
+}
+
+// agentRunner implements service.AgentRunner for Windows Service support
+type agentRunner struct {
+	paths   config.Paths
+	logger  *slog.Logger
+	handler *handler.Handler
+	cfg     *config.Config
+	cancel  context.CancelFunc
+}
+
+// Run starts the agent and blocks until the context is cancelled
+func (r *agentRunner) Run(ctx context.Context) error {
+	r.logger.Info("starting SlimRMM Agent (Windows Service)", "version", version.Get().Version)
+
+	// Initialize platform-specific permissions
+	remotedesktop.InitializePermissions(r.logger)
+
+	// Ensure osquery is installed (auto-install if not present)
+	go func() {
+		osqCtx, osqCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer osqCancel()
+
+		if err := osquery.EnsureInstalled(osqCtx, r.logger); err != nil {
+			r.logger.Warn("osquery auto-installation failed",
+				"error", err,
+				"note", "osquery features may be unavailable")
+		}
+	}()
+
+	// Load configuration
+	cfg, err := config.Load(r.paths.ConfigFile)
+	if err != nil {
+		if err == config.ErrConfigNotFound {
+			r.logger.Error("agent not configured - run 'slimrmm-agent install' first")
+			return err
+		}
+		r.logger.Error("failed to load config", "error", err)
+		return err
+	}
+	r.cfg = cfg
+
+	// Setup mTLS
+	certPaths := &mtls.CertPaths{
+		CACert:     r.paths.CACert,
+		ClientCert: r.paths.ClientCert,
+		ClientKey:  r.paths.ClientKey,
+	}
+
+	var tlsConfig *tls.Config
+	if cfg.IsMTLSEnabled() && mtls.CertificatesExist(*certPaths) {
+		tlsConfig, err = mtls.NewTLSConfig(certPaths, nil)
+		if err != nil {
+			r.logger.Error("failed to create TLS config", "error", err)
+			return err
+		}
+		r.logger.Info("mTLS enabled")
+	} else {
+		tlsConfig, err = mtls.NewTLSConfig(nil, nil)
+		if err != nil {
+			r.logger.Error("failed to create TLS config", "error", err)
+			return err
+		}
+		r.logger.Warn("mTLS not enabled or certificates not found")
+	}
+
+	// Create handler
+	r.handler = handler.New(cfg, r.paths, tlsConfig, r.logger)
+
+	// Run the agent loop
+	exitCode := runAgentLoop(ctx, r.handler, cfg, r.logger)
+	if exitCode != 0 {
+		return fmt.Errorf("agent exited with code %d", exitCode)
+	}
+	return nil
+}
+
+// Stop signals the agent to stop
+func (r *agentRunner) Stop() {
+	r.logger.Info("stop requested")
+	if r.handler != nil {
+		r.handler.Close()
+	}
+}
+
+// cmdRunAsWindowsService runs the agent as a Windows Service
+func cmdRunAsWindowsService(paths config.Paths, logger *slog.Logger) int {
+	logger.Info("starting as Windows Service")
+
+	runner := &agentRunner{
+		paths:  paths,
+		logger: logger,
+	}
+
+	if err := service.RunAsService(runner, logger); err != nil {
+		logger.Error("Windows service failed", "error", err)
+		return 1
+	}
+
+	return 0
 }
