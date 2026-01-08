@@ -335,14 +335,18 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	// Copy helper to install directory (Windows only)
 	if runtime.GOOS == "windows" {
 		helperSrc := filepath.Join(tempDir, "slimrmm-helper.exe")
-		if _, err := os.Stat(helperSrc); err == nil {
-			helperDst := filepath.Join(filepath.Dir(u.binaryPath), "slimrmm-helper.exe")
+		helperDst := filepath.Join(filepath.Dir(u.binaryPath), "slimrmm-helper.exe")
+		u.logger.Info("checking for helper binary", "src", helperSrc, "dst", helperDst)
+		if info, err := os.Stat(helperSrc); err == nil {
+			u.logger.Info("helper found in archive", "size", info.Size())
 			if err := u.copyFileDirect(helperSrc, helperDst); err != nil {
 				u.logger.Warn("failed to install helper", "error", err)
 				// Not fatal - continue with agent update
 			} else {
 				u.logger.Info("installed helper binary", "path", helperDst)
 			}
+		} else {
+			u.logger.Warn("helper not found in archive", "error", err)
 		}
 	}
 
