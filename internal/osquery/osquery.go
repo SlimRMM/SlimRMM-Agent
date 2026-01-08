@@ -658,3 +658,258 @@ func installWindows(ctx context.Context, version string) error {
 	slog.Info("osquery MSI installation completed")
 	return nil
 }
+
+// WeeklyUpdateCheckInterval is how often to check for osquery updates.
+const WeeklyUpdateCheckInterval = 7 * 24 * time.Hour
+
+var (
+	backgroundUpdaterOnce sync.Once
+)
+
+// CheckForUpdate checks if a newer version of osquery is available.
+// Returns (needsUpdate, latestVersion, error).
+func (c *Client) CheckForUpdate(ctx context.Context) (bool, string, error) {
+	if !c.IsAvailable() {
+		return false, "", fmt.Errorf("osquery not installed")
+	}
+
+	installedVersion := c.GetVersion()
+	if installedVersion == "" {
+		return false, "", fmt.Errorf("could not determine installed version")
+	}
+
+	latestVersion, err := GetLatestVersion(ctx)
+	if err != nil {
+		return false, "", fmt.Errorf("getting latest version: %w", err)
+	}
+
+	// Compare versions
+	needsUpdate := isNewerVersion(latestVersion, installedVersion)
+	return needsUpdate, latestVersion, nil
+}
+
+// isNewerVersion compares two semantic version strings.
+func isNewerVersion(latest, current string) bool {
+	latestParts := parseVersion(latest)
+	currentParts := parseVersion(current)
+
+	for i := 0; i < len(latestParts) && i < len(currentParts); i++ {
+		if latestParts[i] > currentParts[i] {
+			return true
+		}
+		if latestParts[i] < currentParts[i] {
+			return false
+		}
+	}
+
+	return len(latestParts) > len(currentParts)
+}
+
+// parseVersion parses a version string into numeric parts.
+func parseVersion(v string) []int {
+	parts := strings.Split(v, ".")
+	result := make([]int, 0, len(parts))
+	for _, p := range parts {
+		p = strings.Split(p, "-")[0] // Handle pre-release
+		var num int
+		fmt.Sscanf(p, "%d", &num)
+		result = append(result, num)
+	}
+	return result
+}
+
+// UpdateIfNeeded checks for updates and installs if a newer version is available.
+func UpdateIfNeeded(ctx context.Context, logger *slog.Logger) error {
+	client := New()
+
+	if !client.IsAvailable() {
+		logger.Info("osquery not installed, installing...")
+		return EnsureInstalled(ctx, logger)
+	}
+
+	installedVersion := client.GetVersion()
+
+	// On Linux with apt/yum/dnf, use system package manager for updates
+	// This leverages the repos we set up during initial install
+	if runtime.GOOS == "linux" {
+		return updateLinuxPackage(ctx, logger, installedVersion)
+	}
+
+	// On macOS and Windows, check GitHub for updates and download directly
+	needsUpdate, latestVersion, err := client.CheckForUpdate(ctx)
+	if err != nil {
+		return fmt.Errorf("checking for osquery update: %w", err)
+	}
+
+	if !needsUpdate {
+		logger.Debug("osquery is up to date", "version", installedVersion)
+		return nil
+	}
+
+	logger.Info("osquery update available",
+		"installed", installedVersion,
+		"latest", latestVersion)
+
+	if err := Install(ctx); err != nil {
+		return fmt.Errorf("updating osquery: %w", err)
+	}
+
+	// Verify update
+	newClient := New()
+	newVersion := newClient.GetVersion()
+	logger.Info("osquery updated successfully",
+		"old_version", installedVersion,
+		"new_version", newVersion)
+
+	return nil
+}
+
+// updateLinuxPackage uses the system package manager to update osquery.
+// This leverages the official osquery repos we set up during initial install.
+// Falls back to direct download if repo version is outdated compared to GitHub.
+func updateLinuxPackage(ctx context.Context, logger *slog.Logger, installedVersion string) error {
+	var updateCmd *exec.Cmd
+	var refreshCmd *exec.Cmd
+
+	if _, err := exec.LookPath("apt-get"); err == nil {
+		// Debian/Ubuntu - update repos and upgrade osquery
+		logger.Info("updating osquery via apt")
+		refreshCmd = exec.CommandContext(ctx, "apt-get", "update", "-qq")
+		updateCmd = exec.CommandContext(ctx, "apt-get", "install", "-y", "--only-upgrade", "osquery")
+
+	} else if _, err := exec.LookPath("dnf"); err == nil {
+		// Fedora/RHEL 8+
+		logger.Info("updating osquery via dnf")
+		updateCmd = exec.CommandContext(ctx, "dnf", "upgrade", "-y", "osquery")
+
+	} else if _, err := exec.LookPath("yum"); err == nil {
+		// RHEL/CentOS 7
+		logger.Info("updating osquery via yum")
+		updateCmd = exec.CommandContext(ctx, "yum", "update", "-y", "osquery")
+
+	} else {
+		logger.Warn("no supported package manager found, trying direct download")
+		return updateLinuxDirect(ctx, logger, installedVersion)
+	}
+
+	// Refresh package lists if needed (apt)
+	if refreshCmd != nil {
+		if err := refreshCmd.Run(); err != nil {
+			logger.Warn("package list refresh had issues, continuing", "error", err)
+		}
+	}
+
+	// Run update
+	var stderr bytes.Buffer
+	updateCmd.Stderr = &stderr
+
+	if err := updateCmd.Run(); err != nil {
+		// Check if it's just "no updates available" (not an error)
+		errStr := stderr.String()
+		if strings.Contains(errStr, "already the newest") ||
+			strings.Contains(errStr, "Nothing to do") ||
+			strings.Contains(errStr, "No packages marked for update") {
+			// Package manager says up to date, but check if GitHub has newer
+			return checkAndFallbackToGitHub(ctx, logger, installedVersion)
+		}
+		logger.Warn("package manager update failed, trying direct download", "error", err)
+		return updateLinuxDirect(ctx, logger, installedVersion)
+	}
+
+	// Check new version
+	newClient := New()
+	newVersion := newClient.GetVersion()
+	if newVersion != installedVersion {
+		logger.Info("osquery updated via package manager",
+			"old_version", installedVersion,
+			"new_version", newVersion)
+	} else {
+		// Repo might be behind GitHub, check and fallback if needed
+		return checkAndFallbackToGitHub(ctx, logger, newVersion)
+	}
+
+	return nil
+}
+
+// checkAndFallbackToGitHub checks if GitHub has a newer version than installed.
+// If yes, falls back to direct download.
+func checkAndFallbackToGitHub(ctx context.Context, logger *slog.Logger, installedVersion string) error {
+	latestVersion, err := GetLatestVersion(ctx)
+	if err != nil {
+		logger.Debug("could not check GitHub for latest version", "error", err)
+		return nil // Not critical, just skip
+	}
+
+	if isNewerVersion(latestVersion, installedVersion) {
+		logger.Info("repo version is behind GitHub, using direct download",
+			"installed", installedVersion,
+			"github_latest", latestVersion)
+		return updateLinuxDirect(ctx, logger, installedVersion)
+	}
+
+	logger.Debug("osquery is up to date", "version", installedVersion)
+	return nil
+}
+
+// updateLinuxDirect downloads and installs osquery directly from GitHub/pkg.osquery.io.
+func updateLinuxDirect(ctx context.Context, logger *slog.Logger, installedVersion string) error {
+	latestVersion, err := GetLatestVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("getting latest version: %w", err)
+	}
+
+	if !isNewerVersion(latestVersion, installedVersion) {
+		logger.Debug("osquery is up to date (direct check)", "version", installedVersion)
+		return nil
+	}
+
+	logger.Info("installing osquery directly from pkg.osquery.io",
+		"installed", installedVersion,
+		"latest", latestVersion)
+
+	if err := installLinux(ctx, latestVersion); err != nil {
+		return fmt.Errorf("direct install failed: %w", err)
+	}
+
+	// Verify update
+	newClient := New()
+	newVersion := newClient.GetVersion()
+	logger.Info("osquery updated via direct download",
+		"old_version", installedVersion,
+		"new_version", newVersion)
+
+	return nil
+}
+
+// StartBackgroundUpdater starts a goroutine that checks for osquery updates weekly.
+// Uses sync.Once to ensure only one background updater runs.
+func StartBackgroundUpdater(ctx context.Context, logger *slog.Logger) {
+	backgroundUpdaterOnce.Do(func() {
+		logger.Info("starting osquery background update checker (weekly)")
+		go func() {
+			// Initial check after 10 minutes (let agent settle first)
+			time.Sleep(10 * time.Minute)
+
+			// Do initial check
+			if err := UpdateIfNeeded(ctx, logger); err != nil {
+				logger.Warn("initial osquery update check failed", "error", err)
+			}
+
+			ticker := time.NewTicker(WeeklyUpdateCheckInterval)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					logger.Info("osquery background updater stopped")
+					return
+				case <-ticker.C:
+					logger.Info("running weekly osquery update check")
+					if err := UpdateIfNeeded(ctx, logger); err != nil {
+						logger.Error("osquery update check failed", "error", err)
+					}
+				}
+			}
+		}()
+	})
+}

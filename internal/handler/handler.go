@@ -18,6 +18,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
 	"github.com/slimrmm/slimrmm-agent/internal/config"
 	"github.com/slimrmm/slimrmm-agent/internal/monitor"
+	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/tamper"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
@@ -301,8 +302,11 @@ func (h *Handler) Run(ctx context.Context) error {
 		return nil
 	})
 
-	// Start background auto-updater
+	// Start background auto-updater for agent
 	h.updater.StartBackgroundUpdater(ctx)
+
+	// Start background osquery updater (checks weekly)
+	osquery.StartBackgroundUpdater(ctx, h.logger)
 
 	// Start goroutines
 	errCh := make(chan error, 3)
