@@ -303,6 +303,40 @@ func (sc *ScreenCapture) ConfigureInputController(ic *InputController) {
 	}
 }
 
+// ScaleImage scales an image by the given factor.
+func ScaleImage(img *image.RGBA, scale float64) *image.RGBA {
+	if scale >= 1.0 {
+		return img
+	}
+
+	bounds := img.Bounds()
+	newWidth := int(float64(bounds.Dx()) * scale)
+	newHeight := int(float64(bounds.Dy()) * scale)
+
+	if newWidth < 1 {
+		newWidth = 1
+	}
+	if newHeight < 1 {
+		newHeight = 1
+	}
+
+	scaled := image.NewRGBA(image.Rect(0, 0, newWidth, newHeight))
+
+	// Simple nearest-neighbor scaling for performance
+	xRatio := float64(bounds.Dx()) / float64(newWidth)
+	yRatio := float64(bounds.Dy()) / float64(newHeight)
+
+	for y := 0; y < newHeight; y++ {
+		srcY := int(float64(y) * yRatio)
+		for x := 0; x < newWidth; x++ {
+			srcX := int(float64(x) * xRatio)
+			scaled.Set(x, y, img.At(srcX+bounds.Min.X, srcY+bounds.Min.Y))
+		}
+	}
+
+	return scaled
+}
+
 // Close releases resources.
 func (sc *ScreenCapture) Close() {
 	if sc.helperClient != nil {
