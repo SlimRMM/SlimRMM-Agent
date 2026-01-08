@@ -40,6 +40,15 @@ var pathValidator = pathval.New()
 
 // ListDirectory lists the contents of a directory.
 func ListDirectory(path string) (*ListDirResult, error) {
+	// On Windows, handle root path "/" to list drives
+	if isRootPath(path) {
+		result, err := listDirectoryWindows(path)
+		if result != nil || err != nil {
+			return result, err
+		}
+		// If result is nil and no error, fall through to standard handling (Unix)
+	}
+
 	// Validate path
 	if err := pathValidator.Validate(path); err != nil {
 		return nil, fmt.Errorf("path validation failed: %w", err)

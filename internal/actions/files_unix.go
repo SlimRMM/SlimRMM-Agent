@@ -22,3 +22,15 @@ func getFileOwnership(info os.FileInfo) (owner, group string) {
 	}
 	return
 }
+
+// listDirectoryWindows is a stub for non-Windows platforms.
+// The main ListDirectory function handles Unix paths directly.
+func listDirectoryWindows(path string) (*ListDirResult, error) {
+	// On Unix, just use the standard path handling
+	return nil, nil
+}
+
+// isRootPath checks if path is root (stub for Unix, always returns false).
+func isRootPath(path string) bool {
+	return false
+}
