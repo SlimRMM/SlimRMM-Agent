@@ -6,15 +6,44 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"time"
 )
 
 const (
 	DefaultTimeout = 30 * time.Second
+
+	// GitHub API constants
+	githubReleasesURL  = "https://api.github.com/repos/osquery/osquery/releases/latest"
+	rateLimitRetryWait = 5 * time.Minute
+
+	// Fallback version if GitHub API fails
+	fallbackVersion = "5.15.0"
+)
+
+// GitHubRelease represents the GitHub API response for a release.
+type GitHubRelease struct {
+	TagName string `json:"tag_name"`
+	Assets  []struct {
+		Name               string `json:"name"`
+		BrowserDownloadURL string `json:"browser_download_url"`
+	} `json:"assets"`
+}
+
+var (
+	// Cached latest version to avoid repeated API calls
+	cachedVersion     string
+	cachedVersionTime time.Time
+	versionCacheMu    sync.RWMutex
+	versionCacheTTL   = 1 * time.Hour
 )
 
 // QueryResult contains the result of an osquery query.
@@ -216,54 +245,244 @@ func (c *Client) GetStartupItems(ctx context.Context) (*QueryResult, error) {
 	}
 }
 
+// ErrArchLinux is returned when running on Arch Linux which requires manual installation.
+var ErrArchLinux = fmt.Errorf("arch Linux detected: please install osquery manually using 'yay -S osquery' or from AUR")
+
+// GetLatestVersion fetches the latest osquery version from GitHub releases.
+// It handles rate limiting by waiting 5 minutes and retrying.
+// Returns cached version if available and not expired.
+func GetLatestVersion(ctx context.Context) (string, error) {
+	// Check cache first
+	versionCacheMu.RLock()
+	if cachedVersion != "" && time.Since(cachedVersionTime) < versionCacheTTL {
+		v := cachedVersion
+		versionCacheMu.RUnlock()
+		return v, nil
+	}
+	versionCacheMu.RUnlock()
+
+	return fetchLatestVersionWithRetry(ctx)
+}
+
+// fetchLatestVersionWithRetry fetches version from GitHub with rate limit handling.
+func fetchLatestVersionWithRetry(ctx context.Context) (string, error) {
+	maxRetries := 3
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		version, rateLimited, err := fetchLatestVersion(ctx)
+		if err == nil {
+			// Cache the version
+			versionCacheMu.Lock()
+			cachedVersion = version
+			cachedVersionTime = time.Now()
+			versionCacheMu.Unlock()
+			return version, nil
+		}
+
+		if rateLimited {
+			slog.Warn("GitHub API rate limited, waiting before retry",
+				"wait", rateLimitRetryWait, "attempt", attempt+1)
+
+			select {
+			case <-ctx.Done():
+				return fallbackVersion, ctx.Err()
+			case <-time.After(rateLimitRetryWait):
+				continue
+			}
+		}
+
+		// Non-rate-limit error, don't retry
+		slog.Warn("failed to fetch osquery version from GitHub, using fallback",
+			"error", err, "fallback", fallbackVersion)
+		return fallbackVersion, nil
+	}
+
+	return fallbackVersion, nil
+}
+
+// fetchLatestVersion makes a single request to GitHub API.
+// Returns (version, rateLimited, error).
+func fetchLatestVersion(ctx context.Context) (string, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", githubReleasesURL, nil)
+	if err != nil {
+		return "", false, err
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("User-Agent", "SlimRMM-Agent")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", false, err
+	}
+	defer resp.Body.Close()
+
+	// Check for rate limiting
+	if resp.StatusCode == 403 || resp.StatusCode == 429 {
+		return "", true, fmt.Errorf("rate limited")
+	}
+
+	if resp.StatusCode != 200 {
+		return "", false, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", false, err
+	}
+
+	var release GitHubRelease
+	if err := json.Unmarshal(body, &release); err != nil {
+		return "", false, err
+	}
+
+	// Tag name is like "5.15.0" or "v5.15.0"
+	version := strings.TrimPrefix(release.TagName, "v")
+	if version == "" {
+		return "", false, fmt.Errorf("empty version in release")
+	}
+
+	return version, false, nil
+}
+
+// isArchLinux detects if we're running on Arch Linux.
+func isArchLinux() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+
+	// Check /etc/os-release
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return false
+	}
+
+	content := strings.ToLower(string(data))
+	return strings.Contains(content, "arch") || strings.Contains(content, "manjaro") ||
+		strings.Contains(content, "endeavouros") || strings.Contains(content, "garuda")
+}
+
+// EnsureInstalled checks if osquery is installed and installs it if not.
+// This is designed to be called at agent startup.
+func EnsureInstalled(ctx context.Context, logger *slog.Logger) error {
+	client := New()
+	if client.IsAvailable() {
+		logger.Info("osquery is already installed", "path", client.GetBinaryPath())
+		return nil
+	}
+
+	logger.Info("osquery not found, attempting auto-installation")
+
+	// Check for Arch Linux
+	if isArchLinux() {
+		logger.Warn("Arch Linux detected - osquery must be installed manually",
+			"instruction", "Install from AUR: yay -S osquery")
+		return ErrArchLinux
+	}
+
+	if err := Install(ctx); err != nil {
+		logger.Error("failed to install osquery", "error", err)
+		return err
+	}
+
+	// Verify installation
+	client = New()
+	if !client.IsAvailable() {
+		return fmt.Errorf("osquery installation completed but binary not found")
+	}
+
+	logger.Info("osquery installed successfully", "path", client.GetBinaryPath())
+	return nil
+}
+
 // Install installs osquery on the system.
 func Install(ctx context.Context) error {
+	// Get latest version
+	version, err := GetLatestVersion(ctx)
+	if err != nil {
+		slog.Warn("failed to get latest version, using fallback", "error", err, "fallback", fallbackVersion)
+		version = fallbackVersion
+	}
+
+	slog.Info("installing osquery", "version", version)
+
 	switch runtime.GOOS {
 	case "linux":
-		return installLinux(ctx)
+		return installLinux(ctx, version)
 	case "darwin":
-		return installMacOS(ctx)
+		return installMacOS(ctx, version)
 	case "windows":
-		return installWindows(ctx)
+		return installWindows(ctx, version)
 	default:
 		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
 }
 
 // installLinux installs osquery on Linux.
-func installLinux(ctx context.Context) error {
+func installLinux(ctx context.Context, version string) error {
+	// Check for Arch Linux first
+	if isArchLinux() {
+		return ErrArchLinux
+	}
+
 	// Determine package manager
 	var installCmd *exec.Cmd
 
 	if _, err := exec.LookPath("apt-get"); err == nil {
-		// Debian/Ubuntu
+		// Debian/Ubuntu - use apt repository for latest version
+		slog.Info("detected Debian/Ubuntu, using apt repository")
+
 		// Add osquery repository
 		keyCmd := exec.CommandContext(ctx, "bash", "-c",
-			"curl -fsSL https://pkg.osquery.io/deb/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/osquery-keyring.gpg")
+			"curl -fsSL https://pkg.osquery.io/deb/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/osquery-keyring.gpg 2>/dev/null || true")
 		if err := keyCmd.Run(); err != nil {
-			return fmt.Errorf("adding osquery key: %w", err)
+			slog.Warn("adding osquery GPG key failed, trying alternate method", "error", err)
+			// Try alternate method
+			keyCmd2 := exec.CommandContext(ctx, "bash", "-c",
+				"curl -fsSL https://pkg.osquery.io/deb/pubkey.gpg | apt-key add -")
+			if err := keyCmd2.Run(); err != nil {
+				return fmt.Errorf("adding osquery key: %w", err)
+			}
+		}
+
+		// Detect architecture
+		arch := runtime.GOARCH
+		if arch == "amd64" {
+			arch = "amd64"
+		} else if arch == "arm64" {
+			arch = "arm64"
 		}
 
 		repoCmd := exec.CommandContext(ctx, "bash", "-c",
-			"echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/osquery-keyring.gpg] https://pkg.osquery.io/deb deb main' | sudo tee /etc/apt/sources.list.d/osquery.list")
+			fmt.Sprintf("echo 'deb [arch=%s signed-by=/usr/share/keyrings/osquery-keyring.gpg] https://pkg.osquery.io/deb deb main' > /etc/apt/sources.list.d/osquery.list", arch))
 		if err := repoCmd.Run(); err != nil {
 			return fmt.Errorf("adding osquery repo: %w", err)
 		}
 
 		updateCmd := exec.CommandContext(ctx, "apt-get", "update")
+		updateCmd.Stderr = nil // Suppress warnings
 		if err := updateCmd.Run(); err != nil {
-			return fmt.Errorf("updating apt: %w", err)
+			slog.Warn("apt-get update had issues, continuing", "error", err)
 		}
 
 		installCmd = exec.CommandContext(ctx, "apt-get", "install", "-y", "osquery")
+
 	} else if _, err := exec.LookPath("dnf"); err == nil {
-		// Fedora/RHEL 8+
-		installCmd = exec.CommandContext(ctx, "dnf", "install", "-y",
-			"https://pkg.osquery.io/rpm/osquery-5.10.2-1.linux.x86_64.rpm")
+		// Fedora/RHEL 8+ - use direct RPM download with dynamic version
+		slog.Info("detected Fedora/RHEL 8+, using dnf")
+		rpmURL := fmt.Sprintf("https://pkg.osquery.io/rpm/osquery-%s-1.linux.x86_64.rpm", version)
+		installCmd = exec.CommandContext(ctx, "dnf", "install", "-y", rpmURL)
+
 	} else if _, err := exec.LookPath("yum"); err == nil {
-		// RHEL/CentOS 7
-		installCmd = exec.CommandContext(ctx, "yum", "install", "-y",
-			"https://pkg.osquery.io/rpm/osquery-5.10.2-1.linux.x86_64.rpm")
+		// RHEL/CentOS 7 - use direct RPM download with dynamic version
+		slog.Info("detected RHEL/CentOS 7, using yum")
+		rpmURL := fmt.Sprintf("https://pkg.osquery.io/rpm/osquery-%s-1.linux.x86_64.rpm", version)
+		installCmd = exec.CommandContext(ctx, "yum", "install", "-y", rpmURL)
+
+	} else if _, err := exec.LookPath("pacman"); err == nil {
+		// Arch-based (shouldn't reach here due to earlier check, but just in case)
+		return ErrArchLinux
+
 	} else {
 		return fmt.Errorf("no supported package manager found (apt-get, dnf, yum)")
 	}
@@ -279,33 +498,45 @@ func installLinux(ctx context.Context) error {
 }
 
 // installMacOS installs osquery on macOS.
-func installMacOS(ctx context.Context) error {
-	// Check if brew is available
+func installMacOS(ctx context.Context, version string) error {
+	slog.Info("installing osquery on macOS", "version", version)
+
+	// Check if brew is available - use it as it handles updates well
 	if _, err := exec.LookPath("brew"); err == nil {
+		slog.Info("using Homebrew to install osquery")
 		installCmd := exec.CommandContext(ctx, "brew", "install", "osquery")
 		var stderr bytes.Buffer
 		installCmd.Stderr = &stderr
 
 		if err := installCmd.Run(); err != nil {
-			return fmt.Errorf("brew install osquery: %w (%s)", err, stderr.String())
+			slog.Warn("brew install failed, falling back to PKG", "error", err)
+			// Fall through to PKG installation
+		} else {
+			return nil
 		}
-		return nil
 	}
 
-	// Download and install pkg directly
-	pkgURL := "https://pkg.osquery.io/darwin/osquery-5.10.2.pkg"
+	// Download and install PKG directly with dynamic version
+	pkgURL := fmt.Sprintf("https://pkg.osquery.io/darwin/osquery-%s.pkg", version)
 	tmpPkg := "/tmp/osquery.pkg"
 
+	slog.Info("downloading osquery PKG", "url", pkgURL)
+
 	downloadCmd := exec.CommandContext(ctx, "curl", "-fsSL", "-o", tmpPkg, pkgURL)
+	var dlStderr bytes.Buffer
+	downloadCmd.Stderr = &dlStderr
 	if err := downloadCmd.Run(); err != nil {
-		return fmt.Errorf("downloading osquery pkg: %w", err)
+		return fmt.Errorf("downloading osquery pkg: %w (%s)", err, dlStderr.String())
 	}
+
+	slog.Info("installing osquery PKG")
 
 	installCmd := exec.CommandContext(ctx, "installer", "-pkg", tmpPkg, "-target", "/")
 	var stderr bytes.Buffer
 	installCmd.Stderr = &stderr
 
 	if err := installCmd.Run(); err != nil {
+		os.Remove(tmpPkg) // Cleanup on failure
 		return fmt.Errorf("installing osquery pkg: %w (%s)", err, stderr.String())
 	}
 
@@ -316,46 +547,62 @@ func installMacOS(ctx context.Context) error {
 }
 
 // installWindows installs osquery on Windows.
-func installWindows(ctx context.Context) error {
-	// Check if winget is available
+func installWindows(ctx context.Context, version string) error {
+	slog.Info("installing osquery on Windows", "version", version)
+
+	// Check if winget is available - it handles versions well
 	if _, err := exec.LookPath("winget"); err == nil {
-		installCmd := exec.CommandContext(ctx, "winget", "install", "--id", "osquery.osquery", "-e", "--silent")
+		slog.Info("using winget to install osquery")
+		installCmd := exec.CommandContext(ctx, "winget", "install", "--id", "osquery.osquery", "-e", "--silent", "--accept-package-agreements", "--accept-source-agreements")
 		var stderr bytes.Buffer
 		installCmd.Stderr = &stderr
 
 		if err := installCmd.Run(); err != nil {
-			return fmt.Errorf("winget install osquery: %w (%s)", err, stderr.String())
+			slog.Warn("winget install failed, falling back to MSI", "error", err)
+			// Fall through to MSI installation
+		} else {
+			return nil
 		}
-		return nil
 	}
 
 	// Check if choco is available
 	if _, err := exec.LookPath("choco"); err == nil {
-		installCmd := exec.CommandContext(ctx, "choco", "install", "osquery", "-y")
+		slog.Info("using Chocolatey to install osquery")
+		installCmd := exec.CommandContext(ctx, "choco", "install", "osquery", "-y", "--no-progress")
 		var stderr bytes.Buffer
 		installCmd.Stderr = &stderr
 
 		if err := installCmd.Run(); err != nil {
-			return fmt.Errorf("choco install osquery: %w (%s)", err, stderr.String())
+			slog.Warn("choco install failed, falling back to MSI", "error", err)
+			// Fall through to MSI installation
+		} else {
+			return nil
 		}
-		return nil
 	}
 
-	// Download and install MSI directly
-	msiURL := "https://pkg.osquery.io/windows/osquery-5.10.2.msi"
+	// Download and install MSI directly with dynamic version
+	msiURL := fmt.Sprintf("https://pkg.osquery.io/windows/osquery-%s.msi", version)
 	tmpMSI := filepath.Join(os.TempDir(), "osquery.msi")
 
+	slog.Info("downloading osquery MSI", "url", msiURL)
+
+	// Use PowerShell with TLS 1.2 for compatibility
 	downloadCmd := exec.CommandContext(ctx, "powershell", "-Command",
-		fmt.Sprintf("Invoke-WebRequest -Uri '%s' -OutFile '%s'", msiURL, tmpMSI))
+		fmt.Sprintf("[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%s' -OutFile '%s'", msiURL, tmpMSI))
+	var dlStderr bytes.Buffer
+	downloadCmd.Stderr = &dlStderr
 	if err := downloadCmd.Run(); err != nil {
-		return fmt.Errorf("downloading osquery msi: %w", err)
+		return fmt.Errorf("downloading osquery msi: %w (%s)", err, dlStderr.String())
 	}
 
-	installCmd := exec.CommandContext(ctx, "msiexec", "/i", tmpMSI, "/quiet", "/qn")
+	slog.Info("installing osquery MSI silently")
+
+	installCmd := exec.CommandContext(ctx, "msiexec", "/i", tmpMSI, "/quiet", "/qn", "/norestart")
 	var stderr bytes.Buffer
 	installCmd.Stderr = &stderr
 
 	if err := installCmd.Run(); err != nil {
+		os.Remove(tmpMSI) // Cleanup on failure
 		return fmt.Errorf("installing osquery msi: %w (%s)", err, stderr.String())
 	}
 

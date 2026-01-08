@@ -22,6 +22,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/handler"
 	"github.com/slimrmm/slimrmm-agent/internal/installer"
 	"github.com/slimrmm/slimrmm-agent/internal/logging"
+	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/proxmox"
 	"github.com/slimrmm/slimrmm-agent/internal/remotedesktop"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
@@ -395,6 +396,14 @@ func cmdStatus(paths config.Paths) int {
 	fmt.Println("------")
 	fmt.Printf("Boot Time:   %s\n", getSystemBootTime())
 
+	// osquery availability
+	osqueryClient := osquery.New()
+	osqueryStatus := "Not available"
+	if osqueryClient.IsAvailable() {
+		osqueryStatus = fmt.Sprintf("Available (%s)", osqueryClient.GetBinaryPath())
+	}
+	fmt.Printf("osquery:     %s\n", osqueryStatus)
+
 	// Docker availability
 	dockerStatus := "Not available"
 	if actions.IsDockerAvailable() {
@@ -547,6 +556,25 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 
 	// Initialize platform-specific permissions
 	remotedesktop.InitializePermissions(logger)
+
+	// Ensure osquery is installed (auto-install if not present)
+	// This runs asynchronously to not block agent startup
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		if err := osquery.EnsureInstalled(ctx, logger); err != nil {
+			if err == osquery.ErrArchLinux {
+				logger.Warn("osquery auto-installation not available",
+					"reason", "Arch Linux requires manual installation",
+					"instruction", "Install from AUR: yay -S osquery")
+			} else {
+				logger.Warn("osquery auto-installation failed",
+					"error", err,
+					"note", "osquery features may be unavailable")
+			}
+		}
+	}()
 
 	// Load configuration
 	cfg, err := config.Load(paths.ConfigFile)
