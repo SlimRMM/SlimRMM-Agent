@@ -232,29 +232,45 @@ func connectPipe(pipe windows.Handle) error {
 }
 
 func readMessage(pipe windows.Handle) (*Message, error) {
-	// Read message length (4 bytes)
-	lenBuf := make([]byte, 4)
-	var bytesRead uint32
-	if err := windows.ReadFile(pipe, lenBuf, &bytesRead, nil); err != nil {
+	// In message mode, we must read the entire message at once
+	buf := make([]byte, 4096) // Messages from client are small
+	totalRead := 0
+
+	for {
+		var n uint32
+		err := windows.ReadFile(pipe, buf[totalRead:], &n, nil)
+		totalRead += int(n)
+
+		if err == nil {
+			break
+		}
+
+		if err == windows.ERROR_MORE_DATA {
+			// Message larger than buffer, grow and continue
+			if totalRead >= int(maxMessageSize) {
+				return nil, fmt.Errorf("message too large: %d", totalRead)
+			}
+			newBuf := make([]byte, len(buf)*2)
+			copy(newBuf, buf[:totalRead])
+			buf = newBuf
+			continue
+		}
+
 		return nil, err
 	}
-	if bytesRead != 4 {
-		return nil, fmt.Errorf("short read for length: %d", bytesRead)
+
+	if totalRead < 4 {
+		return nil, fmt.Errorf("message too short: %d bytes", totalRead)
 	}
 
-	msgLen := binary.LittleEndian.Uint32(lenBuf)
-	if msgLen > maxMessageSize {
-		return nil, fmt.Errorf("message too large: %d", msgLen)
-	}
-
-	// Read message data
-	msgBuf := make([]byte, msgLen)
-	if err := windows.ReadFile(pipe, msgBuf, &bytesRead, nil); err != nil {
-		return nil, err
+	// Parse length prefix and validate
+	msgLen := binary.LittleEndian.Uint32(buf[:4])
+	if int(msgLen) != totalRead-4 {
+		return nil, fmt.Errorf("length mismatch: header says %d, got %d", msgLen, totalRead-4)
 	}
 
 	var msg Message
-	if err := json.Unmarshal(msgBuf[:bytesRead], &msg); err != nil {
+	if err := json.Unmarshal(buf[4:totalRead], &msg); err != nil {
 		return nil, err
 	}
 

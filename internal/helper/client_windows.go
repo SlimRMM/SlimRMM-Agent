@@ -495,56 +495,58 @@ func (c *Client) sendMessage(msg *Message) error {
 		return err
 	}
 
-	// Write length prefix
-	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(len(data)))
+	// Build complete message: length (4 bytes) + JSON
+	fullMsg := make([]byte, 4+len(data))
+	binary.LittleEndian.PutUint32(fullMsg[:4], uint32(len(data)))
+	copy(fullMsg[4:], data)
 
+	// Write everything in a single call (required for message mode pipes)
 	var written uint32
-	if err := windows.WriteFile(c.pipe, lenBuf, &written, nil); err != nil {
-		return err
-	}
-
-	// Write message
-	return windows.WriteFile(c.pipe, data, &written, nil)
+	return windows.WriteFile(c.pipe, fullMsg, &written, nil)
 }
 
 // readMessage reads a message and optional extra data from the helper
 func (c *Client) readMessage() (*Message, []byte, error) {
-	// Read length prefix
-	lenBuf := make([]byte, 4)
-	var read uint32
-	if err := windows.ReadFile(c.pipe, lenBuf, &read, nil); err != nil {
+	// In message mode, we must read the entire message at once
+	// Start with a reasonable buffer, grow if needed
+	buf := make([]byte, 64*1024) // 64KB initial
+	totalRead := 0
+
+	for {
+		var n uint32
+		err := windows.ReadFile(c.pipe, buf[totalRead:], &n, nil)
+		totalRead += int(n)
+
+		if err == nil {
+			// Complete message read
+			break
+		}
+
+		if err == windows.ERROR_MORE_DATA {
+			// Message larger than buffer, grow and continue
+			if totalRead >= maxMessageSize {
+				return nil, nil, fmt.Errorf("message too large: %d", totalRead)
+			}
+			newBuf := make([]byte, len(buf)*2)
+			copy(newBuf, buf[:totalRead])
+			buf = newBuf
+			continue
+		}
+
 		return nil, nil, err
 	}
 
-	totalLen := binary.LittleEndian.Uint32(lenBuf)
-	if totalLen > maxMessageSize {
-		return nil, nil, fmt.Errorf("message too large: %d", totalLen)
+	if totalRead < 4 {
+		return nil, nil, fmt.Errorf("message too short: %d bytes", totalRead)
 	}
 
-	// Read all data - may need multiple reads for large messages
-	data := make([]byte, totalLen)
-	totalRead := uint32(0)
-	for totalRead < totalLen {
-		var n uint32
-		err := windows.ReadFile(c.pipe, data[totalRead:], &n, nil)
-		if err != nil {
-			// ERROR_MORE_DATA means we got partial data, continue reading
-			if err == windows.ERROR_MORE_DATA {
-				totalRead += n
-				continue
-			}
-			return nil, nil, err
-		}
-		totalRead += n
-		if n == 0 {
-			break
-		}
+	// Parse length prefix
+	dataLen := binary.LittleEndian.Uint32(buf[:4])
+	if int(dataLen) != totalRead-4 {
+		return nil, nil, fmt.Errorf("length mismatch: header says %d, got %d", dataLen, totalRead-4)
 	}
 
-	if totalRead < totalLen {
-		return nil, nil, fmt.Errorf("incomplete read: got %d, expected %d", totalRead, totalLen)
-	}
+	data := buf[4:totalRead]
 
 	// Find end of JSON (first closing brace at depth 0)
 	jsonEnd := findJSONEnd(data)
