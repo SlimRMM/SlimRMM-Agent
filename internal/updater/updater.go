@@ -332,6 +332,20 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 		u.logger.Warn("failed to stop service", "error", err)
 	}
 
+	// Copy helper to install directory (Windows only)
+	if runtime.GOOS == "windows" {
+		helperSrc := filepath.Join(tempDir, "slimrmm-helper.exe")
+		if _, err := os.Stat(helperSrc); err == nil {
+			helperDst := filepath.Join(filepath.Dir(u.binaryPath), "slimrmm-helper.exe")
+			if err := u.copyFileDirect(helperSrc, helperDst); err != nil {
+				u.logger.Warn("failed to install helper", "error", err)
+				// Not fatal - continue with agent update
+			} else {
+				u.logger.Info("installed helper binary", "path", helperDst)
+			}
+		}
+	}
+
 	// Replace binary
 	if err := u.replaceBinary(newBinaryPath); err != nil {
 		result.Error = fmt.Sprintf("replace failed: %v", err)
@@ -496,7 +510,8 @@ func (u *Updater) extractTarGz(archivePath, destPath string) error {
 	return fmt.Errorf("binary not found in archive")
 }
 
-// extractZip extracts binary from zip (Windows).
+// extractZip extracts binaries from zip (Windows).
+// Extracts both slimrmm-agent.exe and slimrmm-helper.exe if present.
 // SECURITY: ZIP slip protection is inherent - destPath is externally controlled
 // and f.Name is only used for matching, not path construction.
 func (u *Updater) extractZip(archivePath, destPath string) error {
@@ -506,29 +521,58 @@ func (u *Updater) extractZip(archivePath, destPath string) error {
 	}
 	defer r.Close()
 
+	destDir := filepath.Dir(destPath)
+	agentFound := false
+
 	for _, f := range r.File {
-		if filepath.Base(f.Name) == "slimrmm-agent.exe" {
-			rc, err := f.Open()
-			if err != nil {
-				return err
-			}
-			defer rc.Close()
+		baseName := filepath.Base(f.Name)
 
-			out, err := os.Create(destPath)
-			if err != nil {
-				return err
+		// Extract agent binary
+		if baseName == "slimrmm-agent.exe" {
+			if err := u.extractZipFile(f, destPath); err != nil {
+				return fmt.Errorf("extracting agent: %w", err)
 			}
-			defer out.Close()
+			agentFound = true
+		}
 
-			if _, err := io.Copy(out, rc); err != nil {
-				return err
+		// Also extract helper binary to same directory
+		if baseName == "slimrmm-helper.exe" {
+			helperPath := filepath.Join(destDir, "slimrmm-helper.exe")
+			if err := u.extractZipFile(f, helperPath); err != nil {
+				u.logger.Warn("failed to extract helper", "error", err)
+				// Not fatal - agent can work without helper (direct capture)
+			} else {
+				u.logger.Info("extracted helper binary", "path", helperPath)
 			}
-
-			return nil
 		}
 	}
 
-	return fmt.Errorf("binary not found in archive")
+	if !agentFound {
+		return fmt.Errorf("agent binary not found in archive")
+	}
+
+	return nil
+}
+
+// extractZipFile extracts a single file from a zip archive.
+func (u *Updater) extractZipFile(f *zip.File, destPath string) error {
+	rc, err := f.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	out, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, rc); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // replaceBinary replaces the current binary with the new one.
