@@ -70,6 +70,7 @@
 
         <!-- Add install directory to system PATH -->
         <Component Id="PathEnvComponent" Directory="INSTALLFOLDER" Guid="E5F6A7B8-C9D0-1234-EF01-567890123456" Win64="yes">
+            <CreateFolder />
             <Environment Id="PATH"
                          Name="PATH"
                          Value="[INSTALLFOLDER]"
