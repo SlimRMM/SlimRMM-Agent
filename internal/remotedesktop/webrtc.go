@@ -38,18 +38,30 @@ func getWebRTCConfig() webrtc.Configuration {
 
 	if len(servers) == 0 {
 		servers = defaultICEServers
+		slog.Info("using default ICE servers (no custom servers configured)")
 	}
 
 	var iceServers []webrtc.ICEServer
 	for _, s := range servers {
 		ice := webrtc.ICEServer{URLs: s.URLs}
+		hasCredentials := false
 		if s.Username != "" {
 			ice.Username = s.Username
+			hasCredentials = true
 		}
 		if s.Credential != "" {
 			ice.Credential = s.Credential
 		}
 		iceServers = append(iceServers, ice)
+
+		// Log each ICE server (mask credentials)
+		for _, url := range s.URLs {
+			if hasCredentials {
+				slog.Info("ICE server configured", "url", url, "username", s.Username, "has_credential", s.Credential != "")
+			} else {
+				slog.Info("ICE server configured", "url", url, "type", "STUN (no credentials)")
+			}
+		}
 	}
 
 	return webrtc.Configuration{
