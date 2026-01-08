@@ -169,8 +169,27 @@ func (m *TerminalManager) SendInput(id, input string) error {
 		return fmt.Errorf("terminal %s is not running", id)
 	}
 
+	// Windows cmd.exe with pipes doesn't echo input like a real PTY does.
+	// We need to manually echo the input back to the output channel.
+	// Convert \r to \r\n for proper line handling in terminal emulator.
+	echoData := input
+	if input == "\r" {
+		echoData = "\r\n"
+	}
+
+	// Echo input to output channel (non-blocking)
+	select {
+	case term.outputChan <- []byte(echoData):
+	default:
+		// Channel full, skip echo
+	}
+
+	// Write to stdin
 	_, err := term.stdin.Write([]byte(input))
-	return err
+	if err != nil {
+		return fmt.Errorf("stdin.Write failed: %w", err)
+	}
+	return nil
 }
 
 // SendInputRaw sends raw bytes to the terminal.
@@ -191,8 +210,27 @@ func (m *TerminalManager) SendInputRaw(id string, data []byte) error {
 		return fmt.Errorf("terminal %s is not running", id)
 	}
 
+	// Windows cmd.exe with pipes doesn't echo input like a real PTY does.
+	// We need to manually echo the input back to the output channel.
+	// Handle special cases for proper terminal display.
+	echoData := data
+	if len(data) == 1 && data[0] == '\r' {
+		echoData = []byte("\r\n")
+	}
+
+	// Echo input to output channel (non-blocking)
+	select {
+	case term.outputChan <- echoData:
+	default:
+		// Channel full, skip echo
+	}
+
+	// Write to stdin
 	_, err := term.stdin.Write(data)
-	return err
+	if err != nil {
+		return fmt.Errorf("stdin.Write failed: %w", err)
+	}
+	return nil
 }
 
 // Resize is a no-op on Windows (no PTY support).

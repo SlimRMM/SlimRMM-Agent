@@ -833,8 +833,11 @@ type terminalInputRequest struct {
 }
 
 func (h *Handler) handleTerminalInput(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	h.logger.Debug("handleTerminalInput called", "raw_data", string(data))
+
 	var req terminalInputRequest
 	if err := json.Unmarshal(data, &req); err != nil {
+		h.logger.Error("failed to unmarshal terminal input", "error", err)
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
@@ -850,6 +853,12 @@ func (h *Handler) handleTerminalInput(ctx context.Context, data json.RawMessage)
 		inputData = req.Data
 	}
 
+	h.logger.Debug("terminal input parsed",
+		"terminal_id", terminalID,
+		"input", inputData,
+		"input_len", len(inputData),
+		"is_base64", req.IsBase64)
+
 	var err error
 	if req.IsBase64 {
 		// Decode base64 input for raw bytes (special keys, etc.)
@@ -863,9 +872,11 @@ func (h *Handler) handleTerminalInput(ctx context.Context, data json.RawMessage)
 	}
 
 	if err != nil {
+		h.logger.Error("failed to send terminal input", "error", err)
 		return nil, err
 	}
 
+	h.logger.Debug("terminal input sent successfully")
 	return map[string]string{"status": "sent"}, nil
 }
 
