@@ -522,10 +522,28 @@ func (c *Client) readMessage() (*Message, []byte, error) {
 		return nil, nil, fmt.Errorf("message too large: %d", totalLen)
 	}
 
-	// Read all data
+	// Read all data - may need multiple reads for large messages
 	data := make([]byte, totalLen)
-	if err := windows.ReadFile(c.pipe, data, &read, nil); err != nil {
-		return nil, nil, err
+	totalRead := uint32(0)
+	for totalRead < totalLen {
+		var n uint32
+		err := windows.ReadFile(c.pipe, data[totalRead:], &n, nil)
+		if err != nil {
+			// ERROR_MORE_DATA means we got partial data, continue reading
+			if err == windows.ERROR_MORE_DATA {
+				totalRead += n
+				continue
+			}
+			return nil, nil, err
+		}
+		totalRead += n
+		if n == 0 {
+			break
+		}
+	}
+
+	if totalRead < totalLen {
+		return nil, nil, fmt.Errorf("incomplete read: got %d, expected %d", totalRead, totalLen)
 	}
 
 	// Find end of JSON (first closing brace at depth 0)

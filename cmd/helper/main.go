@@ -267,29 +267,18 @@ func writeMessage(pipe windows.Handle, msg *Message, extraData []byte) error {
 		return err
 	}
 
-	// Write message length
+	// Build complete message: length (4 bytes) + JSON + extra data
 	totalLen := len(data) + len(extraData)
-	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, uint32(totalLen))
-
-	var bytesWritten uint32
-	if err := windows.WriteFile(pipe, lenBuf, &bytesWritten, nil); err != nil {
-		return err
-	}
-
-	// Write message data
-	if err := windows.WriteFile(pipe, data, &bytesWritten, nil); err != nil {
-		return err
-	}
-
-	// Write extra data (frame bytes)
+	fullMsg := make([]byte, 4+totalLen)
+	binary.LittleEndian.PutUint32(fullMsg[:4], uint32(totalLen))
+	copy(fullMsg[4:], data)
 	if len(extraData) > 0 {
-		if err := windows.WriteFile(pipe, extraData, &bytesWritten, nil); err != nil {
-			return err
-		}
+		copy(fullMsg[4+len(data):], extraData)
 	}
 
-	return nil
+	// Write everything in a single call (required for message mode pipes)
+	var bytesWritten uint32
+	return windows.WriteFile(pipe, fullMsg, &bytesWritten, nil)
 }
 
 func handleMessage(msg *Message) (*Message, []byte) {
