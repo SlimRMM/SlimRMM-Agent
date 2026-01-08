@@ -104,6 +104,7 @@ var (
 	procDestroyEnvironmentBlock      = userenv.NewProc("DestroyEnvironmentBlock")
 	procCreateProcessAsUserW         = advapi32.NewProc("CreateProcessAsUserW")
 	procDuplicateTokenEx             = advapi32.NewProc("DuplicateTokenEx")
+	procWaitNamedPipeW               = kernel32.NewProc("WaitNamedPipeW")
 )
 
 // Windows constants
@@ -326,7 +327,7 @@ func (c *Client) connectToPipe() error {
 
 		if err == windows.ERROR_PIPE_BUSY {
 			// Wait for pipe to become available
-			windows.WaitNamedPipe(pNamePtr, 1000)
+			procWaitNamedPipeW.Call(uintptr(unsafe.Pointer(pNamePtr)), 1000)
 			continue
 		}
 
