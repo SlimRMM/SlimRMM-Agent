@@ -129,6 +129,13 @@ func (c *Client) Query(ctx context.Context, query string) (*QueryResult, error) 
 	ctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
 	defer cancel()
 
+	// Log the query being executed
+	queryPreview := query
+	if len(queryPreview) > 100 {
+		queryPreview = queryPreview[:100] + "..."
+	}
+	slog.Info("osquery: executing query", "query", queryPreview)
+
 	start := time.Now()
 
 	cmd := exec.CommandContext(ctx, c.binaryPath, "--json", query)
@@ -150,6 +157,7 @@ func (c *Client) Query(ctx context.Context, query string) (*QueryResult, error) 
 		} else {
 			result.Error = fmt.Sprintf("%s: %s", err.Error(), stderr.String())
 		}
+		slog.Warn("osquery: query failed", "query", queryPreview, "error", result.Error, "duration_ms", result.Duration)
 		return result, nil
 	}
 
@@ -157,11 +165,16 @@ func (c *Client) Query(ctx context.Context, query string) (*QueryResult, error) 
 	if stdout.Len() > 0 {
 		if err := json.Unmarshal(stdout.Bytes(), &result.Rows); err != nil {
 			result.Error = fmt.Sprintf("failed to parse output: %v", err)
+			slog.Warn("osquery: failed to parse output", "query", queryPreview, "error", result.Error)
 			return result, nil
 		}
 	}
 
 	result.Count = len(result.Rows)
+
+	// Log the result
+	slog.Info("osquery: query completed", "query", queryPreview, "rows", result.Count, "duration_ms", result.Duration)
+
 	return result, nil
 }
 
