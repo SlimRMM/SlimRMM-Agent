@@ -178,6 +178,14 @@ func (s *Session) Start() (*StartResult, error) {
 			s.logger.Warn("WebRTC connection disconnected")
 		case webrtc.PeerConnectionStateConnected:
 			s.logger.Info("WebRTC connection established")
+			// Start video capture NOW that connection is ready
+			s.mu.RLock()
+			vt := s.videoTrack
+			s.mu.RUnlock()
+			if vt != nil {
+				s.logger.Info("Starting video track now that connection is established")
+				vt.Start()
+			}
 			// Detect and report connection type
 			go s.detectAndReportConnectionType()
 		}
@@ -212,8 +220,8 @@ func (s *Session) Start() (*StartResult, error) {
 		}
 	}()
 
-	// Start the video capture loop
-	s.videoTrack.Start()
+	// Note: Video track is started in OnConnectionStateChange when connection is established
+	// Starting it before the connection is ready causes WriteSample to fail silently
 
 	// Create data channel for input events
 	s.dataChannel, err = s.pc.CreateDataChannel("input", &webrtc.DataChannelInit{

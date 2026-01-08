@@ -158,7 +158,10 @@ func (t *VideoTrack) captureLoop() {
 				Data:     data,
 				Duration: time.Second / time.Duration(fps),
 			}); err != nil {
-				t.logger.Debug("writing sample", "error", err)
+				// Log at info level so we can see write failures
+				if frameCount < 10 || frameCount%100 == 0 {
+					t.logger.Info("WriteSample error (normal before connection established)", "error", err, "frame", frameCount)
+				}
 			}
 
 			frameCount++
