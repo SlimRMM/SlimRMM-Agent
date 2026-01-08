@@ -170,23 +170,17 @@ func (m *TerminalManager) SendInput(id, input string) error {
 		return fmt.Errorf("terminal %s is not running", id)
 	}
 
-	// Windows cmd.exe with pipes doesn't echo input like a real PTY does.
-	// We need to manually echo the input back to the output channel.
-	// Convert \r to \r\n for proper line handling in terminal emulator.
-	echoData := input
-	if input == "\r" {
-		echoData = "\r\n"
+	// Convert input for Windows compatibility
+	// Browser sends 0x7F (DEL) for backspace, but Windows expects 0x08 (BS)
+	data := []byte(input)
+	for i, b := range data {
+		if b == 0x7F {
+			data[i] = 0x08
+		}
 	}
 
-	// Echo input to output channel (non-blocking)
-	select {
-	case term.outputChan <- []byte(echoData):
-	default:
-		// Channel full, skip echo
-	}
-
-	// Write to stdin
-	_, err := term.stdin.Write([]byte(input))
+	// Write to stdin - PowerShell handles its own echo
+	_, err := term.stdin.Write(data)
 	if err != nil {
 		return fmt.Errorf("stdin.Write failed: %w", err)
 	}
@@ -211,23 +205,19 @@ func (m *TerminalManager) SendInputRaw(id string, data []byte) error {
 		return fmt.Errorf("terminal %s is not running", id)
 	}
 
-	// Windows cmd.exe with pipes doesn't echo input like a real PTY does.
-	// We need to manually echo the input back to the output channel.
-	// Handle special cases for proper terminal display.
-	echoData := data
-	if len(data) == 1 && data[0] == '\r' {
-		echoData = []byte("\r\n")
+	// Convert input for Windows compatibility
+	// Browser sends 0x7F (DEL) for backspace, but Windows expects 0x08 (BS)
+	// Make a copy to avoid modifying the original
+	converted := make([]byte, len(data))
+	copy(converted, data)
+	for i, b := range converted {
+		if b == 0x7F {
+			converted[i] = 0x08
+		}
 	}
 
-	// Echo input to output channel (non-blocking)
-	select {
-	case term.outputChan <- echoData:
-	default:
-		// Channel full, skip echo
-	}
-
-	// Write to stdin
-	_, err := term.stdin.Write(data)
+	// Write to stdin - PowerShell handles its own echo
+	_, err := term.stdin.Write(converted)
 	if err != nil {
 		return fmt.Errorf("stdin.Write failed: %w", err)
 	}
