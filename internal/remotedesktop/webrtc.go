@@ -234,6 +234,16 @@ func (s *Session) Start() (*StartResult, error) {
 
 	s.dataChannel.OnOpen(func() {
 		s.logger.Info("data channel opened")
+		// Set up frame sending via data channel (for JPEG fallback when VP8 not available)
+		if s.videoTrack != nil {
+			s.videoTrack.SetFrameSendFunc(func(data []byte) error {
+				if s.dataChannel != nil && s.dataChannel.ReadyState() == webrtc.DataChannelStateOpen {
+					return s.dataChannel.Send(data)
+				}
+				return nil
+			})
+			s.logger.Info("configured video track to send frames via data channel")
+		}
 	})
 
 	s.dataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {

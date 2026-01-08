@@ -3,6 +3,7 @@
 package remotedesktop
 
 import (
+	"encoding/binary"
 	"image"
 	"log/slog"
 	"sync"
@@ -16,6 +17,9 @@ const (
 	videoClockRate = 90000
 )
 
+// FrameSendFunc is a callback to send frames via data channel
+type FrameSendFunc func(data []byte) error
+
 // VideoTrack wraps a TrackLocalStaticSample for screen capture streaming.
 type VideoTrack struct {
 	track     *webrtc.TrackLocalStaticSample
@@ -24,8 +28,9 @@ type VideoTrack struct {
 	quality   string
 	fps       int
 
-	encoder *VP8Encoder
-	logger  *slog.Logger
+	encoder       *VP8Encoder
+	logger        *slog.Logger
+	frameSendFunc FrameSendFunc // Callback to send frames via data channel
 
 	running bool
 	stopCh  chan struct{}
@@ -80,6 +85,13 @@ func NewVideoTrack(capture *ScreenCapture, monitorID int, quality string, logger
 	}, nil
 }
 
+// SetFrameSendFunc sets the callback for sending frames via data channel
+func (t *VideoTrack) SetFrameSendFunc(fn FrameSendFunc) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.frameSendFunc = fn
+}
+
 // Track returns the underlying WebRTC track.
 func (t *VideoTrack) Track() *webrtc.TrackLocalStaticSample {
 	return t.track
@@ -98,7 +110,7 @@ func (t *VideoTrack) Start() {
 	go t.captureLoop()
 }
 
-// captureLoop continuously captures frames and sends them over WebRTC.
+// captureLoop continuously captures frames and sends them.
 func (t *VideoTrack) captureLoop() {
 	t.mu.RLock()
 	fps := t.fps
@@ -121,6 +133,7 @@ func (t *VideoTrack) captureLoop() {
 			monitorID := t.monitorID
 			quality := t.quality
 			currentFPS := t.fps
+			frameSendFunc := t.frameSendFunc
 			t.mu.RUnlock()
 
 			// Update ticker if FPS changed
@@ -142,25 +155,43 @@ func (t *VideoTrack) captureLoop() {
 				frame = ScaleImage(frame, settings.Scale)
 			}
 
-			// Encode frame
+			// Try VP8 encoding first
 			data, err := t.encodeFrame(frame)
 			if err != nil {
 				t.logger.Error("encoding frame", "error", err)
 				continue
 			}
 
-			if len(data) == 0 {
-				continue
-			}
+			// If VP8 encoding produced data, send via video track
+			if len(data) > 0 {
+				if err := t.track.WriteSample(media.Sample{
+					Data:     data,
+					Duration: time.Second / time.Duration(fps),
+				}); err != nil {
+					if frameCount < 10 || frameCount%100 == 0 {
+						t.logger.Info("WriteSample error", "error", err, "frame", frameCount)
+					}
+				}
+			} else if frameSendFunc != nil {
+				// VP8 not available, send JPEG via data channel
+				jpegData, err := t.encoder.EncodeJPEG(frame)
+				if err != nil {
+					t.logger.Error("encoding JPEG", "error", err)
+					continue
+				}
 
-			// Write sample to track
-			if err := t.track.WriteSample(media.Sample{
-				Data:     data,
-				Duration: time.Second / time.Duration(fps),
-			}); err != nil {
-				// Log at info level so we can see write failures
-				if frameCount < 10 || frameCount%100 == 0 {
-					t.logger.Info("WriteSample error (normal before connection established)", "error", err, "frame", frameCount)
+				// Create frame message: [type:1][width:2][height:2][data...]
+				bounds := frame.Bounds()
+				msg := make([]byte, 5+len(jpegData))
+				msg[0] = 0x01 // Frame type
+				binary.LittleEndian.PutUint16(msg[1:3], uint16(bounds.Dx()))
+				binary.LittleEndian.PutUint16(msg[3:5], uint16(bounds.Dy()))
+				copy(msg[5:], jpegData)
+
+				if err := frameSendFunc(msg); err != nil {
+					if frameCount < 10 || frameCount%100 == 0 {
+						t.logger.Info("data channel send error", "error", err, "frame", frameCount)
+					}
 				}
 			}
 
