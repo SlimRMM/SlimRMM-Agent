@@ -170,7 +170,7 @@ func (s *Session) Start() (*StartResult, error) {
 
 	// Handle ICE connection state changes
 	s.pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
-		s.logger.Debug("ICE connection state changed", "state", state.String())
+		s.logger.Info("ICE connection state changed", "state", state.String())
 	})
 
 	// Create video track
