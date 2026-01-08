@@ -357,11 +357,38 @@ func (s *Session) handleInput(event InputEvent) {
 	monitorID := s.selectedMonitor
 	s.mu.RUnlock()
 
+	// Map frontend event types to internal format
+	// Frontend sends: mouse_move, mouse_down, mouse_up, scroll, key_down, key_up
+	// Internal expects: type=mouse/keyboard, action=move/down/up/scroll
 	switch event.Type {
 	case "mouse":
 		s.input.HandleMouseEvent(event, monitorID)
 
 	case "keyboard":
+		s.input.HandleKeyboardEvent(event)
+
+	case "mouse_move":
+		event.Action = "move"
+		s.input.HandleMouseEvent(event, monitorID)
+
+	case "mouse_down":
+		event.Action = "down"
+		s.input.HandleMouseEvent(event, monitorID)
+
+	case "mouse_up":
+		event.Action = "up"
+		s.input.HandleMouseEvent(event, monitorID)
+
+	case "scroll":
+		event.Action = "scroll"
+		s.input.HandleMouseEvent(event, monitorID)
+
+	case "key_down":
+		event.Action = "down"
+		s.input.HandleKeyboardEvent(event)
+
+	case "key_up":
+		event.Action = "up"
 		s.input.HandleKeyboardEvent(event)
 
 	case "clipboard":
@@ -372,6 +399,9 @@ func (s *Session) handleInput(event InputEvent) {
 
 	case "monitor":
 		s.SetMonitor(event.MonitorID)
+
+	default:
+		s.logger.Debug("unhandled input event type", "type", event.Type)
 	}
 }
 
