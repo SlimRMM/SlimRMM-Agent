@@ -172,50 +172,65 @@ func (c *Client) QueryWithTimeout(ctx context.Context, query string, timeout tim
 	return c.Query(ctx, query)
 }
 
-// findOsqueryBinary searches for the osquery binary.
+// findOsqueryBinary searches for the osquery binary in official installation paths.
+// We explicitly check known paths first to avoid finding osquery bundled with other software.
 func findOsqueryBinary() string {
 	// Common osquery binary names
 	names := []string{"osqueryi", "osqueryd"}
 
-	// Common installation paths
+	// Official osquery installation paths only
 	var paths []string
 
 	switch runtime.GOOS {
 	case "darwin":
 		paths = []string{
-			"/usr/local/bin",
-			"/opt/osquery/bin",
-			"/var/lib/slimrmm",
+			"/opt/osquery/bin",        // Official PKG installation
+			"/usr/local/bin",          // Homebrew installation
+			"/opt/homebrew/bin",       // Homebrew on Apple Silicon
 		}
 	case "linux":
 		paths = []string{
-			"/usr/bin",
-			"/usr/local/bin",
-			"/opt/osquery/bin",
-			"/var/lib/slimrmm",
+			"/usr/bin",               // Package manager installation
+			"/usr/local/bin",         // Manual installation
+			"/opt/osquery/bin",       // Alternative installation
 		}
 	case "windows":
+		// Only check official osquery installation paths
+		// Do NOT use exec.LookPath as other software (Level, etc.) may bundle osquery
 		paths = []string{
-			`C:\Program Files\osquery`,
-			`C:\ProgramData\osquery`,
-			`C:\Program Files\SlimRMM`,
+			`C:\Program Files\osquery`,  // Official MSI installation
+			`C:\ProgramData\osquery`,    // Alternative location
 		}
 		names = []string{"osqueryi.exe", "osqueryd.exe"}
 	}
 
-	// Search for binary
-	for _, name := range names {
-		// Check PATH first
-		if path, err := exec.LookPath(name); err == nil {
-			return path
+	// On Windows, only check known paths - don't use LookPath to avoid
+	// finding osquery bundled with other software (Level, etc.)
+	if runtime.GOOS == "windows" {
+		for _, name := range names {
+			for _, dir := range paths {
+				path := filepath.Join(dir, name)
+				if _, err := os.Stat(path); err == nil {
+					return path
+				}
+			}
 		}
+		return ""
+	}
 
-		// Check common paths
+	// On Unix, check known paths first, then fall back to PATH
+	for _, name := range names {
+		// Check known paths first
 		for _, dir := range paths {
 			path := filepath.Join(dir, name)
 			if _, err := os.Stat(path); err == nil {
 				return path
 			}
+		}
+
+		// Fall back to PATH for Unix systems
+		if path, err := exec.LookPath(name); err == nil {
+			return path
 		}
 	}
 

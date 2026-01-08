@@ -75,7 +75,7 @@ jobs:
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
 
-  # Build binaries for Linux and Windows (CGO disabled for cross-compilation)
+  # Build Linux binaries (CGO disabled for cross-compilation)
   build:
     needs: version
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -87,8 +87,6 @@ jobs:
             goarch: amd64
           - goos: linux
             goarch: arm64
-          - goos: windows
-            goarch: amd64
     steps:
       - uses: actions/checkout@v4
 
@@ -107,44 +105,63 @@ jobs:
           COMMIT=${GITHUB_SHA::8}
           DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-          EXT=""
-          if [ "$GOOS" = "windows" ]; then
-            EXT=".exe"
-          fi
-
           go build -ldflags "-s -w \
             -X github.com/slimrmm/slimrmm-agent/pkg/version.Version=$VERSION \
             -X github.com/slimrmm/slimrmm-agent/pkg/version.GitCommit=$COMMIT \
             -X github.com/slimrmm/slimrmm-agent/pkg/version.BuildDate=$DATE" \
-            -o slimrmm-agent${EXT} \
+            -o slimrmm-agent \
             ./cmd/slimrmm-agent
 
-      - name: Create tar.gz (Unix)
-        if: matrix.goos != 'windows'
+      - name: Create tar.gz
         run: |
           VERSION=${{ needs.version.outputs.version }}
           tar -czvf slimrmm-agent_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz slimrmm-agent
-
-      - name: Create zip (Windows)
-        if: matrix.goos == 'windows'
-        run: |
-          VERSION=${{ needs.version.outputs.version }}
-          zip slimrmm-agent_${VERSION}_windows_amd64.zip slimrmm-agent.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: |
-            slimrmm-agent*
-            !slimrmm-agent.exe
+          path: slimrmm-agent*
+
+  # Build Windows binary with CGO enabled (required for remote desktop)
+  build-windows:
+    needs: version
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build Windows binary with CGO
+        env:
+          CGO_ENABLED: 1
+        run: |
+          $VERSION = "${{ needs.version.outputs.version }}"
+          $COMMIT = "${{ github.sha }}".Substring(0, 8)
+          $DATE = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+
+          go build -ldflags "-s -w -X github.com/slimrmm/slimrmm-agent/pkg/version.Version=$VERSION -X github.com/slimrmm/slimrmm-agent/pkg/version.GitCommit=$COMMIT -X github.com/slimrmm/slimrmm-agent/pkg/version.BuildDate=$DATE" -o slimrmm-agent.exe ./cmd/slimrmm-agent
+
+      - name: Create zip
+        run: |
+          $VERSION = "${{ needs.version.outputs.version }}"
+          Compress-Archive -Path slimrmm-agent.exe -DestinationPath "slimrmm-agent_${VERSION}_windows_amd64.zip"
 
       - name: Upload Windows binary
-        if: matrix.goos == 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: binary-windows-amd64-exe
           path: slimrmm-agent.exe
+
+      - name: Upload Windows zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-windows-amd64
+          path: "*.zip"
 
   # Build macOS binary with CGO enabled (required for remote desktop)
   build-macos:
@@ -560,7 +577,7 @@ jobs:
 
   # Build Windows MSI
   build-msi:
-    needs: [version, build]
+    needs: [version, build-windows]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -592,7 +609,7 @@ jobs:
 
   # Create GitHub Release
   release:
-    needs: [version, build, build-macos, build-deb, build-rpm, build-macos-pkg, build-msi]
+    needs: [version, build, build-windows, build-macos, build-deb, build-rpm, build-macos-pkg, build-msi]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
