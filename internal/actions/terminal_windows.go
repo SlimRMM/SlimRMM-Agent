@@ -41,7 +41,7 @@ func NewTerminalManager() *TerminalManager {
 	}
 }
 
-// StartTerminal starts a new terminal session (cmd.exe on Windows).
+// StartTerminal starts a new terminal session (PowerShell on Windows).
 func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -50,13 +50,14 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 		return nil, fmt.Errorf("terminal %s already exists", id)
 	}
 
-	// Use PowerShell or cmd.exe
-	shell := os.Getenv("COMSPEC")
-	if shell == "" {
-		shell = "cmd.exe"
+	// Use PowerShell as default shell on Windows
+	// Try pwsh (PowerShell 7+) first, fall back to powershell.exe (Windows PowerShell 5.1)
+	var cmd *exec.Cmd
+	if _, err := exec.LookPath("pwsh"); err == nil {
+		cmd = exec.Command("pwsh", "-NoLogo", "-NoExit")
+	} else {
+		cmd = exec.Command("powershell.exe", "-NoLogo", "-NoExit")
 	}
-
-	cmd := exec.Command(shell)
 	cmd.Dir = "C:\\" // Start terminal in C:\ on Windows
 	cmd.Env = os.Environ()
 
