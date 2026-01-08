@@ -54,10 +54,12 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 	var shell string
 	if _, err := exec.LookPath("pwsh"); err == nil {
 		// PowerShell 7+ supports -WorkingDirectory
-		shell = `pwsh -NoLogo -WorkingDirectory C:\`
+		// Use forward slash to avoid escaping issues with backslash
+		shell = `pwsh -NoLogo -WorkingDirectory C:/`
 	} else {
 		// Windows PowerShell 5.1 - use -Command to set location
-		shell = `powershell.exe -NoLogo -NoExit -Command "Set-Location C:\"`
+		// Use forward slash to avoid escaping issues with backslash (\" is interpreted as escaped quote)
+		shell = `powershell.exe -NoLogo -NoExit -Command "Set-Location C:/"`
 	}
 
 	// Start ConPTY with default size

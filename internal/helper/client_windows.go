@@ -293,26 +293,31 @@ func (c *Client) startHelperInSession(helperPath string, sessionID uint32) error
 	// Close handles we don't need
 	windows.CloseHandle(windows.Handle(pi.Thread))
 
-	log.Printf("Helper process started with PID %d", pi.ProcessId)
+	log.Printf("Helper process started with PID %d in session %d", pi.ProcessId, sessionID)
 
-	// Give helper time to start
-	time.Sleep(500 * time.Millisecond)
+	// Give helper more time to initialize and create the pipe
+	// The helper needs to start, initialize screenshot library, and create the named pipe
+	time.Sleep(1000 * time.Millisecond)
 	return nil
 }
 
 // startHelperDirect starts helper as child process (fallback)
 func (c *Client) startHelperDirect(helperPath string) error {
+	log.Printf("Starting helper directly: %s -session %s", helperPath, c.sessionID)
+
 	c.helperCmd = exec.Command(helperPath, "-session", c.sessionID)
 	c.helperCmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: CREATE_NO_WINDOW,
 	}
 
 	if err := c.helperCmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("failed to start helper: %w", err)
 	}
 
-	log.Printf("Helper started directly with PID %d", c.helperCmd.Process.Pid)
-	time.Sleep(500 * time.Millisecond)
+	log.Printf("Helper started directly with PID %d for session %s", c.helperCmd.Process.Pid, c.sessionID)
+
+	// Give helper time to initialize and create the pipe
+	time.Sleep(1000 * time.Millisecond)
 	return nil
 }
 
@@ -324,8 +329,14 @@ func (c *Client) connectToPipe() error {
 		return err
 	}
 
+	log.Printf("Attempting to connect to pipe: %s", pName)
+
 	deadline := time.Now().Add(connectTimeout)
+	attempts := 0
+	var lastErr error
+
 	for time.Now().Before(deadline) {
+		attempts++
 		pipe, err := windows.CreateFile(
 			pNamePtr,
 			windows.GENERIC_READ|windows.GENERIC_WRITE,
@@ -342,20 +353,31 @@ func (c *Client) connectToPipe() error {
 			var mode uint32 = windows.PIPE_READMODE_MESSAGE
 			windows.SetNamedPipeHandleState(pipe, &mode, nil, nil)
 
+			log.Printf("Connected to helper pipe after %d attempts", attempts)
 			return nil
 		}
 
+		lastErr = err
+
 		if err == windows.ERROR_PIPE_BUSY {
 			// Wait for pipe to become available
+			log.Printf("Pipe busy, waiting... (attempt %d)", attempts)
 			procWaitNamedPipeW.Call(uintptr(unsafe.Pointer(pNamePtr)), 1000)
 			continue
 		}
 
+		if err == windows.ERROR_FILE_NOT_FOUND {
+			// Pipe doesn't exist yet, helper may still be starting
+			if attempts%10 == 0 {
+				log.Printf("Pipe not found yet, waiting... (attempt %d)", attempts)
+			}
+		}
+
 		// Pipe not ready yet, wait and retry
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 
-	return fmt.Errorf("timeout connecting to helper pipe")
+	return fmt.Errorf("timeout connecting to helper pipe after %d attempts, last error: %v", attempts, lastErr)
 }
 
 // Stop stops the helper process
