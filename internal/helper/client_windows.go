@@ -127,6 +127,23 @@ func NewClient() *Client {
 	return &Client{}
 }
 
+// killExistingHelpers terminates any running helper processes
+func killExistingHelpers() {
+	cmd := exec.Command("taskkill", "/F", "/IM", "slimrmm-helper.exe")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: CREATE_NO_WINDOW,
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Not an error if no helpers are running
+		log.Printf("No existing helper processes to kill (or taskkill failed): %v", err)
+	} else {
+		log.Printf("Killed existing helper processes: %s", string(output))
+	}
+	// Give Windows time to release the process handles
+	time.Sleep(200 * time.Millisecond)
+}
+
 // Start starts the helper process in the active user session
 func (c *Client) Start() error {
 	c.mu.Lock()
@@ -135,6 +152,9 @@ func (c *Client) Start() error {
 	if c.connected {
 		return nil
 	}
+
+	// Kill any existing helper processes first
+	killExistingHelpers()
 
 	// Get active console session
 	sessionID, _, _ := procWTSGetActiveConsoleSessionId.Call()

@@ -339,6 +339,8 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 		u.logger.Info("checking for helper binary", "src", helperSrc, "dst", helperDst)
 		if info, err := os.Stat(helperSrc); err == nil {
 			u.logger.Info("helper found in archive", "size", info.Size())
+			// Kill any running helper processes before copying
+			u.killHelperProcesses()
 			if err := u.copyFileDirect(helperSrc, helperDst); err != nil {
 				u.logger.Warn("failed to install helper", "error", err)
 				// Not fatal - continue with agent update
@@ -712,6 +714,24 @@ func (u *Updater) removeImmutableAttr(path string) {
 	} else {
 		u.logger.Info("removed immutable attribute", "path", path)
 	}
+}
+
+// killHelperProcesses terminates any running helper processes (Windows only).
+// This is needed before updating the helper executable which may be in use.
+func (u *Updater) killHelperProcesses() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+
+	cmd := exec.Command("taskkill", "/F", "/IM", "slimrmm-helper.exe")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		u.logger.Debug("no helper processes to kill (or taskkill failed)", "error", err)
+	} else {
+		u.logger.Info("killed helper processes", "output", string(output))
+	}
+	// Give Windows time to release the file handles
+	time.Sleep(300 * time.Millisecond)
 }
 
 // copyBinary copies a binary from src to dest.
