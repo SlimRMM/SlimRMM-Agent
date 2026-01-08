@@ -1865,6 +1865,37 @@ func (h *Handler) handleRunComplianceCheck(ctx context.Context, data json.RawMes
 				result.Details = fmt.Sprintf("command exited with code %d", cmdResult.ExitCode)
 			}
 
+		case "registry":
+			// Windows registry check
+			if check.Query == "" {
+				result.Status = "error"
+				result.Details = "no registry path provided"
+				results = append(results, result)
+				continue
+			}
+
+			regResult, err := actions.ReadRegistryValue(check.Query)
+			if err != nil {
+				// Registry value not found - this might be expected for some checks
+				result.Status = "failed"
+				result.ActualValue = nil
+				result.Details = fmt.Sprintf("registry error: %v", err)
+				results = append(results, result)
+				continue
+			}
+
+			result.ActualValue = regResult.Value
+
+			// Compare with expected result
+			passed, details := h.compareRegistryResult(regResult.Value, check.ExpectedResult, check.ComparisonOperator)
+			if passed {
+				result.Status = "passed"
+				result.Details = details
+			} else {
+				result.Status = "failed"
+				result.Details = details
+			}
+
 		default:
 			result.Status = "skipped"
 			result.Details = fmt.Sprintf("unsupported check type: %s", check.CheckType)
@@ -2090,5 +2121,97 @@ func toFloat64(v interface{}) (float64, error) {
 		return f, nil
 	default:
 		return 0, fmt.Errorf("cannot convert %T to number", v)
+	}
+}
+
+// compareRegistryResult compares a registry value with the expected value.
+func (h *Handler) compareRegistryResult(actual interface{}, expected interface{}, operator string) (bool, string) {
+	if expected == nil {
+		return true, "no expected result specified"
+	}
+
+	// Convert expected to string for comparison
+	expectedStr := fmt.Sprintf("%v", expected)
+
+	// Convert actual to string for comparison
+	actualStr := fmt.Sprintf("%v", actual)
+
+	switch operator {
+	case "equals", "eq", "":
+		if actualStr == expectedStr {
+			return true, fmt.Sprintf("registry value %q matches expected %q", actualStr, expectedStr)
+		}
+		return false, fmt.Sprintf("registry value %q does not match expected %q", actualStr, expectedStr)
+
+	case "not_equals", "ne", "neq":
+		if actualStr != expectedStr {
+			return true, fmt.Sprintf("registry value %q does not equal %q (expected)", actualStr, expectedStr)
+		}
+		return false, fmt.Sprintf("registry value %q equals %q but should not", actualStr, expectedStr)
+
+	case "contains":
+		if strings.Contains(actualStr, expectedStr) {
+			return true, fmt.Sprintf("registry value contains %q", expectedStr)
+		}
+		return false, fmt.Sprintf("registry value %q does not contain %q", actualStr, expectedStr)
+
+	case "exists", "not_empty":
+		if actual != nil && actualStr != "" {
+			return true, fmt.Sprintf("registry value exists: %q", actualStr)
+		}
+		return false, "registry value is empty or does not exist"
+
+	case "not_exists", "empty":
+		if actual == nil || actualStr == "" {
+			return true, "registry value does not exist (expected)"
+		}
+		return false, fmt.Sprintf("registry value exists (%q) but should not", actualStr)
+
+	case "gte", ">=":
+		actualFloat, err1 := toFloat64(actual)
+		expectedFloat, err2 := toFloat64(expected)
+		if err1 != nil || err2 != nil {
+			return false, "cannot compare non-numeric values with >= operator"
+		}
+		if actualFloat >= expectedFloat {
+			return true, fmt.Sprintf("registry value %v >= %v", actualFloat, expectedFloat)
+		}
+		return false, fmt.Sprintf("registry value %v < %v", actualFloat, expectedFloat)
+
+	case "lte", "<=":
+		actualFloat, err1 := toFloat64(actual)
+		expectedFloat, err2 := toFloat64(expected)
+		if err1 != nil || err2 != nil {
+			return false, "cannot compare non-numeric values with <= operator"
+		}
+		if actualFloat <= expectedFloat {
+			return true, fmt.Sprintf("registry value %v <= %v", actualFloat, expectedFloat)
+		}
+		return false, fmt.Sprintf("registry value %v > %v", actualFloat, expectedFloat)
+
+	case "gt", ">":
+		actualFloat, err1 := toFloat64(actual)
+		expectedFloat, err2 := toFloat64(expected)
+		if err1 != nil || err2 != nil {
+			return false, "cannot compare non-numeric values with > operator"
+		}
+		if actualFloat > expectedFloat {
+			return true, fmt.Sprintf("registry value %v > %v", actualFloat, expectedFloat)
+		}
+		return false, fmt.Sprintf("registry value %v <= %v", actualFloat, expectedFloat)
+
+	case "lt", "<":
+		actualFloat, err1 := toFloat64(actual)
+		expectedFloat, err2 := toFloat64(expected)
+		if err1 != nil || err2 != nil {
+			return false, "cannot compare non-numeric values with < operator"
+		}
+		if actualFloat < expectedFloat {
+			return true, fmt.Sprintf("registry value %v < %v", actualFloat, expectedFloat)
+		}
+		return false, fmt.Sprintf("registry value %v >= %v", actualFloat, expectedFloat)
+
+	default:
+		return false, fmt.Sprintf("unsupported comparison operator: %s", operator)
 	}
 }
