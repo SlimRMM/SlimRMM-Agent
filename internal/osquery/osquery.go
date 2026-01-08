@@ -852,6 +852,7 @@ func checkAndFallbackToGitHub(ctx context.Context, logger *slog.Logger, installe
 }
 
 // updateLinuxDirect downloads and installs osquery directly from GitHub/pkg.osquery.io.
+// Removes old repo configuration first to avoid conflicts.
 func updateLinuxDirect(ctx context.Context, logger *slog.Logger, installedVersion string) error {
 	latestVersion, err := GetLatestVersion(ctx)
 	if err != nil {
@@ -867,7 +868,11 @@ func updateLinuxDirect(ctx context.Context, logger *slog.Logger, installedVersio
 		"installed", installedVersion,
 		"latest", latestVersion)
 
-	if err := installLinux(ctx, latestVersion); err != nil {
+	// Remove old repo configuration to avoid conflicts
+	removeOldRepoConfig(logger)
+
+	// Download and install directly
+	if err := installLinuxDirect(ctx, latestVersion); err != nil {
 		return fmt.Errorf("direct install failed: %w", err)
 	}
 
@@ -877,6 +882,97 @@ func updateLinuxDirect(ctx context.Context, logger *slog.Logger, installedVersio
 	logger.Info("osquery updated via direct download",
 		"old_version", installedVersion,
 		"new_version", newVersion)
+
+	return nil
+}
+
+// removeOldRepoConfig removes osquery repository configuration files.
+func removeOldRepoConfig(logger *slog.Logger) {
+	// Debian/Ubuntu repo files
+	debRepoFiles := []string{
+		"/etc/apt/sources.list.d/osquery.list",
+		"/usr/share/keyrings/osquery-keyring.gpg",
+	}
+	for _, f := range debRepoFiles {
+		if _, err := os.Stat(f); err == nil {
+			if err := os.Remove(f); err != nil {
+				logger.Debug("could not remove repo file", "file", f, "error", err)
+			} else {
+				logger.Info("removed old osquery repo config", "file", f)
+			}
+		}
+	}
+
+	// RPM repo files
+	rpmRepoFiles := []string{
+		"/etc/yum.repos.d/osquery.repo",
+		"/etc/yum.repos.d/osquery-s3-rpm.repo",
+	}
+	for _, f := range rpmRepoFiles {
+		if _, err := os.Stat(f); err == nil {
+			if err := os.Remove(f); err != nil {
+				logger.Debug("could not remove repo file", "file", f, "error", err)
+			} else {
+				logger.Info("removed old osquery repo config", "file", f)
+			}
+		}
+	}
+}
+
+// installLinuxDirect installs osquery directly from pkg.osquery.io (not via repo).
+func installLinuxDirect(ctx context.Context, version string) error {
+	slog.Info("installing osquery directly", "version", version)
+
+	// Determine architecture
+	arch := runtime.GOARCH
+	rpmArch := "x86_64"
+	debArch := "amd64"
+	if arch == "arm64" {
+		rpmArch = "aarch64"
+		debArch = "arm64"
+	}
+
+	var installCmd *exec.Cmd
+
+	if _, err := exec.LookPath("dpkg"); err == nil {
+		// Debian/Ubuntu - download and install .deb directly
+		debURL := fmt.Sprintf("https://pkg.osquery.io/deb/osquery_%s-1.linux_%s.deb", version, debArch)
+		tmpDeb := "/tmp/osquery.deb"
+
+		slog.Info("downloading osquery deb", "url", debURL)
+		downloadCmd := exec.CommandContext(ctx, "curl", "-fsSL", "-o", tmpDeb, debURL)
+		if err := downloadCmd.Run(); err != nil {
+			return fmt.Errorf("downloading deb: %w", err)
+		}
+
+		installCmd = exec.CommandContext(ctx, "dpkg", "-i", tmpDeb)
+		defer os.Remove(tmpDeb)
+
+	} else if _, err := exec.LookPath("rpm"); err == nil {
+		// RHEL/CentOS/Fedora - download and install .rpm directly
+		rpmURL := fmt.Sprintf("https://pkg.osquery.io/rpm/osquery-%s-1.linux.%s.rpm", version, rpmArch)
+		tmpRpm := "/tmp/osquery.rpm"
+
+		slog.Info("downloading osquery rpm", "url", rpmURL)
+		downloadCmd := exec.CommandContext(ctx, "curl", "-fsSL", "-o", tmpRpm, rpmURL)
+		if err := downloadCmd.Run(); err != nil {
+			return fmt.Errorf("downloading rpm: %w", err)
+		}
+
+		// Use rpm -U (upgrade) to handle both install and upgrade
+		installCmd = exec.CommandContext(ctx, "rpm", "-U", "--force", tmpRpm)
+		defer os.Remove(tmpRpm)
+
+	} else {
+		return fmt.Errorf("no supported package installer found (dpkg or rpm)")
+	}
+
+	var stderr bytes.Buffer
+	installCmd.Stderr = &stderr
+
+	if err := installCmd.Run(); err != nil {
+		return fmt.Errorf("installing package: %w (%s)", err, stderr.String())
+	}
 
 	return nil
 }
