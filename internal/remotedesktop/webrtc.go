@@ -92,6 +92,11 @@ func NewSession(sessionID string, sendCallback SendCallback, logger *slog.Logger
 	monitors := capture.GetMonitors()
 	input := NewInputController(monitors, logger)
 
+	// Configure Windows helper if available
+	if windowsHelperConfig != nil {
+		windowsHelperConfig(capture, input)
+	}
+
 	var clipboardMgr *ClipboardManager
 	clipboardMgr, err = NewClipboardManager()
 	if err != nil {

@@ -58,6 +58,11 @@
                                Remove="uninstall"
                                Wait="yes" />
             </Component>
+            <Component Id="HelperExecutable" Guid="F6A7B8C9-D0E1-2345-F678-901234567890" Win64="yes">
+                <File Id="HelperExecutable"
+                      Source="slimrmm-helper.exe"
+                      KeyPath="yes" />
+            </Component>
         </ComponentGroup>
 
         <Component Id="CertsFolderComponent" Directory="CertsFolder" Guid="C3D4E5F6-A7B8-9012-CDEF-345678901234" Win64="yes">

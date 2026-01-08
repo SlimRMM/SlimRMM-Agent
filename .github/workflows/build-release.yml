@@ -146,16 +146,24 @@ jobs:
 
           go build -ldflags "-s -w -X github.com/slimrmm/slimrmm-agent/pkg/version.Version=$VERSION -X github.com/slimrmm/slimrmm-agent/pkg/version.GitCommit=$COMMIT -X github.com/slimrmm/slimrmm-agent/pkg/version.BuildDate=$DATE" -o slimrmm-agent.exe ./cmd/slimrmm-agent
 
+      - name: Build Windows helper
+        env:
+          CGO_ENABLED: 1
+        run: |
+          go build -ldflags "-s -w" -o slimrmm-helper.exe ./cmd/helper
+
       - name: Create zip
         run: |
           $VERSION = "${{ needs.version.outputs.version }}"
-          Compress-Archive -Path slimrmm-agent.exe -DestinationPath "slimrmm-agent_${VERSION}_windows_amd64.zip"
+          Compress-Archive -Path slimrmm-agent.exe,slimrmm-helper.exe -DestinationPath "slimrmm-agent_${VERSION}_windows_amd64.zip"
 
-      - name: Upload Windows binary
+      - name: Upload Windows binaries
         uses: actions/upload-artifact@v4
         with:
           name: binary-windows-amd64-exe
-          path: slimrmm-agent.exe
+          path: |
+            slimrmm-agent.exe
+            slimrmm-helper.exe
 
       - name: Upload Windows zip
         uses: actions/upload-artifact@v4
@@ -596,6 +604,12 @@ jobs:
           $wxsContent = Get-Content build/windows/slimrmm-agent.wxs -Raw
           $wxsContent = $wxsContent -replace '!\(bind\.FileVersion\.MainExecutable\)', $version
           Set-Content -Path slimrmm-agent.wxs -Value $wxsContent
+
+          # Verify helper exists
+          if (!(Test-Path slimrmm-helper.exe)) {
+            Write-Error "slimrmm-helper.exe not found"
+            exit 1
+          }
 
           # Build MSI using WiX
           & "${env:WIX}bin\candle.exe" -arch x64 slimrmm-agent.wxs
