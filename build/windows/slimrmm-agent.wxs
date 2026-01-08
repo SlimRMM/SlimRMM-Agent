@@ -18,36 +18,12 @@
             <ComponentGroupRef Id="ProductComponents" />
             <ComponentRef Id="CertsFolderComponent" />
             <ComponentRef Id="LogFolderComponent" />
+            <ComponentRef Id="PathEnvComponent" />
         </Feature>
 
         <Property Id="SLIMRMM_SERVER" Secure="yes" />
 
-        <CustomAction Id="StopService"
-                      Directory="INSTALLFOLDER"
-                      ExeCommand="[INSTALLFOLDER]slimrmm-agent.exe --stop-service"
-                      Execute="deferred"
-                      Impersonate="no"
-                      Return="ignore" />
-
-        <CustomAction Id="InstallService"
-                      Directory="INSTALLFOLDER"
-                      ExeCommand="[INSTALLFOLDER]slimrmm-agent.exe --install-service"
-                      Execute="deferred"
-                      Impersonate="no"
-                      Return="check" />
-
-        <CustomAction Id="UninstallService"
-                      Directory="INSTALLFOLDER"
-                      ExeCommand="[INSTALLFOLDER]slimrmm-agent.exe --uninstall"
-                      Execute="deferred"
-                      Impersonate="no"
-                      Return="ignore" />
-
-        <InstallExecuteSequence>
-            <Custom Action="StopService" Before="InstallFiles">Installed AND NOT UPGRADINGPRODUCTCODE</Custom>
-            <Custom Action="UninstallService" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
-            <Custom Action="InstallService" After="InstallFiles">NOT Installed OR UPGRADINGPRODUCTCODE</Custom>
-        </InstallExecuteSequence>
+        <!-- Service is installed via ServiceInstall element, no custom actions needed -->
     </Product>
 
     <Fragment>
@@ -90,6 +66,17 @@
 
         <Component Id="LogFolderComponent" Directory="LogFolder" Guid="D4E5F6A7-B8C9-0123-DEF0-456789012345" Win64="yes">
             <CreateFolder />
+        </Component>
+
+        <!-- Add install directory to system PATH -->
+        <Component Id="PathEnvComponent" Directory="INSTALLFOLDER" Guid="E5F6A7B8-C9D0-1234-EF01-567890123456" Win64="yes">
+            <Environment Id="PATH"
+                         Name="PATH"
+                         Value="[INSTALLFOLDER]"
+                         Permanent="no"
+                         Part="last"
+                         Action="set"
+                         System="yes" />
         </Component>
     </Fragment>
 </Wix>

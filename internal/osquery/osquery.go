@@ -582,64 +582,64 @@ func installMacOS(ctx context.Context, version string) error {
 func installWindows(ctx context.Context, version string) error {
 	slog.Info("installing osquery on Windows", "version", version)
 
-	// Check if winget is available - it handles versions well
-	if _, err := exec.LookPath("winget"); err == nil {
-		slog.Info("using winget to install osquery")
-		installCmd := exec.CommandContext(ctx, "winget", "install", "--id", "osquery.osquery", "-e", "--silent", "--accept-package-agreements", "--accept-source-agreements")
-		var stderr bytes.Buffer
-		installCmd.Stderr = &stderr
-
-		if err := installCmd.Run(); err != nil {
-			slog.Warn("winget install failed, falling back to MSI", "error", err)
-			// Fall through to MSI installation
-		} else {
-			return nil
-		}
-	}
-
-	// Check if choco is available
-	if _, err := exec.LookPath("choco"); err == nil {
-		slog.Info("using Chocolatey to install osquery")
-		installCmd := exec.CommandContext(ctx, "choco", "install", "osquery", "-y", "--no-progress")
-		var stderr bytes.Buffer
-		installCmd.Stderr = &stderr
-
-		if err := installCmd.Run(); err != nil {
-			slog.Warn("choco install failed, falling back to MSI", "error", err)
-			// Fall through to MSI installation
-		} else {
-			return nil
-		}
-	}
-
-	// Download and install MSI directly with dynamic version
+	// Download MSI from osquery's official package server
 	msiURL := fmt.Sprintf("https://pkg.osquery.io/windows/osquery-%s.msi", version)
 	tmpMSI := filepath.Join(os.TempDir(), "osquery.msi")
 
 	slog.Info("downloading osquery MSI", "url", msiURL)
 
-	// Use PowerShell with TLS 1.2 for compatibility
-	downloadCmd := exec.CommandContext(ctx, "powershell", "-Command",
-		fmt.Sprintf("[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%s' -OutFile '%s'", msiURL, tmpMSI))
-	var dlStderr bytes.Buffer
+	// Use PowerShell with ExecutionPolicy Bypass and full path for reliability
+	// This works better when running as LocalSystem service account
+	psScript := fmt.Sprintf(`
+		$ErrorActionPreference = 'Stop'
+		[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+		$ProgressPreference = 'SilentlyContinue'
+		Invoke-WebRequest -Uri '%s' -OutFile '%s' -UseBasicParsing
+	`, msiURL, tmpMSI)
+
+	downloadCmd := exec.CommandContext(ctx, "powershell.exe",
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", psScript)
+	var dlStdout, dlStderr bytes.Buffer
+	downloadCmd.Stdout = &dlStdout
 	downloadCmd.Stderr = &dlStderr
+
 	if err := downloadCmd.Run(); err != nil {
-		return fmt.Errorf("downloading osquery msi: %w (%s)", err, dlStderr.String())
+		slog.Error("failed to download osquery MSI",
+			"error", err,
+			"stdout", dlStdout.String(),
+			"stderr", dlStderr.String())
+		return fmt.Errorf("downloading osquery msi: %w", err)
 	}
 
-	slog.Info("installing osquery MSI silently")
+	// Verify download succeeded
+	if fi, err := os.Stat(tmpMSI); err != nil || fi.Size() < 1000 {
+		slog.Error("osquery MSI download appears incomplete",
+			"path", tmpMSI,
+			"error", err)
+		os.Remove(tmpMSI)
+		return fmt.Errorf("osquery MSI download incomplete or failed")
+	}
 
-	installCmd := exec.CommandContext(ctx, "msiexec", "/i", tmpMSI, "/quiet", "/qn", "/norestart")
+	slog.Info("installing osquery MSI silently", "path", tmpMSI)
+
+	// Install with msiexec - use /log for debugging if needed
+	installCmd := exec.CommandContext(ctx, "msiexec.exe",
+		"/i", tmpMSI, "/quiet", "/qn", "/norestart",
+		"/log", filepath.Join(os.TempDir(), "osquery-install.log"))
 	var stderr bytes.Buffer
 	installCmd.Stderr = &stderr
 
 	if err := installCmd.Run(); err != nil {
-		os.Remove(tmpMSI) // Cleanup on failure
-		return fmt.Errorf("installing osquery msi: %w (%s)", err, stderr.String())
+		slog.Error("failed to install osquery MSI",
+			"error", err,
+			"stderr", stderr.String())
+		// Don't remove MSI yet - might be useful for debugging
+		return fmt.Errorf("installing osquery msi: %w", err)
 	}
 
 	// Cleanup
 	os.Remove(tmpMSI)
 
+	slog.Info("osquery MSI installation completed")
 	return nil
 }
