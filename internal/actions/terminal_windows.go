@@ -53,9 +53,11 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 	// Try pwsh (PowerShell 7+) first, fall back to powershell.exe (Windows PowerShell 5.1)
 	var shell string
 	if _, err := exec.LookPath("pwsh"); err == nil {
-		shell = "pwsh -NoLogo"
+		// PowerShell 7+ supports -WorkingDirectory
+		shell = `pwsh -NoLogo -WorkingDirectory C:\`
 	} else {
-		shell = "powershell.exe -NoLogo"
+		// Windows PowerShell 5.1 - use -Command to set location
+		shell = `powershell.exe -NoLogo -NoExit -Command "Set-Location C:\"`
 	}
 
 	// Start ConPTY with default size
