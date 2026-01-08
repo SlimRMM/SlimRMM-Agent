@@ -1,4 +1,4 @@
-// Package actions provides terminal functionality for Windows.
+// Package actions provides terminal functionality for Windows using ConPTY.
 //go:build windows
 // +build windows
 
@@ -11,15 +11,14 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+
+	"github.com/UserExistsError/conpty"
 )
 
-// Terminal represents a terminal session (limited on Windows).
+// Terminal represents a ConPTY terminal session on Windows.
 type Terminal struct {
 	ID         string
-	cmd        *exec.Cmd
-	stdin      io.WriteCloser
-	stdout     io.ReadCloser
-	stderr     io.ReadCloser
+	cpty       *conpty.ConPty
 	done       chan struct{}
 	mu         sync.RWMutex
 	running    bool
@@ -41,7 +40,7 @@ func NewTerminalManager() *TerminalManager {
 	}
 }
 
-// StartTerminal starts a new terminal session (PowerShell on Windows).
+// StartTerminal starts a new terminal session using Windows ConPTY.
 func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -52,46 +51,22 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 
 	// Use PowerShell as default shell on Windows
 	// Try pwsh (PowerShell 7+) first, fall back to powershell.exe (Windows PowerShell 5.1)
-	var cmd *exec.Cmd
+	var shell string
 	if _, err := exec.LookPath("pwsh"); err == nil {
-		cmd = exec.Command("pwsh", "-NoLogo", "-NoExit")
+		shell = "pwsh -NoLogo"
 	} else {
-		cmd = exec.Command("powershell.exe", "-NoLogo", "-NoExit")
+		shell = "powershell.exe -NoLogo"
 	}
-	cmd.Dir = "C:\\" // Start terminal in C:\ on Windows
-	cmd.Env = os.Environ()
 
-	stdin, err := cmd.StdinPipe()
+	// Start ConPTY with default size
+	cpty, err := conpty.Start(shell, conpty.ConPtyDimensions(80, 24))
 	if err != nil {
-		return nil, fmt.Errorf("creating stdin pipe: %w", err)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		stdin.Close()
-		return nil, fmt.Errorf("creating stdout pipe: %w", err)
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		stdin.Close()
-		stdout.Close()
-		return nil, fmt.Errorf("creating stderr pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		stdout.Close()
-		stderr.Close()
-		return nil, fmt.Errorf("starting command: %w", err)
+		return nil, fmt.Errorf("starting conpty: %w", err)
 	}
 
 	term := &Terminal{
 		ID:         id,
-		cmd:        cmd,
-		stdin:      stdin,
-		stdout:     stdout,
-		stderr:     stderr,
+		cpty:       cpty,
 		done:       make(chan struct{}),
 		running:    true,
 		outputChan: make(chan []byte, 256),
@@ -99,13 +74,12 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 		cols:       80,
 	}
 
-	// Read output goroutines
-	go term.readOutput(stdout)
-	go term.readOutput(stderr)
+	// Read output goroutine
+	go term.readOutput()
 
 	// Wait for process exit
 	go func() {
-		cmd.Wait()
+		cpty.Wait(context.Background())
 		term.mu.Lock()
 		term.running = false
 		term.mu.Unlock()
@@ -117,8 +91,8 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 	return term, nil
 }
 
-// readOutput reads from a pipe and sends to output channel.
-func (t *Terminal) readOutput(r io.ReadCloser) {
+// readOutput reads from ConPTY and sends to output channel.
+func (t *Terminal) readOutput() {
 	buf := make([]byte, 4096)
 	for {
 		select {
@@ -127,8 +101,11 @@ func (t *Terminal) readOutput(r io.ReadCloser) {
 		default:
 		}
 
-		n, err := r.Read(buf)
+		n, err := t.cpty.Read(buf)
 		if err != nil {
+			if err != io.EOF {
+				// Log error but don't spam
+			}
 			return
 		}
 
@@ -170,19 +147,10 @@ func (m *TerminalManager) SendInput(id, input string) error {
 		return fmt.Errorf("terminal %s is not running", id)
 	}
 
-	// Convert input for Windows compatibility
-	// Browser sends 0x7F (DEL) for backspace, but Windows expects 0x08 (BS)
-	data := []byte(input)
-	for i, b := range data {
-		if b == 0x7F {
-			data[i] = 0x08
-		}
-	}
-
-	// Write to stdin - PowerShell handles its own echo
-	_, err := term.stdin.Write(data)
+	// Write to ConPTY - it handles all terminal processing
+	_, err := term.cpty.Write([]byte(input))
 	if err != nil {
-		return fmt.Errorf("stdin.Write failed: %w", err)
+		return fmt.Errorf("write failed: %w", err)
 	}
 	return nil
 }
@@ -205,35 +173,29 @@ func (m *TerminalManager) SendInputRaw(id string, data []byte) error {
 		return fmt.Errorf("terminal %s is not running", id)
 	}
 
-	// Convert input for Windows compatibility
-	// Browser sends 0x7F (DEL) for backspace, but Windows expects 0x08 (BS)
-	// Make a copy to avoid modifying the original
-	converted := make([]byte, len(data))
-	copy(converted, data)
-	for i, b := range converted {
-		if b == 0x7F {
-			converted[i] = 0x08
-		}
-	}
-
-	// Write to stdin - PowerShell handles its own echo
-	_, err := term.stdin.Write(converted)
+	// Write to ConPTY - it handles all terminal processing
+	_, err := term.cpty.Write(data)
 	if err != nil {
-		return fmt.Errorf("stdin.Write failed: %w", err)
+		return fmt.Errorf("write failed: %w", err)
 	}
 	return nil
 }
 
-// Resize is a no-op on Windows (no PTY support).
+// Resize resizes the terminal.
 func (t *Terminal) Resize(rows, cols uint16) error {
 	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	t.rows = rows
 	t.cols = cols
-	t.mu.Unlock()
+
+	if t.cpty != nil {
+		return t.cpty.Resize(int(cols), int(rows))
+	}
 	return nil
 }
 
-// ResizeTerminal resizes a terminal session (no-op on Windows).
+// ResizeTerminal resizes a terminal session.
 func (m *TerminalManager) ResizeTerminal(id string, rows, cols uint16) error {
 	m.mu.RLock()
 	term, exists := m.terminals[id]
@@ -270,9 +232,8 @@ func (m *TerminalManager) StopTerminal(id string) error {
 	}
 
 	term.mu.Lock()
-	if term.running {
-		term.stdin.Close()
-		term.cmd.Process.Kill()
+	if term.running && term.cpty != nil {
+		term.cpty.Close()
 	}
 	term.mu.Unlock()
 
@@ -322,3 +283,18 @@ func (m *TerminalManager) ReadOutput(ctx context.Context, id string, maxBytes in
 	}
 	return result, nil
 }
+
+// SetWorkingDirectory sets the working directory for the terminal.
+// Note: ConPTY doesn't support changing directory after start,
+// so this is a no-op. Use 'cd' command instead.
+func (m *TerminalManager) SetWorkingDirectory(id, dir string) error {
+	// ConPTY starts in the current directory
+	// To change directory, send a 'cd' command
+	if dir != "" {
+		return m.SendInput(id, fmt.Sprintf("cd %q\r", dir))
+	}
+	return nil
+}
+
+// Ensure os import is used
+var _ = os.Environ

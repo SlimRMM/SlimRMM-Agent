@@ -15,6 +15,7 @@ require (
 )
 
 require (
+	github.com/UserExistsError/conpty v0.1.4 // indirect
 	github.com/buger/goterm v1.0.4 // indirect
 	github.com/dblohm7/wingoes v0.0.0-20250822163801-6d8e6105c62d // indirect
 	github.com/diskfs/go-diskfs v1.5.0 // indirect
