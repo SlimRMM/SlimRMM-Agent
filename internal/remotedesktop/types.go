@@ -27,9 +27,10 @@ type QualitySettings struct {
 }
 
 // QualityPresets maps quality names to settings.
+// Improved presets: "low" now uses 0.75x scale instead of 0.5x for better readability
 var QualityPresets = map[string]QualitySettings{
-	"low":      {Scale: 0.5, FPS: 15, JPEGQuality: 50},
-	"balanced": {Scale: 0.75, FPS: 30, JPEGQuality: 75},
+	"low":      {Scale: 0.75, FPS: 15, JPEGQuality: 60},
+	"balanced": {Scale: 0.85, FPS: 30, JPEGQuality: 80},
 	"high":     {Scale: 1.0, FPS: 60, JPEGQuality: 90},
 }
 
