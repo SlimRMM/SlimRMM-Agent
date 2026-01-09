@@ -586,9 +586,22 @@ func keyNameToVK(key string) uint32 {
 		return vk
 	}
 
-	// Single character - use its ASCII value
+	// Single character - convert to virtual key code
 	if len(key) == 1 {
-		return uint32(key[0])
+		c := key[0]
+		// Letters: VK_A to VK_Z are 0x41-0x5A (65-90), same as uppercase ASCII
+		if c >= 'a' && c <= 'z' {
+			return uint32(c - 32) // Convert lowercase to uppercase ASCII
+		}
+		if c >= 'A' && c <= 'Z' {
+			return uint32(c)
+		}
+		// Numbers: VK_0 to VK_9 are 0x30-0x39 (48-57), same as ASCII
+		if c >= '0' && c <= '9' {
+			return uint32(c)
+		}
+		// Other printable ASCII
+		return uint32(c)
 	}
 
 	return 0
