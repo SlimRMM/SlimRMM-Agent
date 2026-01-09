@@ -12,8 +12,6 @@ import (
 func (h *Handler) registerRemoteDesktopHandlers() {
 	h.handlers["start_remote_desktop"] = h.handleStartRemoteDesktop
 	h.handlers["stop_remote_desktop"] = h.handleStopRemoteDesktop
-	h.handlers["webrtc_answer"] = h.handleWebRTCAnswer
-	h.handlers["ice_candidate"] = h.handleICECandidate
 	h.handlers["get_monitors"] = h.handleGetMonitors
 	h.handlers["remote_control"] = h.handleRemoteControl
 	h.handlers["set_quality"] = h.handleSetQuality
@@ -22,16 +20,14 @@ func (h *Handler) registerRemoteDesktopHandlers() {
 }
 
 type startRemoteDesktopRequest struct {
-	SessionID  string                      `json:"session_id"`
-	Quality    string                      `json:"quality"`
-	MonitorID  int                         `json:"monitor_id"`
-	ICEServers []remotedesktop.ICEServer   `json:"ice_servers"`
+	SessionID string `json:"session_id"`
+	Quality   string `json:"quality"`
+	MonitorID int    `json:"monitor_id"`
 }
 
 func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req startRemoteDesktopRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		// Use agent UUID as default session ID
 		req.SessionID = h.cfg.GetUUID()
 	}
 
@@ -41,17 +37,9 @@ func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMes
 
 	h.logger.Info("starting remote desktop session", "session_id", req.SessionID)
 
-	// Configure ICE servers if provided (includes STUN and TURN servers)
-	if len(req.ICEServers) > 0 {
-		h.logger.Info("configuring ICE servers", "count", len(req.ICEServers))
-		remotedesktop.SetICEServers(req.ICEServers)
-	}
-
-	// Check platform-specific permissions first
 	permStatus := remotedesktop.GetPermissionStatus()
 	h.logger.Info("permission status", "permissions", permStatus)
 
-	// Create send callback that forwards messages via WebSocket
 	sendCallback := func(msg []byte) error {
 		h.SendRaw(json.RawMessage(msg))
 		return nil
@@ -59,19 +47,12 @@ func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMes
 
 	result := remotedesktop.StartSession(req.SessionID, sendCallback, h.logger)
 
-	// Send offer to frontend via WebSocket
 	if result.Success {
 		h.logger.Info("remote desktop session started successfully", "session_id", req.SessionID)
 		h.SendRaw(map[string]interface{}{
-			"action":     "webrtc_offer",
+			"action":     "remote_desktop_started",
 			"session_id": req.SessionID,
-			"offer":      result.Offer,
 			"monitors":   result.Monitors,
-		})
-
-		// Also send status update
-		h.SendRaw(map[string]interface{}{
-			"action": "remote_desktop_started",
 		})
 	} else {
 		h.logger.Error("remote desktop session failed to start",
@@ -105,7 +86,6 @@ func (h *Handler) handleStopRemoteDesktop(ctx context.Context, data json.RawMess
 
 	result := remotedesktop.StopSession(req.SessionID)
 
-	// Send status update
 	h.SendRaw(map[string]interface{}{
 		"action": "remote_desktop_stopped",
 	})
@@ -113,46 +93,9 @@ func (h *Handler) handleStopRemoteDesktop(ctx context.Context, data json.RawMess
 	return result, nil
 }
 
-type webrtcAnswerRequest struct {
-	SessionID string                          `json:"session_id"`
-	Answer    remotedesktop.SessionDescription `json:"answer"`
-}
-
-func (h *Handler) handleWebRTCAnswer(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	var req webrtcAnswerRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("parsing request: %w", err)
-	}
-
-	if req.SessionID == "" {
-		req.SessionID = h.cfg.GetUUID()
-	}
-
-	return remotedesktop.HandleAnswer(req.SessionID, req.Answer), nil
-}
-
-type iceCandidateRequest struct {
-	SessionID string                       `json:"session_id"`
-	Candidate remotedesktop.ICECandidate   `json:"candidate"`
-}
-
-func (h *Handler) handleICECandidate(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	var req iceCandidateRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("parsing request: %w", err)
-	}
-
-	if req.SessionID == "" {
-		req.SessionID = h.cfg.GetUUID()
-	}
-
-	return remotedesktop.HandleICECandidate(req.SessionID, req.Candidate), nil
-}
-
 func (h *Handler) handleGetMonitors(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	result := remotedesktop.GetMonitors()
 
-	// Also send via WebSocket for frontend compatibility
 	h.SendRaw(map[string]interface{}{
 		"action":   "monitors",
 		"monitors": result["monitors"],

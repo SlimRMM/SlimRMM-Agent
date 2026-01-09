@@ -1,4 +1,4 @@
-// Package remotedesktop provides WebRTC-based screen sharing and remote control.
+// Package remotedesktop provides WebSocket-based screen sharing and remote control.
 package remotedesktop
 
 // Monitor represents display information.
@@ -12,72 +12,25 @@ type Monitor struct {
 	Primary bool   `json:"primary"`
 }
 
-// SessionDescription represents WebRTC SDP.
-type SessionDescription struct {
-	Type string `json:"type"`
-	SDP  string `json:"sdp"`
-}
-
-// ICECandidate represents a WebRTC ICE candidate.
-type ICECandidate struct {
-	Candidate     string  `json:"candidate"`
-	SDPMid        *string `json:"sdpMid"`
-	SDPMLineIndex *uint16 `json:"sdpMLineIndex"`
-}
-
-// ICEServer represents a STUN or TURN server configuration.
-type ICEServer struct {
-	URLs       []string `json:"urls"`
-	Username   string   `json:"username,omitempty"`
-	Credential string   `json:"credential,omitempty"`
-}
-
-// ConnectionType indicates how the WebRTC connection was established.
-type ConnectionType string
-
-const (
-	// ConnectionTypeHost indicates a direct local network connection
-	ConnectionTypeHost ConnectionType = "host"
-	// ConnectionTypeSRFLX indicates a server reflexive connection (through STUN)
-	ConnectionTypeSRFLX ConnectionType = "srflx"
-	// ConnectionTypePRFLX indicates a peer reflexive connection
-	ConnectionTypePRFLX ConnectionType = "prflx"
-	// ConnectionTypeRelay indicates a relayed connection through TURN
-	ConnectionTypeRelay ConnectionType = "relay"
-	// ConnectionTypeUnknown when the connection type cannot be determined
-	ConnectionTypeUnknown ConnectionType = "unknown"
-)
-
-// ConnectionInfo contains information about the WebRTC connection.
-type ConnectionInfo struct {
-	Type           ConnectionType `json:"type"`
-	LocalAddress   string         `json:"local_address,omitempty"`
-	RemoteAddress  string         `json:"remote_address,omitempty"`
-	Protocol       string         `json:"protocol,omitempty"`
-	IsP2P          bool           `json:"is_p2p"`
-	RelayProtocol  string         `json:"relay_protocol,omitempty"`
-}
-
 // StartResult contains the result of starting a remote desktop session.
 type StartResult struct {
-	Success  bool               `json:"success"`
-	Error    string             `json:"error,omitempty"`
-	Offer    SessionDescription `json:"offer,omitempty"`
-	Monitors []Monitor          `json:"monitors,omitempty"`
+	Success  bool      `json:"success"`
+	Error    string    `json:"error,omitempty"`
+	Monitors []Monitor `json:"monitors,omitempty"`
 }
 
 // QualitySettings defines video quality parameters.
 type QualitySettings struct {
-	Scale   float64
-	FPS     int
-	Bitrate int
+	Scale       float64
+	FPS         int
+	JPEGQuality int
 }
 
 // QualityPresets maps quality names to settings.
 var QualityPresets = map[string]QualitySettings{
-	"low":      {Scale: 0.5, FPS: 15, Bitrate: 500_000},
-	"balanced": {Scale: 0.75, FPS: 30, Bitrate: 1_500_000},
-	"high":     {Scale: 1.0, FPS: 60, Bitrate: 4_000_000},
+	"low":      {Scale: 0.5, FPS: 15, JPEGQuality: 50},
+	"balanced": {Scale: 0.75, FPS: 30, JPEGQuality: 75},
+	"high":     {Scale: 1.0, FPS: 60, JPEGQuality: 90},
 }
 
 // MouseButton represents mouse button types.

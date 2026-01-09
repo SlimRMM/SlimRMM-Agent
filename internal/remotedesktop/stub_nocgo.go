@@ -1,6 +1,6 @@
 //go:build !cgo
 
-// Package remotedesktop provides WebRTC-based screen sharing and remote control.
+// Package remotedesktop provides WebSocket-based screen sharing and remote control.
 // This file provides stub implementations when CGO is disabled.
 package remotedesktop
 
@@ -22,7 +22,6 @@ func HasDisplayServer() bool {
 func CheckDependencies() map[string]bool {
 	return map[string]bool{
 		"screen_capture":        false,
-		"webrtc":                false,
 		"input_control":         false,
 		"clipboard":             false,
 		"display_server":        false,
@@ -59,22 +58,6 @@ func StopSession(sessionID string) map[string]interface{} {
 	}
 }
 
-// HandleAnswer returns an error when CGO is disabled.
-func HandleAnswer(sessionID string, answer SessionDescription) map[string]interface{} {
-	return map[string]interface{}{
-		"success": false,
-		"error":   errCGODisabled,
-	}
-}
-
-// HandleICECandidate returns an error when CGO is disabled.
-func HandleICECandidate(sessionID string, candidate ICECandidate) map[string]interface{} {
-	return map[string]interface{}{
-		"success": false,
-		"error":   errCGODisabled,
-	}
-}
-
 // HandleRemoteControl returns an error when CGO is disabled.
 func HandleRemoteControl(sessionID string, event InputEvent) map[string]interface{} {
 	return map[string]interface{}{
@@ -99,8 +82,21 @@ func SetMonitor(sessionID string, monitorID int) map[string]interface{} {
 	}
 }
 
+// GetSessionMonitors returns an error when CGO is disabled.
+func GetSessionMonitors(sessionID string) map[string]interface{} {
+	return map[string]interface{}{
+		"success": false,
+		"error":   errCGODisabled,
+	}
+}
+
 // StopAllSessions is a no-op when CGO is disabled.
 func StopAllSessions() {}
+
+// GetActiveSessions returns 0 when CGO is disabled.
+func GetActiveSessions() int {
+	return 0
+}
 
 // InitializePermissions is a no-op when CGO is disabled.
 func InitializePermissions(logger *slog.Logger) {}
@@ -136,6 +132,3 @@ func RequestAccessibilityPermission() {}
 func TriggerScreenRecordingPermission() bool {
 	return false
 }
-
-// SetICEServers is a no-op when CGO is disabled.
-func SetICEServers(servers []ICEServer) {}
