@@ -173,6 +173,27 @@ func (m *WindowsManager) List() ([]ServiceInfo, error) {
 	return services, nil
 }
 
+// SetStartType changes the startup type of a Windows service.
+func (m *WindowsManager) SetStartType(name string, startType string) error {
+	var scStartType string
+	switch startType {
+	case "auto", "automatic":
+		scStartType = "auto"
+	case "manual":
+		scStartType = "demand"
+	case "disabled":
+		scStartType = "disabled"
+	default:
+		return fmt.Errorf("invalid start type: %s (valid: auto, manual, disabled)", startType)
+	}
+
+	cmd := exec.Command("sc", "config", name, "start=", scStartType)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("changing startup type: %s", string(output))
+	}
+	return nil
+}
+
 // listWithSc lists services using sc.exe as fallback.
 func (m *WindowsManager) listWithSc() ([]ServiceInfo, error) {
 	cmd := exec.Command("sc", "query", "state=", "all")

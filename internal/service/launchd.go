@@ -173,6 +173,48 @@ func (m *LaunchdManager) Restart(name string) error {
 	return m.Start(name)
 }
 
+// SetStartType changes the startup type of a launchd service.
+func (m *LaunchdManager) SetStartType(name string, startType string) error {
+	// Find plist file
+	var plistPath string
+	for _, dir := range []string{"/Library/LaunchDaemons", "/Library/LaunchAgents"} {
+		path := filepath.Join(dir, name+".plist")
+		if _, err := os.Stat(path); err == nil {
+			plistPath = path
+			break
+		}
+	}
+	if plistPath == "" {
+		return fmt.Errorf("service plist not found: %s", name)
+	}
+
+	switch startType {
+	case "auto", "automatic":
+		// Enable the service (load with -w flag)
+		exec.Command("launchctl", "unload", plistPath).Run()
+		cmd := exec.Command("launchctl", "load", "-w", plistPath)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("enabling service: %s", string(output))
+		}
+	case "manual":
+		// Load without -w (won't auto-start on boot)
+		exec.Command("launchctl", "unload", plistPath).Run()
+		cmd := exec.Command("launchctl", "load", plistPath)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("loading service: %s", string(output))
+		}
+	case "disabled":
+		// Unload with -w flag to disable
+		cmd := exec.Command("launchctl", "unload", "-w", plistPath)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("disabling service: %s", string(output))
+		}
+	default:
+		return fmt.Errorf("invalid start type: %s (valid: auto, manual, disabled)", startType)
+	}
+	return nil
+}
+
 // List lists all launchd services.
 func (m *LaunchdManager) List() ([]ServiceInfo, error) {
 	// List all services

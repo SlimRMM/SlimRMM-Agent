@@ -35,6 +35,7 @@ type Manager interface {
 	Status(name string) (ServiceStatus, error)
 	IsInstalled(name string) bool
 	List() ([]ServiceInfo, error)
+	SetStartType(name string, startType string) error // auto, manual, disabled
 }
 
 // New creates a new service manager for the current OS.

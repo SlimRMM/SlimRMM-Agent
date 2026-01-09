@@ -68,6 +68,7 @@ func (h *Handler) registerHandlers() {
 	h.handlers["start_service"] = h.handleStartService
 	h.handlers["stop_service"] = h.handleStopService
 	h.handlers["restart_service"] = h.handleRestartService
+	h.handlers["set_service_start_type"] = h.handleSetServiceStartType
 
 	// Terminal - Python compatible names
 	h.handlers["terminal"] = h.handleStartTerminal       // Python: terminal
@@ -1163,6 +1164,38 @@ func (h *Handler) handleRestartService(ctx context.Context, data json.RawMessage
 	}
 
 	return map[string]string{"status": "restarted", "service": req.Name}, nil
+}
+
+type setServiceStartTypeRequest struct {
+	Name      string `json:"name"`
+	StartType string `json:"start_type"` // auto, manual, disabled
+}
+
+// handleSetServiceStartType changes the startup type of a system service.
+func (h *Handler) handleSetServiceStartType(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req setServiceStartTypeRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if req.Name == "" {
+		return nil, fmt.Errorf("service name is required")
+	}
+
+	if req.StartType == "" {
+		return nil, fmt.Errorf("start_type is required (auto, manual, or disabled)")
+	}
+
+	mgr := service.New()
+	if mgr == nil {
+		return nil, fmt.Errorf("service management not supported on this platform")
+	}
+
+	if err := mgr.SetStartType(req.Name, req.StartType); err != nil {
+		return nil, err
+	}
+
+	return map[string]string{"status": "changed", "service": req.Name, "start_type": req.StartType}, nil
 }
 
 // Tamper protection handlers

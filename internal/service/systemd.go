@@ -162,6 +162,34 @@ func (m *SystemdManager) Restart(name string) error {
 	return nil
 }
 
+// SetStartType changes the startup type of a systemd service.
+func (m *SystemdManager) SetStartType(name string, startType string) error {
+	switch startType {
+	case "auto", "automatic":
+		// Enable the service
+		cmd := exec.Command("systemctl", "enable", name)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("enabling service: %s", string(output))
+		}
+	case "manual":
+		// Disable the service (won't start on boot, but can be started manually)
+		cmd := exec.Command("systemctl", "disable", name)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("disabling service: %s", string(output))
+		}
+	case "disabled":
+		// Disable and mask the service (can't be started)
+		exec.Command("systemctl", "disable", name).Run()
+		cmd := exec.Command("systemctl", "mask", name)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("masking service: %s", string(output))
+		}
+	default:
+		return fmt.Errorf("invalid start type: %s (valid: auto, manual, disabled)", startType)
+	}
+	return nil
+}
+
 // List lists all systemd services.
 func (m *SystemdManager) List() ([]ServiceInfo, error) {
 	// List all unit files
