@@ -36,6 +36,11 @@ const (
 	INPUT_KEYBOARD = 1
 )
 
+// Keyboard input flags (not all defined in lxn/win)
+const (
+	KEYEVENTF_UNICODE = 0x0004 // Input is Unicode character, not VK code
+)
+
 // Windows MOUSEINPUT structure
 type MOUSEINPUT struct {
 	Dx          int32
@@ -519,31 +524,55 @@ func injectScroll(deltaX, deltaY int) {
 }
 
 func injectKey(key string, down bool) {
-	// Convert key name to virtual key code
+	// Check if this is a special key (function keys, modifiers, etc.)
 	vk := keyNameToVK(key)
-	if vk == 0 {
+
+	// Special keys use VK codes
+	if vk != 0 {
+		var flags uint32
+		if !down {
+			flags = win.KEYEVENTF_KEYUP
+		}
+
+		input := INPUT_KBD{
+			Type: INPUT_KEYBOARD,
+			Ki: KEYBDINPUT{
+				WVk:     uint16(vk),
+				DwFlags: flags,
+			},
+		}
+		procSendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
 		return
 	}
 
-	var flags uint32
-	if !down {
-		flags = win.KEYEVENTF_KEYUP
-	}
+	// For regular characters (including Unicode like ö, ä, ü, @, €), use KEYEVENTF_UNICODE
+	// This works regardless of keyboard layout
+	runes := []rune(key)
+	if len(runes) == 1 {
+		var flags uint32 = KEYEVENTF_UNICODE
+		if !down {
+			flags |= win.KEYEVENTF_KEYUP
+		}
 
-	input := INPUT_KBD{
-		Type: INPUT_KEYBOARD,
-		Ki: KEYBDINPUT{
-			WVk:     uint16(vk),
-			DwFlags: flags,
-		},
+		input := INPUT_KBD{
+			Type: INPUT_KEYBOARD,
+			Ki: KEYBDINPUT{
+				WVk:     0, // Must be 0 for KEYEVENTF_UNICODE
+				WScan:   uint16(runes[0]), // Unicode code point
+				DwFlags: flags,
+			},
+		}
+		procSendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
 	}
-	procSendInput.Call(1, uintptr(unsafe.Pointer(&input)), unsafe.Sizeof(input))
 }
 
-// keyNameToVK converts a JavaScript key name to Windows virtual key code
+// keyNameToVK converts a JavaScript key name to Windows virtual key code.
+// Returns 0 for regular characters that should be handled via KEYEVENTF_UNICODE.
+// Only returns a VK code for special keys (modifiers, function keys, navigation, etc.)
 func keyNameToVK(key string) uint32 {
-	// Common keys mapping
+	// Special keys mapping - these need VK codes to work properly
 	keyMap := map[string]uint32{
+		// Navigation
 		"Escape":      win.VK_ESCAPE,
 		"Enter":       win.VK_RETURN,
 		"Tab":         win.VK_TAB,
@@ -558,15 +587,20 @@ func keyNameToVK(key string) uint32 {
 		"ArrowRight":  win.VK_RIGHT,
 		"ArrowUp":     win.VK_UP,
 		"ArrowDown":   win.VK_DOWN,
+		// Modifiers
 		"Control":     win.VK_CONTROL,
 		"Shift":       win.VK_SHIFT,
 		"Alt":         win.VK_MENU,
 		"Meta":        win.VK_LWIN,
+		// Lock keys
 		"CapsLock":    win.VK_CAPITAL,
 		"NumLock":     win.VK_NUMLOCK,
 		"ScrollLock":  win.VK_SCROLL,
+		// System keys
 		"PrintScreen": win.VK_SNAPSHOT,
 		"Pause":       win.VK_PAUSE,
+		"ContextMenu": win.VK_APPS,
+		// Function keys
 		"F1":          win.VK_F1,
 		"F2":          win.VK_F2,
 		"F3":          win.VK_F3,
@@ -579,30 +613,14 @@ func keyNameToVK(key string) uint32 {
 		"F10":         win.VK_F10,
 		"F11":         win.VK_F11,
 		"F12":         win.VK_F12,
-		" ":           win.VK_SPACE,
 	}
 
 	if vk, ok := keyMap[key]; ok {
 		return vk
 	}
 
-	// Single character - convert to virtual key code
-	if len(key) == 1 {
-		c := key[0]
-		// Letters: VK_A to VK_Z are 0x41-0x5A (65-90), same as uppercase ASCII
-		if c >= 'a' && c <= 'z' {
-			return uint32(c - 32) // Convert lowercase to uppercase ASCII
-		}
-		if c >= 'A' && c <= 'Z' {
-			return uint32(c)
-		}
-		// Numbers: VK_0 to VK_9 are 0x30-0x39 (48-57), same as ASCII
-		if c >= '0' && c <= '9' {
-			return uint32(c)
-		}
-		// Other printable ASCII
-		return uint32(c)
-	}
-
+	// All regular characters (a-z, 0-9, ö, ä, ü, ß, @, €, etc.)
+	// return 0 to be handled via KEYEVENTF_UNICODE
+	// This ensures correct behavior regardless of keyboard layout
 	return 0
 }
