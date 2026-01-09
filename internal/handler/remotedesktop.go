@@ -16,13 +16,16 @@ func (h *Handler) registerRemoteDesktopHandlers() {
 	h.handlers["remote_control"] = h.handleRemoteControl
 	h.handlers["set_quality"] = h.handleSetQuality
 	h.handlers["set_monitor"] = h.handleSetMonitor
+	h.handlers["set_viewport_size"] = h.handleSetViewportSize
 	h.handlers["check_remote_desktop"] = h.handleCheckRemoteDesktop
 }
 
 type startRemoteDesktopRequest struct {
-	SessionID string `json:"session_id"`
-	Quality   string `json:"quality"`
-	MonitorID int    `json:"monitor_id"`
+	SessionID      string `json:"session_id"`
+	Quality        string `json:"quality"`
+	MonitorID      int    `json:"monitor_id"`
+	ViewportWidth  int    `json:"viewport_width"`
+	ViewportHeight int    `json:"viewport_height"`
 }
 
 func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMessage) (interface{}, error) {
@@ -35,7 +38,11 @@ func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMes
 		req.SessionID = h.cfg.GetUUID()
 	}
 
-	h.logger.Info("starting remote desktop session", "session_id", req.SessionID)
+	h.logger.Info("starting remote desktop session",
+		"session_id", req.SessionID,
+		"viewport_width", req.ViewportWidth,
+		"viewport_height", req.ViewportHeight,
+	)
 
 	permStatus := remotedesktop.GetPermissionStatus()
 	h.logger.Info("permission status", "permissions", permStatus)
@@ -45,7 +52,7 @@ func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMes
 		return nil
 	}
 
-	result := remotedesktop.StartSession(req.SessionID, sendCallback, h.logger)
+	result := remotedesktop.StartSession(req.SessionID, sendCallback, h.logger, req.ViewportWidth, req.ViewportHeight)
 
 	if result.Success {
 		h.logger.Info("remote desktop session started successfully", "session_id", req.SessionID)
@@ -193,4 +200,23 @@ func (h *Handler) handleCheckRemoteDesktop(ctx context.Context, data json.RawMes
 		"available":    deps["all_required"],
 		"dependencies": deps,
 	}, nil
+}
+
+type setViewportSizeRequest struct {
+	SessionID      string `json:"session_id"`
+	ViewportWidth  int    `json:"viewport_width"`
+	ViewportHeight int    `json:"viewport_height"`
+}
+
+func (h *Handler) handleSetViewportSize(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req setViewportSizeRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("parsing request: %w", err)
+	}
+
+	if req.SessionID == "" {
+		req.SessionID = h.cfg.GetUUID()
+	}
+
+	return remotedesktop.SetViewportSize(req.SessionID, req.ViewportWidth, req.ViewportHeight), nil
 }

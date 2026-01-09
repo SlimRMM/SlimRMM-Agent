@@ -30,6 +30,8 @@ type Session struct {
 	encoder         *JPEGEncoder
 	selectedMonitor int
 	quality         string
+	viewportWidth   int
+	viewportHeight  int
 	running         bool
 	stopCh          chan struct{}
 	mu              sync.RWMutex
@@ -114,7 +116,9 @@ func GetMonitors() map[string]interface{} {
 }
 
 // StartSession starts a new remote desktop session.
-func StartSession(sessionID string, sendCallback SendCallback, logger *slog.Logger) *StartResult {
+// viewportWidth and viewportHeight specify the client's viewport size for optimal scaling.
+// If 0, the native resolution is used.
+func StartSession(sessionID string, sendCallback SendCallback, logger *slog.Logger, viewportWidth, viewportHeight int) *StartResult {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -145,7 +149,7 @@ func StartSession(sessionID string, sendCallback SendCallback, logger *slog.Logg
 		delete(activeSessions, sessionID)
 	}
 
-	session, err := newSession(sessionID, sendCallback, logger)
+	session, err := newSession(sessionID, sendCallback, logger, viewportWidth, viewportHeight)
 	if err != nil {
 		return &StartResult{
 			Success: false,
@@ -172,7 +176,7 @@ func StartSession(sessionID string, sendCallback SendCallback, logger *slog.Logg
 }
 
 // newSession creates a new session instance.
-func newSession(sessionID string, sendCallback SendCallback, logger *slog.Logger) (*Session, error) {
+func newSession(sessionID string, sendCallback SendCallback, logger *slog.Logger, viewportWidth, viewportHeight int) (*Session, error) {
 	capture, err := NewScreenCapture()
 	if err != nil {
 		return nil, fmt.Errorf("creating screen capture: %w", err)
@@ -194,6 +198,11 @@ func newSession(sessionID string, sendCallback SendCallback, logger *slog.Logger
 	settings := QualityPresets["balanced"]
 	encoder := NewJPEGEncoder(settings.JPEGQuality)
 
+	logger.Info("creating session with viewport",
+		"viewport_width", viewportWidth,
+		"viewport_height", viewportHeight,
+	)
+
 	return &Session{
 		sessionID:       sessionID,
 		sendCallback:    sendCallback,
@@ -203,6 +212,8 @@ func newSession(sessionID string, sendCallback SendCallback, logger *slog.Logger
 		encoder:         encoder,
 		selectedMonitor: selectedMonitor,
 		quality:         "balanced",
+		viewportWidth:   viewportWidth,
+		viewportHeight:  viewportHeight,
 		stopCh:          make(chan struct{}),
 	}, nil
 }
@@ -245,6 +256,8 @@ func (s *Session) captureLoop() {
 			}
 			monitorID := s.selectedMonitor
 			quality := s.quality
+			viewportW := s.viewportWidth
+			viewportH := s.viewportHeight
 			s.mu.RUnlock()
 
 			currentSettings := QualityPresets[quality]
@@ -259,8 +272,10 @@ func (s *Session) captureLoop() {
 				continue
 			}
 
-			if currentSettings.Scale < 1.0 {
-				frame = ScaleImage(frame, currentSettings.Scale)
+			// Calculate scale based on viewport size instead of fixed preset
+			scale := s.calculateScale(frame.Bounds().Dx(), frame.Bounds().Dy(), viewportW, viewportH)
+			if scale < 1.0 {
+				frame = ScaleImage(frame, scale)
 			}
 
 			jpegData, err := s.encoder.Encode(frame)
@@ -285,10 +300,41 @@ func (s *Session) captureLoop() {
 			frameCount++
 			if frameCount <= 3 || frameCount%500 == 0 {
 				s.logger.Info("frame sent", "frame", frameCount, "size", len(jpegData),
-					"width", frame.Bounds().Dx(), "height", frame.Bounds().Dy())
+					"width", frame.Bounds().Dx(), "height", frame.Bounds().Dy(),
+					"scale", scale, "viewport", fmt.Sprintf("%dx%d", viewportW, viewportH))
 			}
 		}
 	}
+}
+
+// calculateScale determines the optimal scale factor based on viewport size.
+// This ensures we never send more pixels than the client can display.
+func (s *Session) calculateScale(srcWidth, srcHeight, viewportWidth, viewportHeight int) float64 {
+	// If no viewport specified, use preset scale
+	if viewportWidth <= 0 || viewportHeight <= 0 {
+		settings := QualityPresets[s.quality]
+		return settings.Scale
+	}
+
+	// Calculate scale to fit viewport while maintaining aspect ratio
+	scaleX := float64(viewportWidth) / float64(srcWidth)
+	scaleY := float64(viewportHeight) / float64(srcHeight)
+	scale := scaleX
+	if scaleY < scaleX {
+		scale = scaleY
+	}
+
+	// Never upscale - only downscale if needed
+	if scale > 1.0 {
+		scale = 1.0
+	}
+
+	// Minimum scale of 0.25 to prevent tiny images
+	if scale < 0.25 {
+		scale = 0.25
+	}
+
+	return scale
 }
 
 // Stop terminates the session.
@@ -414,6 +460,16 @@ func (s *Session) SetMonitor(monitorID int) {
 	s.logger.Info("monitor changed", "monitor_id", monitorID)
 }
 
+// SetViewportSize updates the client viewport size for optimal scaling.
+func (s *Session) SetViewportSize(width, height int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.viewportWidth = width
+	s.viewportHeight = height
+	s.logger.Info("viewport size changed", "width", width, "height", height)
+}
+
 // GetMonitors returns the list of available monitors.
 func (s *Session) GetMonitors() []Monitor {
 	return s.capture.GetMonitors()
@@ -488,6 +544,24 @@ func SetMonitor(sessionID string, monitorID int) map[string]interface{} {
 	}
 
 	session.SetMonitor(monitorID)
+
+	return map[string]interface{}{"success": true}
+}
+
+// SetViewportSize sets the client viewport size for optimal scaling.
+func SetViewportSize(sessionID string, width, height int) map[string]interface{} {
+	sessionsMu.RLock()
+	session, ok := activeSessions[sessionID]
+	sessionsMu.RUnlock()
+
+	if !ok {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "session not found",
+		}
+	}
+
+	session.SetViewportSize(width, height)
 
 	return map[string]interface{}{"success": true}
 }
