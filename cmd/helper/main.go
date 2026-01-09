@@ -123,7 +123,8 @@ type InputEvent struct {
 	X      int    `json:"x,omitempty"`
 	Y      int    `json:"y,omitempty"`
 	Button int    `json:"button,omitempty"` // 0=left, 1=middle, 2=right
-	Key    string `json:"key,omitempty"`
+	Key    string `json:"key,omitempty"`    // Character or key name (e.g., "a", "Shift", "Enter")
+	Code   string `json:"code,omitempty"`   // Physical key code (e.g., "KeyA", "ShiftLeft", "Enter")
 	DeltaX int    `json:"delta_x,omitempty"`
 	DeltaY int    `json:"delta_y,omitempty"`
 }
@@ -458,10 +459,10 @@ func handleInput(event InputEvent) {
 		injectScroll(event.DeltaX, event.DeltaY)
 
 	case "keydown":
-		injectKey(event.Key, true)
+		injectKey(event.Key, event.Code, true)
 
 	case "keyup":
-		injectKey(event.Key, false)
+		injectKey(event.Key, event.Code, false)
 	}
 }
 
@@ -523,9 +524,13 @@ func injectScroll(deltaX, deltaY int) {
 	}
 }
 
-func injectKey(key string, down bool) {
-	// Check if this is a special key (function keys, modifiers, etc.)
-	vk := keyNameToVK(key)
+func injectKey(key string, code string, down bool) {
+	// First try code (physical key) for modifiers to distinguish left/right
+	// Then fall back to key (character/name) for everything else
+	vk := keyCodeToVK(code)
+	if vk == 0 {
+		vk = keyNameToVK(key)
+	}
 
 	// Special keys use VK codes
 	if vk != 0 {
@@ -566,6 +571,29 @@ func injectKey(key string, down bool) {
 	}
 }
 
+// keyCodeToVK converts a JavaScript key code (physical key) to Windows VK code.
+// This is used for modifier keys to distinguish left/right variants.
+func keyCodeToVK(code string) uint32 {
+	codeMap := map[string]uint32{
+		// Modifier keys (left/right specific)
+		"ShiftLeft":    win.VK_LSHIFT,
+		"ShiftRight":   win.VK_RSHIFT,
+		"ControlLeft":  win.VK_LCONTROL,
+		"ControlRight": win.VK_RCONTROL,
+		"AltLeft":      win.VK_LMENU,
+		"AltRight":     win.VK_RMENU, // AltGr on EU keyboards
+		"MetaLeft":     win.VK_LWIN,  // Command on Mac
+		"MetaRight":    win.VK_RWIN,
+		// Space (often used with code)
+		"Space":        win.VK_SPACE,
+	}
+
+	if vk, ok := codeMap[code]; ok {
+		return vk
+	}
+	return 0
+}
+
 // keyNameToVK converts a JavaScript key name to Windows virtual key code.
 // Returns 0 for regular characters that should be handled via KEYEVENTF_UNICODE.
 // Only returns a VK code for special keys (modifiers, function keys, navigation, etc.)
@@ -587,11 +615,21 @@ func keyNameToVK(key string) uint32 {
 		"ArrowRight":  win.VK_RIGHT,
 		"ArrowUp":     win.VK_UP,
 		"ArrowDown":   win.VK_DOWN,
-		// Modifiers
-		"Control":     win.VK_CONTROL,
-		"Shift":       win.VK_SHIFT,
-		"Alt":         win.VK_MENU,
-		"Meta":        win.VK_LWIN,
+		// Modifiers (generic)
+		"Control":      win.VK_CONTROL,
+		"Shift":        win.VK_SHIFT,
+		"Alt":          win.VK_MENU,
+		"AltGraph":     win.VK_RMENU,  // Right Alt (AltGr) for special chars on EU keyboards
+		"Meta":         win.VK_LWIN,   // Command key on Mac -> Windows key
+		// Modifiers (left/right specific - some browsers report these)
+		"ControlLeft":  win.VK_LCONTROL,
+		"ControlRight": win.VK_RCONTROL,
+		"ShiftLeft":    win.VK_LSHIFT,
+		"ShiftRight":   win.VK_RSHIFT,
+		"AltLeft":      win.VK_LMENU,
+		"AltRight":     win.VK_RMENU,
+		"MetaLeft":     win.VK_LWIN,
+		"MetaRight":    win.VK_RWIN,
 		// Lock keys
 		"CapsLock":    win.VK_CAPITAL,
 		"NumLock":     win.VK_NUMLOCK,
