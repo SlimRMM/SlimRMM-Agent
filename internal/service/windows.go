@@ -112,7 +112,25 @@ func (m *WindowsManager) IsInstalled(name string) bool {
 }
 
 // Restart restarts a Windows service.
+// For self-restart (slimrmm-agent), uses cmd.exe to schedule restart externally
+// since stopping the service terminates the process before Start can be called.
 func (m *WindowsManager) Restart(name string) error {
+	// Check if this is a self-restart
+	isSelf := strings.EqualFold(name, "slimrmm-agent") || strings.EqualFold(name, "slimrmm")
+
+	if isSelf {
+		// Use cmd.exe to stop and start in background
+		// This allows the current process to respond before being killed
+		cmd := exec.Command("cmd", "/c",
+			fmt.Sprintf("net stop %s & timeout /t 2 /nobreak > nul & net start %s", name, name))
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("scheduling restart: %w", err)
+		}
+		// Don't wait for the command - let it run in background
+		return nil
+	}
+
+	// Normal restart for other services
 	if err := m.Stop(name); err != nil {
 		return err
 	}
