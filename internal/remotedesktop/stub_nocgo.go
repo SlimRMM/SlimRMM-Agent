@@ -43,7 +43,7 @@ func GetMonitors() map[string]interface{} {
 }
 
 // StartSession returns an error when CGO is disabled.
-func StartSession(sessionID string, sendCallback SendCallback, logger *slog.Logger) *StartResult {
+func StartSession(sessionID string, sendCallback SendCallback, logger *slog.Logger, viewportWidth, viewportHeight int) *StartResult {
 	return &StartResult{
 		Success: false,
 		Error:   errCGODisabled,
@@ -76,6 +76,14 @@ func SetQuality(sessionID string, quality string) map[string]interface{} {
 
 // SetMonitor returns an error when CGO is disabled.
 func SetMonitor(sessionID string, monitorID int) map[string]interface{} {
+	return map[string]interface{}{
+		"success": false,
+		"error":   errCGODisabled,
+	}
+}
+
+// SetViewportSize returns an error when CGO is disabled.
+func SetViewportSize(sessionID string, width, height int) map[string]interface{} {
 	return map[string]interface{}{
 		"success": false,
 		"error":   errCGODisabled,
