@@ -288,6 +288,11 @@ func (sc *ScreenCapture) CaptureAll() (*image.RGBA, error) {
 	return sc.CaptureFrame(1)
 }
 
+// ConfigureInputController is a no-op on macOS (helper only used on Windows)
+func (sc *ScreenCapture) ConfigureInputController(ic *InputController) {
+	// No helper needed on macOS
+}
+
 // Close releases resources.
 func (sc *ScreenCapture) Close() {
 	// No persistent resources to release

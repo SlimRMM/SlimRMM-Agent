@@ -170,6 +170,11 @@ func ScaleImage(img *image.RGBA, scale float64) *image.RGBA {
 	return scaled
 }
 
+// ConfigureInputController is a no-op on Linux (helper only used on Windows)
+func (sc *ScreenCapture) ConfigureInputController(ic *InputController) {
+	// No helper needed on Linux
+}
+
 // Close releases resources.
 func (sc *ScreenCapture) Close() {
 	// No resources to release for kbinani/screenshot

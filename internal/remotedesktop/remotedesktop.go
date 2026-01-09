@@ -188,6 +188,9 @@ func newSession(sessionID string, sendCallback SendCallback, logger *slog.Logger
 	}
 
 	input := NewInputController(monitors, logger)
+	// Configure input controller to use helper if screen capture is using helper (Windows Session 0)
+	capture.ConfigureInputController(input)
+
 	settings := QualityPresets["balanced"]
 	encoder := NewJPEGEncoder(settings.JPEGQuality)
 
@@ -318,6 +321,16 @@ func (s *Session) handleInput(event InputEvent) {
 	s.mu.RLock()
 	monitorID := s.selectedMonitor
 	s.mu.RUnlock()
+
+	s.logger.Info("handling input event",
+		"type", event.Type,
+		"action", event.Action,
+		"x", event.X,
+		"y", event.Y,
+		"button", event.Button,
+		"key", event.Key,
+		"monitor", monitorID,
+	)
 
 	switch event.Type {
 	case "mouse", "mouse_move":
