@@ -140,6 +140,21 @@ func installLaunchdService(binaryPath string) error {
 		return fmt.Errorf("creating certs directory: %w", err)
 	}
 
+	// Create CLI symlink at /usr/local/bin for easy command-line access
+	cliSymlink := "/usr/local/bin/slimrmm-agent"
+	appBinary := "/Applications/SlimRMM.app/Contents/MacOS/slimrmm-agent"
+
+	// Ensure /usr/local/bin exists
+	if err := os.MkdirAll("/usr/local/bin", 0755); err == nil {
+		// Remove existing symlink or file
+		os.Remove(cliSymlink)
+		// Create symlink to App bundle binary
+		if err := os.Symlink(appBinary, cliSymlink); err != nil {
+			// Not fatal - user can still use full path
+			fmt.Printf("Note: Could not create CLI symlink at %s: %v\n", cliSymlink, err)
+		}
+	}
+
 	// Generate plist content
 	plistContent := fmt.Sprintf(launchdPlistTemplate, binaryPath)
 
