@@ -371,8 +371,11 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	}
 	u.logger.Info("replaced binary")
 
-	// Restart service with new version
-	// On Unix, this restarts the running service to load the new binary.
+	// Success - clean up old backups before restart (keep only last 2)
+	u.cleanOldBackups(2)
+
+	// Schedule service restart with new version
+	// On Unix (Linux/macOS), this schedules a delayed restart so we can finish cleanup first.
 	// On Windows, the service was already stopped, so this just starts it.
 	if err := u.restartService(); err != nil {
 		result.Error = fmt.Sprintf("restart failed: %v", err)
@@ -387,26 +390,27 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 		return result, errors.New(result.Error)
 	}
 
-	// Health check - verify new version is running
-	if err := u.healthCheck(ctx); err != nil {
-		result.Error = fmt.Sprintf("health check failed: %v", err)
-		u.logError("update failed", result.Error)
-		// Rollback
-		u.stopService()
-		if rbErr := u.rollback(backupFile); rbErr != nil {
-			result.Error += fmt.Sprintf("; rollback failed: %v", rbErr)
-		} else {
-			result.RolledBack = true
-			u.startService()
+	// Health check - only on Windows where we wait for restart
+	// On Unix, the restart is delayed so we skip the health check here.
+	// The new process will verify its own health when it starts.
+	if runtime.GOOS == "windows" {
+		if err := u.healthCheck(ctx); err != nil {
+			result.Error = fmt.Sprintf("health check failed: %v", err)
+			u.logError("update failed", result.Error)
+			// Rollback
+			u.stopService()
+			if rbErr := u.rollback(backupFile); rbErr != nil {
+				result.Error += fmt.Sprintf("; rollback failed: %v", rbErr)
+			} else {
+				result.RolledBack = true
+				u.startService()
+			}
+			return result, errors.New(result.Error)
 		}
-		return result, errors.New(result.Error)
 	}
 
-	// Success - clean up old backups (keep only last 2)
-	u.cleanOldBackups(2)
-
 	result.Success = true
-	result.RestartNeeded = false // Already restarted
+	result.RestartNeeded = false // Restart scheduled/completed
 	u.logger.Info("update successful", "version", result.NewVersion)
 
 	return result, nil
@@ -940,26 +944,29 @@ func (u *Updater) startService() error {
 func (u *Updater) restartService() error {
 	switch runtime.GOOS {
 	case "linux":
-		cmd := exec.Command("systemctl", "restart", u.serviceName)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			u.logger.Error("systemctl restart failed", "error", err, "output", string(output))
+		// On Linux, systemctl restart sends SIGTERM to the current process.
+		// We spawn it in the background so we can finish our cleanup first.
+		u.logger.Info("scheduling service restart in 2 seconds")
+		cmd := exec.Command("sh", "-c", "sleep 2 && systemctl restart "+u.serviceName)
+		if err := cmd.Start(); err != nil {
+			u.logger.Error("failed to schedule restart", "error", err)
 			return err
 		}
-		u.logger.Info("systemctl restart completed", "output", string(output))
+		u.logger.Info("restart scheduled, process will be restarted shortly")
 		return nil
 	case "darwin":
-		// Use kickstart to restart the service (modern macOS 10.10+)
-		// This restarts the service with the new binary
-		err := exec.Command("launchctl", "kickstart", "-k", "system/"+u.serviceName).Run()
-		if err != nil {
-			// Fallback: bootout + bootstrap
-			u.logger.Debug("kickstart failed, trying bootout+bootstrap", "error", err)
-			plistPath := "/Library/LaunchDaemons/" + u.serviceName + ".plist"
-			exec.Command("launchctl", "bootout", "system", plistPath).Run()
-			time.Sleep(500 * time.Millisecond)
-			return exec.Command("launchctl", "bootstrap", "system", plistPath).Run()
+		// On macOS, launchctl kickstart -k sends SIGTERM immediately.
+		// We spawn a background shell that waits, then restarts the service.
+		// This allows the current process to finish cleanup before being killed.
+		u.logger.Info("scheduling service restart in 2 seconds")
+		cmd := exec.Command("sh", "-c", "sleep 2 && launchctl kickstart -k system/"+u.serviceName)
+		if err := cmd.Start(); err != nil {
+			u.logger.Error("failed to schedule restart", "error", err)
+			// Fallback: try immediate restart (will kill us but at least binary is replaced)
+			exec.Command("launchctl", "kickstart", "-k", "system/"+u.serviceName).Start()
+			return nil
 		}
+		u.logger.Info("restart scheduled, process will be restarted shortly")
 		return nil
 	case "windows":
 		// Windows already stopped the service, just start it
