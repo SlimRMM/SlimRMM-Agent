@@ -419,6 +419,8 @@ func (h *Handler) handleRunOsquery(ctx context.Context, data json.RawMessage) (i
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	h.logger.Info("received osquery request", "scan_type", req.ScanType, "query_len", len(req.Query))
+
 	// Handle updates scan type specially (agent-side, no SQL)
 	if req.ScanType == "updates" || (req.Query == "" && req.ScanType == "") {
 		// If no query provided or scan_type is updates, use internal update checker
@@ -427,11 +429,13 @@ func (h *Handler) handleRunOsquery(ctx context.Context, data json.RawMessage) (i
 
 	// If query is empty but scan_type is set, we can't run osquery
 	if req.Query == "" {
+		h.logger.Warn("empty query for scan_type", "scan_type", req.ScanType)
 		return []interface{}{}, nil
 	}
 
 	client := osquery.New()
 	if !client.IsAvailable() {
+		h.logger.Error("osquery not available for scan", "scan_type", req.ScanType)
 		return nil, fmt.Errorf("osquery not available")
 	}
 
@@ -440,7 +444,14 @@ func (h *Handler) handleRunOsquery(ctx context.Context, data json.RawMessage) (i
 		timeout = osquery.DefaultTimeout
 	}
 
-	return client.QueryWithTimeout(ctx, req.Query, timeout)
+	result, err := client.QueryWithTimeout(ctx, req.Query, timeout)
+	if err != nil {
+		h.logger.Error("osquery failed", "scan_type", req.ScanType, "error", err)
+		return nil, err
+	}
+
+	h.logger.Info("osquery completed", "scan_type", req.ScanType, "rows", result.Count)
+	return result, nil
 }
 
 // File transfer handlers
