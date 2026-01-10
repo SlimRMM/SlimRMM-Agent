@@ -66,7 +66,7 @@ func DefaultPaths() Paths {
 	switch runtime.GOOS {
 	case "darwin":
 		baseDir = "/Applications/SlimRMM.app/Contents/Data"
-		logDir = "/var/log/slimrmm"
+		logDir = "/Library/Logs/SlimRMM" // Apple-recommended location for system daemons
 	case "windows":
 		baseDir = filepath.Join(os.Getenv("ProgramFiles"), "SlimRMM")
 		logDir = filepath.Join(baseDir, "log")

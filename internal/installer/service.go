@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const (
@@ -127,10 +128,25 @@ func installLaunchdService(binaryPath string) error {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
 
+	// Also ensure data directory exists for config file
+	dataDir := "/Applications/SlimRMM.app/Contents/Data"
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return fmt.Errorf("creating data directory: %w", err)
+	}
+
+	// Ensure certs directory exists
+	certsDir := filepath.Join(dataDir, "certs")
+	if err := os.MkdirAll(certsDir, 0700); err != nil {
+		return fmt.Errorf("creating certs directory: %w", err)
+	}
+
 	// Generate plist content
 	plistContent := fmt.Sprintf(launchdPlistTemplate, binaryPath)
 
-	// Unload existing service if present
+	// Stop and remove existing service if present (use both old and new methods)
+	// Try modern bootout first
+	exec.Command("launchctl", "bootout", "system/"+launchdPlistName).Run()
+	// Also try legacy unload as fallback
 	exec.Command("launchctl", "unload", launchdPlistPath).Run()
 
 	// Write plist file
@@ -138,9 +154,34 @@ func installLaunchdService(binaryPath string) error {
 		return fmt.Errorf("writing plist file: %w", err)
 	}
 
-	// Load and start service
-	if err := exec.Command("launchctl", "load", "-w", launchdPlistPath).Run(); err != nil {
-		return fmt.Errorf("loading service: %w", err)
+	// Use launchctl bootstrap for modern macOS (10.11+)
+	// bootstrap system <path> is the modern way to load system daemons
+	bootstrapCmd := exec.Command("launchctl", "bootstrap", "system", launchdPlistPath)
+	if err := bootstrapCmd.Run(); err != nil {
+		// Fallback to legacy load command for older macOS versions
+		loadCmd := exec.Command("launchctl", "load", "-w", launchdPlistPath)
+		if err := loadCmd.Run(); err != nil {
+			return fmt.Errorf("loading service: %w", err)
+		}
+	}
+
+	// Verify service actually started by checking if it's listed
+	// Give it a moment to start
+	time.Sleep(1 * time.Second)
+
+	listCmd := exec.Command("launchctl", "list", launchdPlistName)
+	if err := listCmd.Run(); err != nil {
+		// Service isn't listed - check the log for errors
+		logPath := filepath.Join(logDir, "agent.log")
+		if logData, readErr := os.ReadFile(logPath); readErr == nil && len(logData) > 0 {
+			// Return last 500 bytes of log
+			logStr := string(logData)
+			if len(logStr) > 500 {
+				logStr = logStr[len(logStr)-500:]
+			}
+			return fmt.Errorf("service not running after start. Check log: %s", logStr)
+		}
+		return fmt.Errorf("service failed to start (not listed in launchctl)")
 	}
 
 	return nil
@@ -215,7 +256,9 @@ func uninstallSystemdService() error {
 
 // uninstallLaunchdService stops and removes the launchd service.
 func uninstallLaunchdService() error {
-	// Unload service
+	// Try modern bootout first
+	exec.Command("launchctl", "bootout", "system/"+launchdPlistName).Run()
+	// Also try legacy unload as fallback
 	exec.Command("launchctl", "unload", launchdPlistPath).Run()
 
 	// Remove plist file
@@ -300,9 +343,19 @@ func RestartService() error {
 	case "linux":
 		return exec.Command("systemctl", "restart", systemdServiceName).Run()
 	case "darwin":
-		// launchctl doesn't have restart, so unload/load
-		exec.Command("launchctl", "unload", launchdPlistPath).Run()
-		return exec.Command("launchctl", "load", "-w", launchdPlistPath).Run()
+		// Use kickstart for restart on modern macOS
+		kickstartCmd := exec.Command("launchctl", "kickstart", "-k", "system/"+launchdPlistName)
+		if err := kickstartCmd.Run(); err != nil {
+			// Fallback to bootout/bootstrap for older systems
+			exec.Command("launchctl", "bootout", "system/"+launchdPlistName).Run()
+			time.Sleep(500 * time.Millisecond)
+			if err := exec.Command("launchctl", "bootstrap", "system", launchdPlistPath).Run(); err != nil {
+				// Final fallback to legacy unload/load
+				exec.Command("launchctl", "unload", launchdPlistPath).Run()
+				return exec.Command("launchctl", "load", "-w", launchdPlistPath).Run()
+			}
+		}
+		return nil
 	case "windows":
 		exec.Command("sc", "stop", "SlimRMMAgent").Run()
 		return exec.Command("sc", "start", "SlimRMMAgent").Run()
