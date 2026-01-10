@@ -327,9 +327,13 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	}
 	u.logger.Info("extracted new binary", "path", newBinaryPath)
 
-	// Stop service before replacing binary
-	if err := u.stopService(); err != nil {
-		u.logger.Warn("failed to stop service", "error", err)
+	// On Windows, we must stop the service before replacing the binary because
+	// Windows locks running executables. On Unix (Linux/macOS), we can replace
+	// the binary while it's running - the kernel keeps the old one in memory.
+	if runtime.GOOS == "windows" {
+		if err := u.stopService(); err != nil {
+			u.logger.Warn("failed to stop service", "error", err)
+		}
 	}
 
 	// Copy helper to install directory (Windows only)
@@ -367,16 +371,18 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	}
 	u.logger.Info("replaced binary")
 
-	// Start service with new version
-	if err := u.startService(); err != nil {
-		result.Error = fmt.Sprintf("start failed: %v", err)
+	// Restart service with new version
+	// On Unix, this restarts the running service to load the new binary.
+	// On Windows, the service was already stopped, so this just starts it.
+	if err := u.restartService(); err != nil {
+		result.Error = fmt.Sprintf("restart failed: %v", err)
 		u.logError("update failed", result.Error)
 		// Rollback
 		if rbErr := u.rollback(backupFile); rbErr != nil {
 			result.Error += fmt.Sprintf("; rollback failed: %v", rbErr)
 		} else {
 			result.RolledBack = true
-			u.startService()
+			u.restartService()
 		}
 		return result, errors.New(result.Error)
 	}
@@ -923,6 +929,41 @@ func (u *Updater) startService() error {
 			return exec.Command("sc", "start", u.serviceName).Run()
 		}
 		return nil
+	default:
+		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+	}
+}
+
+// restartService restarts the service to load the new binary.
+// On Unix, we use restart because the service is still running (binary was replaced in-place).
+// On Windows, this just calls startService since we stopped it first.
+func (u *Updater) restartService() error {
+	switch runtime.GOOS {
+	case "linux":
+		cmd := exec.Command("systemctl", "restart", u.serviceName)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			u.logger.Error("systemctl restart failed", "error", err, "output", string(output))
+			return err
+		}
+		u.logger.Info("systemctl restart completed", "output", string(output))
+		return nil
+	case "darwin":
+		// Use kickstart to restart the service (modern macOS 10.10+)
+		// This restarts the service with the new binary
+		err := exec.Command("launchctl", "kickstart", "-k", "system/"+u.serviceName).Run()
+		if err != nil {
+			// Fallback: bootout + bootstrap
+			u.logger.Debug("kickstart failed, trying bootout+bootstrap", "error", err)
+			plistPath := "/Library/LaunchDaemons/" + u.serviceName + ".plist"
+			exec.Command("launchctl", "bootout", "system", plistPath).Run()
+			time.Sleep(500 * time.Millisecond)
+			return exec.Command("launchctl", "bootstrap", "system", plistPath).Run()
+		}
+		return nil
+	case "windows":
+		// Windows already stopped the service, just start it
+		return u.startService()
 	default:
 		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
