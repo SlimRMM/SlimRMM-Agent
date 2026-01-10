@@ -16,6 +16,10 @@ SERVICE_FILE="/etc/systemd/system/slimrmm-agent.service"
 # This is necessary for upgrades to succeed
 remove_immutable_attrs() {
     echo "Removing tamper protection for upgrade/removal..."
+
+    # Stop the service first to release file locks
+    systemctl stop slimrmm-agent 2>/dev/null || true
+
     # Remove immutable attribute from all protected files
     chattr -i "$BINARY_PATH" 2>/dev/null || true
     chattr -i "$SERVICE_FILE" 2>/dev/null || true
@@ -24,10 +28,6 @@ remove_immutable_attrs() {
     chattr -i "$CONFIG_DIR/client.crt" 2>/dev/null || true
     chattr -i "$CONFIG_DIR/client.key" 2>/dev/null || true
     chattr -i "$CONFIG_DIR/.proxmox_token.json" 2>/dev/null || true
-    # Also try to disable tamper protection through the agent
-    if [ -x "$BINARY_PATH" ]; then
-        "$BINARY_PATH" --disable-tamper-protection 2>/dev/null || true
-    fi
 }
 
 # Determine if this is an upgrade or complete removal
