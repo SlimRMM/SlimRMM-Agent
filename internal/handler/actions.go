@@ -122,6 +122,9 @@ func (h *Handler) registerHandlers() {
 	// Compliance handlers
 	h.handlers["run_compliance_check"] = h.handleRunComplianceCheck
 
+	// Agent logs handler
+	h.handlers["pull_logs"] = h.handlePullLogs
+
 	// Docker policy handlers
 	h.handlers["docker_policy_execute"] = h.handleDockerPolicyExecute
 	h.handlers["docker_prune_images"] = h.handleDockerPruneImages
@@ -2281,4 +2284,45 @@ func (h *Handler) compareRegistryResult(actual interface{}, expected interface{}
 	default:
 		return false, fmt.Sprintf("unsupported comparison operator: %s", operator)
 	}
+}
+
+// Agent logs handler
+
+type pullLogsRequest struct {
+	AfterTimestamp string `json:"after_timestamp,omitempty"`
+	Limit          int    `json:"limit,omitempty"`
+}
+
+func (h *Handler) handlePullLogs(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req pullLogsRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		// Ignore parse errors, use defaults
+	}
+
+	limit := req.Limit
+	if limit <= 0 || limit > 10000 {
+		limit = 1000 // Default to 1000 logs
+	}
+
+	// Parse after_timestamp if provided
+	var afterTime time.Time
+	if req.AfterTimestamp != "" {
+		if t, err := time.Parse(time.RFC3339, req.AfterTimestamp); err == nil {
+			afterTime = t
+		}
+	}
+
+	h.logger.Info("pulling logs", "after_timestamp", req.AfterTimestamp, "limit", limit)
+
+	logs, err := actions.ReadAgentLogs(ctx, afterTime, limit)
+	if err != nil {
+		h.logger.Error("failed to read agent logs", "error", err)
+		return nil, err
+	}
+
+	h.logger.Info("logs read successfully", "count", len(logs))
+
+	return map[string]interface{}{
+		"logs": logs,
+	}, nil
 }

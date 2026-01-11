@@ -705,9 +705,12 @@ $Updates = Get-WindowsUpdate -MicrosoftUpdate -AcceptAll -IgnoreReboot 2>$null |
     }
 }
 
-Write-Host "Found $($Updates.Count) updates"
-if ($Updates) {
-    $Updates | ConvertTo-Json -Depth 3 -Compress
+# Ensure $Updates is always an array
+$UpdatesArray = @($Updates)
+Write-Host "Found $($UpdatesArray.Count) updates"
+if ($UpdatesArray.Count -gt 0) {
+    # Use ConvertTo-Json with explicit array wrapping
+    ConvertTo-Json -InputObject $UpdatesArray -Depth 3 -Compress
 } else {
     Write-Output "[]"
 }
