@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -44,14 +46,20 @@ func HasDisplayServer() bool {
 		return true
 
 	case "linux":
+		// Check environment variables first (when run interactively)
 		if os.Getenv("WAYLAND_DISPLAY") != "" {
 			return true
 		}
-		display := os.Getenv("DISPLAY")
+		if os.Getenv("DISPLAY") != "" {
+			return true
+		}
+
+		// When running as a service, try to find an active graphical session
+		display, xauth := findActiveLinuxDisplay()
 		if display != "" {
-			cmd := exec.Command("xset", "q")
-			if err := cmd.Run(); err == nil {
-				return true
+			os.Setenv("DISPLAY", display)
+			if xauth != "" {
+				os.Setenv("XAUTHORITY", xauth)
 			}
 			return true
 		}
@@ -60,6 +68,130 @@ func HasDisplayServer() bool {
 	default:
 		return false
 	}
+}
+
+// findActiveLinuxDisplay attempts to find an active X11 display on Linux.
+// This is needed when running as a systemd service without access to user environment.
+func findActiveLinuxDisplay() (display, xauthority string) {
+	// Method 1: Check for X11 sockets directly
+	if _, err := os.Stat("/tmp/.X11-unix/X0"); err == nil {
+		// Found X0 socket, try common Xauthority locations
+		xauth := findXauthority()
+		return ":0", xauth
+	}
+	if _, err := os.Stat("/tmp/.X11-unix/X1"); err == nil {
+		xauth := findXauthority()
+		return ":1", xauth
+	}
+
+	// Method 2: Use loginctl to find active graphical sessions
+	cmd := exec.Command("loginctl", "list-sessions", "--no-legend")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", ""
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 1 {
+			continue
+		}
+		sessionID := fields[0]
+
+		// Get session type
+		typeCmd := exec.Command("loginctl", "show-session", sessionID, "-p", "Type", "--value")
+		typeOutput, err := typeCmd.Output()
+		if err != nil {
+			continue
+		}
+		sessionType := strings.TrimSpace(string(typeOutput))
+
+		// Only graphical sessions (x11 or wayland)
+		if sessionType != "x11" && sessionType != "wayland" {
+			continue
+		}
+
+		// Get Display
+		displayCmd := exec.Command("loginctl", "show-session", sessionID, "-p", "Display", "--value")
+		displayOutput, err := displayCmd.Output()
+		if err != nil {
+			continue
+		}
+		display = strings.TrimSpace(string(displayOutput))
+
+		if display == "" {
+			continue
+		}
+
+		// Get user for Xauthority
+		userCmd := exec.Command("loginctl", "show-session", sessionID, "-p", "Name", "--value")
+		userOutput, err := userCmd.Output()
+		if err != nil {
+			continue
+		}
+		username := strings.TrimSpace(string(userOutput))
+
+		// Try common Xauthority paths for this user
+		if username != "" {
+			homeDir := "/home/" + username
+			if username == "root" {
+				homeDir = "/root"
+			}
+			xauthPaths := []string{
+				homeDir + "/.Xauthority",
+				"/run/user/" + getUID(username) + "/gdm/Xauthority",
+				"/run/user/" + getUID(username) + "/.mutter-Xwaylandauth.*",
+			}
+			for _, path := range xauthPaths {
+				// Handle glob pattern
+				if strings.Contains(path, "*") {
+					matches, _ := filepath.Glob(path)
+					if len(matches) > 0 {
+						path = matches[0]
+					}
+				}
+				if _, err := os.Stat(path); err == nil {
+					return display, path
+				}
+			}
+		}
+
+		// Return display even without Xauthority (might work with xhost +)
+		return display, ""
+	}
+
+	return "", ""
+}
+
+// findXauthority finds the Xauthority file for the current active session.
+func findXauthority() string {
+	// Check common locations
+	paths := []string{
+		"/run/user/1000/gdm/Xauthority",
+		"/home/*/.Xauthority",
+		"/root/.Xauthority",
+	}
+
+	for _, pattern := range paths {
+		matches, _ := filepath.Glob(pattern)
+		for _, path := range matches {
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
+		}
+	}
+	return ""
+}
+
+// getUID returns the UID for a username.
+func getUID(username string) string {
+	cmd := exec.Command("id", "-u", username)
+	output, err := cmd.Output()
+	if err != nil {
+		return "1000" // Default fallback
+	}
+	return strings.TrimSpace(string(output))
 }
 
 // CheckDependencies returns availability of remote desktop features.
