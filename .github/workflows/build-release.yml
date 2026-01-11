@@ -75,18 +75,57 @@ jobs:
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
 
-  # Build Linux binaries (CGO disabled for cross-compilation)
-  build:
+  # Build Linux AMD64 binary with CGO enabled (required for remote desktop)
+  build-linux-amd64:
     needs: version
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies for CGO
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxtst-dev libxinerama-dev libxcursor-dev libxrandr-dev libxi-dev
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build Linux AMD64 with CGO
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 1
+        run: |
+          VERSION=${{ needs.version.outputs.version }}
+          COMMIT=${GITHUB_SHA::8}
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          go build -ldflags "-s -w \
+            -X github.com/slimrmm/slimrmm-agent/pkg/version.Version=$VERSION \
+            -X github.com/slimrmm/slimrmm-agent/pkg/version.GitCommit=$COMMIT \
+            -X github.com/slimrmm/slimrmm-agent/pkg/version.BuildDate=$DATE" \
+            -o slimrmm-agent \
+            ./cmd/slimrmm-agent
+
+      - name: Create tar.gz
+        run: |
+          VERSION=${{ needs.version.outputs.version }}
+          tar -czvf slimrmm-agent_${VERSION}_linux_amd64.tar.gz slimrmm-agent
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-linux-amd64
+          path: slimrmm-agent*
+
+  # Build Linux ARM64 binary (CGO disabled - no native runner, remote desktop limited)
+  build-linux-arm64:
+    needs: version
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -95,10 +134,10 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Build
+      - name: Build Linux ARM64 without CGO
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          GOOS: linux
+          GOARCH: arm64
           CGO_ENABLED: 0
         run: |
           VERSION=${{ needs.version.outputs.version }}
@@ -115,12 +154,12 @@ jobs:
       - name: Create tar.gz
         run: |
           VERSION=${{ needs.version.outputs.version }}
-          tar -czvf slimrmm-agent_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz slimrmm-agent
+          tar -czvf slimrmm-agent_${VERSION}_linux_arm64.tar.gz slimrmm-agent
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: binary-linux-arm64
           path: slimrmm-agent*
 
   # Build Windows binary with CGO enabled (required for remote desktop)
@@ -214,7 +253,7 @@ jobs:
 
   # Build DEB package
   build-deb:
-    needs: [version, build]
+    needs: [version, build-linux-amd64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -265,7 +304,7 @@ jobs:
 
   # Build RPM package
   build-rpm:
-    needs: [version, build]
+    needs: [version, build-linux-amd64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -623,7 +662,7 @@ jobs:
 
   # Create GitHub Release
   release:
-    needs: [version, build, build-windows, build-macos, build-deb, build-rpm, build-macos-pkg, build-msi]
+    needs: [version, build-linux-amd64, build-linux-arm64, build-windows, build-macos, build-deb, build-rpm, build-macos-pkg, build-msi]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
