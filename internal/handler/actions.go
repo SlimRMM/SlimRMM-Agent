@@ -1871,8 +1871,8 @@ func (h *Handler) handleRunComplianceCheck(ctx context.Context, data json.RawMes
 
 			result.ActualValue = queryResult
 
-			// Compare with expected result
-			passed, details := h.compareComplianceResult(queryResult, check.ExpectedResult, check.ComparisonOperator)
+			// Compare with expected result - pass only the Rows, not the full QueryResult
+			passed, details := h.compareComplianceResult(queryResult.Rows, check.ExpectedResult, check.ComparisonOperator)
 			if passed {
 				result.Status = "passed"
 				result.Details = details
@@ -1975,17 +1975,31 @@ func (h *Handler) compareComplianceResult(actual interface{}, expected interface
 	}
 
 	// Convert actual to []map[string]interface{} if it's osquery result
-	actualRows, ok := actual.([]map[string]interface{})
-	if !ok {
+	var actualRows []map[string]interface{}
+
+	switch v := actual.(type) {
+	case []map[string]interface{}:
+		actualRows = v
+	case []map[string]string:
+		// osquery returns []map[string]string - convert to interface{}
+		actualRows = make([]map[string]interface{}, len(v))
+		for i, row := range v {
+			converted := make(map[string]interface{}, len(row))
+			for k, val := range row {
+				converted[k] = val
+			}
+			actualRows[i] = converted
+		}
+	case []interface{}:
 		// Try to convert from []interface{}
-		if arr, ok := actual.([]interface{}); ok {
-			actualRows = make([]map[string]interface{}, 0, len(arr))
-			for _, item := range arr {
-				if m, ok := item.(map[string]interface{}); ok {
-					actualRows = append(actualRows, m)
-				}
+		actualRows = make([]map[string]interface{}, 0, len(v))
+		for _, item := range v {
+			if m, ok := item.(map[string]interface{}); ok {
+				actualRows = append(actualRows, m)
 			}
 		}
+	default:
+		return false, fmt.Sprintf("unexpected actual type: %T", actual)
 	}
 
 	switch operator {
