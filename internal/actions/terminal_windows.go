@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"sync"
 
@@ -287,18 +286,3 @@ func (m *TerminalManager) ReadOutput(ctx context.Context, id string, maxBytes in
 	}
 	return result, nil
 }
-
-// SetWorkingDirectory sets the working directory for the terminal.
-// Note: ConPTY doesn't support changing directory after start,
-// so this is a no-op. Use 'cd' command instead.
-func (m *TerminalManager) SetWorkingDirectory(id, dir string) error {
-	// ConPTY starts in the current directory
-	// To change directory, send a 'cd' command
-	if dir != "" {
-		return m.SendInput(id, fmt.Sprintf("cd %q\r", dir))
-	}
-	return nil
-}
-
-// Ensure os import is used
-var _ = os.Environ

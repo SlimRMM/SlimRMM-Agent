@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -655,6 +654,3 @@ func (c *Client) Reconnect() error {
 	c.Stop()
 	return c.Start()
 }
-
-// ensure io import is used
-var _ = io.EOF
