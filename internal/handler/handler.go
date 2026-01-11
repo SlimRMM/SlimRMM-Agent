@@ -36,6 +36,12 @@ const (
 	certCheckInterval = 24 * time.Hour   // Check certificates every 24 hours (like Python)
 )
 
+// actionToResponseAction maps request action names to their response action names.
+// This is needed because the backend expects specific action names for certain responses.
+var actionToResponseAction = map[string]string{
+	"pull_logs": "logs_result",
+}
+
 // Message represents a WebSocket message from the backend.
 // The backend sends all fields at root level, not inside a "data" object.
 type Message struct {
@@ -688,8 +694,14 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		return
 	}
 
+	// Map request actions to response actions where needed
+	responseAction := msg.Action
+	if mapped, ok := actionToResponseAction[msg.Action]; ok {
+		responseAction = mapped
+	}
+
 	resp := Response{
-		Action:    msg.Action,
+		Action:    responseAction,
 		RequestID: msg.RequestID,
 		Success:   err == nil,
 		Data:      result,
