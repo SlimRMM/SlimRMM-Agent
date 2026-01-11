@@ -28,6 +28,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
+	"github.com/slimrmm/slimrmm-agent/internal/winget"
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
 
@@ -413,6 +414,21 @@ func cmdStatus(paths config.Paths) int {
 		}
 	}
 	fmt.Printf("osquery:     %s\n", osqueryStatus)
+
+	// winget availability (Windows only)
+	if runtime.GOOS == "windows" {
+		wingetClient := winget.New()
+		wingetStatus := "Not available"
+		if wingetClient.IsAvailable() {
+			version := wingetClient.GetVersion()
+			if version != "" {
+				wingetStatus = fmt.Sprintf("v%s (%s)", version, wingetClient.GetBinaryPath())
+			} else {
+				wingetStatus = fmt.Sprintf("Available (%s)", wingetClient.GetBinaryPath())
+			}
+		}
+		fmt.Printf("winget:      %s\n", wingetStatus)
+	}
 
 	// Docker availability
 	dockerStatus := "Not available"

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/tamper"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
+	"github.com/slimrmm/slimrmm-agent/internal/winget"
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
 
@@ -63,6 +65,14 @@ type HeartbeatMessage struct {
 	Stats        HeartbeatStats      `json:"stats"`
 	ExternalIP   string              `json:"external_ip,omitempty"`
 	Proxmox      *HeartbeatProxmox   `json:"proxmox,omitempty"`
+	Winget       *HeartbeatWinget    `json:"winget,omitempty"`
+}
+
+// HeartbeatWinget contains Windows Package Manager (winget) information.
+type HeartbeatWinget struct {
+	Available   bool   `json:"available"`
+	Version     string `json:"version,omitempty"`
+	SystemLevel bool   `json:"system_level"`
 }
 
 // HeartbeatProxmox contains Proxmox host information.
@@ -555,6 +565,17 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			ClusterName:    proxmoxInfo.ClusterName,
 			NodeName:       proxmoxInfo.NodeName,
 			RepositoryType: proxmoxInfo.RepositoryType,
+		}
+	}
+
+	// Add winget info on Windows
+	if runtime.GOOS == "windows" {
+		wingetClient := winget.GetDefault()
+		status := wingetClient.GetStatus()
+		heartbeat.Winget = &HeartbeatWinget{
+			Available:   status.Available,
+			Version:     status.Version,
+			SystemLevel: status.SystemLevel,
 		}
 	}
 

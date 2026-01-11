@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/security/archive"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
+	"github.com/slimrmm/slimrmm-agent/internal/winget"
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
 
@@ -87,6 +89,10 @@ func (h *Handler) registerHandlers() {
 	h.handlers["update_agent"] = h.handleUpdateAgent
 	h.handlers["check_update"] = h.handleCheckUpdate     // Check for updates without installing
 	h.handlers["update_osquery"] = h.handleUpdateOsquery // Python: update_osquery
+
+	// Winget handlers (Windows only)
+	h.handlers["install_winget"] = h.handleInstallWinget
+	h.handlers["get_winget_status"] = h.handleGetWingetStatus
 
 	// Proxmox handlers (only active on Proxmox hosts)
 	h.registerProxmoxHandlers()
@@ -2324,5 +2330,81 @@ func (h *Handler) handlePullLogs(ctx context.Context, data json.RawMessage) (int
 
 	return map[string]interface{}{
 		"logs": logs,
+	}, nil
+}
+
+// Winget handlers (Windows only)
+
+// handleGetWingetStatus returns the current winget installation status.
+func (h *Handler) handleGetWingetStatus(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if runtime.GOOS != "windows" {
+		return map[string]interface{}{
+			"available":    false,
+			"message":      "winget is only available on Windows",
+			"system_level": false,
+		}, nil
+	}
+
+	client := winget.GetDefault()
+	status := client.GetStatus()
+
+	return map[string]interface{}{
+		"available":    status.Available,
+		"version":      status.Version,
+		"binary_path":  status.BinaryPath,
+		"system_level": status.SystemLevel,
+	}, nil
+}
+
+// handleInstallWinget installs winget on Windows.
+func (h *Handler) handleInstallWinget(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if runtime.GOOS != "windows" {
+		return map[string]interface{}{
+			"status":  "unsupported",
+			"message": "winget is only available on Windows",
+		}, nil
+	}
+
+	client := winget.GetDefault()
+
+	// Check if already installed
+	if client.IsAvailable() {
+		return map[string]interface{}{
+			"status":       "already_installed",
+			"available":    true,
+			"version":      client.GetVersion(),
+			"binary_path":  client.GetBinaryPath(),
+			"system_level": client.GetStatus().SystemLevel,
+			"message":      "winget is already installed",
+		}, nil
+	}
+
+	h.logger.Info("installing winget")
+
+	// Install winget
+	if err := client.Install(ctx); err != nil {
+		h.logger.Error("failed to install winget", "error", err)
+		return map[string]interface{}{
+			"status":  "failed",
+			"message": fmt.Sprintf("installation failed: %v", err),
+		}, nil
+	}
+
+	// Refresh and get new status
+	client.Refresh()
+	status := client.GetStatus()
+
+	h.logger.Info("winget installation completed",
+		"available", status.Available,
+		"version", status.Version,
+	)
+
+	return map[string]interface{}{
+		"status":       "installed",
+		"available":    status.Available,
+		"version":      status.Version,
+		"binary_path":  status.BinaryPath,
+		"system_level": status.SystemLevel,
+		"message":      "winget installed successfully",
 	}, nil
 }
