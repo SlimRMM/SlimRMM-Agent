@@ -59,14 +59,18 @@ func ReadAgentLogs(ctx context.Context, afterTime time.Time, limit int) ([]LogEn
 }
 
 // getLogDirectory returns the log directory for the current OS.
+// These paths must match the paths in config.go and the service definitions.
 func getLogDirectory() string {
 	switch runtime.GOOS {
 	case "windows":
-		return filepath.Join(os.Getenv("ProgramData"), "SlimRMM", "logs")
+		// Windows: logs are in Program Files\SlimRMM\log
+		return filepath.Join(os.Getenv("ProgramFiles"), "SlimRMM", "log")
 	case "darwin":
+		// macOS: Apple-recommended location for system daemon logs
 		return "/Library/Logs/SlimRMM"
 	default: // linux
-		return "/var/log/slimrmm-agent"
+		// Linux: standard log location matching systemd service config
+		return "/var/log/slimrmm"
 	}
 }
 
