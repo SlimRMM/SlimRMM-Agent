@@ -276,26 +276,33 @@ ConvertTo-Json`
 
 // Linux updates
 func getLinuxUpdates(ctx context.Context) (*UpdateList, error) {
+	slog.Info("starting Linux updates scan")
+
 	// Try apt first
 	if _, err := exec.LookPath("apt"); err == nil {
+		slog.Info("using apt for updates scan")
 		return getAptUpdates(ctx)
 	}
 
 	// Try dnf
 	if _, err := exec.LookPath("dnf"); err == nil {
+		slog.Info("using dnf for updates scan")
 		return getDnfUpdates(ctx)
 	}
 
 	// Try yum
 	if _, err := exec.LookPath("yum"); err == nil {
+		slog.Info("using yum for updates scan")
 		return getYumUpdates(ctx)
 	}
 
 	// Try pacman (Arch Linux)
 	if _, err := exec.LookPath("pacman"); err == nil {
+		slog.Info("using pacman for updates scan")
 		return getPacmanUpdates(ctx)
 	}
 
+	slog.Error("no supported package manager found for updates scan")
 	return nil, fmt.Errorf("no supported package manager found")
 }
 
@@ -309,6 +316,7 @@ func getAptUpdates(ctx context.Context) (*UpdateList, error) {
 	}
 
 	// Try apt-get upgrade simulation first (more reliable)
+	slog.Info("running apt-get -s upgrade")
 	cmd := exec.CommandContext(ctx, "apt-get", "-s", "upgrade")
 	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C")
 	output, err := cmd.Output()
@@ -398,10 +406,12 @@ func getAptUpdates(ctx context.Context) (*UpdateList, error) {
 	}
 
 	updates.Count = len(updates.Updates)
+	slog.Info("apt updates scan completed", "count", updates.Count)
 	return updates, nil
 }
 
 func getDnfUpdates(ctx context.Context) (*UpdateList, error) {
+	slog.Info("running dnf check-update")
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
@@ -427,28 +437,33 @@ func getDnfUpdates(ctx context.Context) (*UpdateList, error) {
 	}
 
 	updates.Count = len(updates.Updates)
+	slog.Info("dnf updates scan completed", "count", updates.Count)
 	return updates, nil
 }
 
 func getYumUpdates(ctx context.Context) (*UpdateList, error) {
+	slog.Info("running yum check-update (via dnf)")
 	return getDnfUpdates(ctx) // Same format
 }
 
 func getPacmanUpdates(ctx context.Context) (*UpdateList, error) {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	slog.Info("running pacman updates scan")
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
-
-	// Sync database first
-	exec.CommandContext(ctx, "pacman", "-Sy").Run()
-
-	// Check for updates
-	cmd := exec.CommandContext(ctx, "pacman", "-Qu")
-	output, _ := cmd.Output() // pacman returns exit code 1 when no updates
 
 	updates := &UpdateList{
 		Updates: make([]Update, 0),
 		Source:  "pacman",
 	}
+
+	// Sync database first
+	slog.Info("syncing pacman database")
+	exec.CommandContext(ctx, "pacman", "-Sy").Run()
+
+	// Check for official repo updates
+	slog.Info("running pacman -Qu")
+	cmd := exec.CommandContext(ctx, "pacman", "-Qu")
+	output, _ := cmd.Output() // pacman returns exit code 1 when no updates
 
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	for scanner.Scan() {
@@ -481,40 +496,129 @@ func getPacmanUpdates(ctx context.Context) (*UpdateList, error) {
 		}
 	}
 
+	// Check for AUR updates using available AUR helpers
+	aurUpdates := getAURUpdates(ctx)
+	updates.Updates = append(updates.Updates, aurUpdates...)
+
 	updates.Count = len(updates.Updates)
+	slog.Info("pacman updates scan completed", "count", updates.Count)
 	return updates, nil
+}
+
+// getAURUpdates checks for AUR package updates using available AUR helpers
+func getAURUpdates(ctx context.Context) []Update {
+	// AUR helpers to try in order of preference
+	aurHelpers := []struct {
+		name string
+		args []string
+	}{
+		{"yay", []string{"-Qua"}},        // yay -Qua shows AUR updates
+		{"paru", []string{"-Qua"}},       // paru (similar to yay)
+		{"pikaur", []string{"-Qua"}},     // pikaur
+		{"trizen", []string{"-Qua"}},     // trizen
+		{"pacaur", []string{"-k", "-a"}}, // pacaur -k -a for AUR updates
+		{"aurman", []string{"-Qua"}},     // aurman
+	}
+
+	for _, helper := range aurHelpers {
+		if _, err := exec.LookPath(helper.name); err == nil {
+			slog.Info("checking AUR updates", "helper", helper.name)
+			cmd := exec.CommandContext(ctx, helper.name, helper.args...)
+			output, err := cmd.Output()
+			if err != nil {
+				slog.Warn("AUR helper failed", "helper", helper.name, "error", err)
+				continue
+			}
+
+			var aurUpdates []Update
+			scanner := bufio.NewScanner(bytes.NewReader(output))
+			for scanner.Scan() {
+				line := scanner.Text()
+				parts := strings.Fields(line)
+				if len(parts) >= 4 {
+					// Format: package current_version -> new_version
+					aurUpdates = append(aurUpdates, Update{
+						Name:       parts[0],
+						CurrentVer: parts[1],
+						Version:    parts[3],
+						Category:   "aur",
+						Source:     helper.name,
+					})
+				} else if len(parts) >= 2 {
+					aurUpdates = append(aurUpdates, Update{
+						Name:     parts[0],
+						Version:  parts[1],
+						Category: "aur",
+						Source:   helper.name,
+					})
+				}
+			}
+
+			slog.Info("AUR updates found", "helper", helper.name, "count", len(aurUpdates))
+			return aurUpdates
+		}
+	}
+
+	slog.Info("no AUR helper found, skipping AUR updates")
+	return nil
 }
 
 // macOS updates
 func getMacOSUpdates(ctx context.Context) (*UpdateList, error) {
+	slog.Info("starting macOS updates scan using softwareupdate")
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "softwareupdate", "-l")
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
+		slog.Error("softwareupdate failed", "error", err, "output", string(output))
 		return nil, err
 	}
+	slog.Info("softwareupdate completed", "output", string(output))
 
 	updates := &UpdateList{
 		Updates: make([]Update, 0),
 		Source:  "softwareupdate",
 	}
 
-	re := regexp.MustCompile(`\* Label: (.+)`)
-	scanner := bufio.NewScanner(bytes.NewReader(output))
-	for scanner.Scan() {
-		matches := re.FindStringSubmatch(scanner.Text())
-		if len(matches) >= 2 {
+	// Parse both old and new format
+	// Old: * Label: <name>
+	// New: * <name>
+	//        Version: <version>
+	labelRe := regexp.MustCompile(`\* Label: (.+)`)
+	newFormatRe := regexp.MustCompile(`^\s*\*\s+(.+)$`)
+	versionRe := regexp.MustCompile(`^\s+Version:\s+(.+)$`)
+
+	lines := strings.Split(string(output), "\n")
+	var currentName string
+	for _, line := range lines {
+		// Try old format first
+		if matches := labelRe.FindStringSubmatch(line); len(matches) >= 2 {
 			updates.Updates = append(updates.Updates, Update{
 				Name:     matches[1],
 				Category: "standard",
 				Source:   "softwareupdate",
 			})
+			continue
+		}
+
+		// Try new format
+		if matches := newFormatRe.FindStringSubmatch(line); len(matches) >= 2 {
+			currentName = matches[1]
+		} else if matches := versionRe.FindStringSubmatch(line); len(matches) >= 2 && currentName != "" {
+			updates.Updates = append(updates.Updates, Update{
+				Name:     currentName,
+				Version:  matches[1],
+				Category: "standard",
+				Source:   "softwareupdate",
+			})
+			currentName = ""
 		}
 	}
 
 	updates.Count = len(updates.Updates)
+	slog.Info("macOS updates scan completed", "count", updates.Count)
 	return updates, nil
 }
 
@@ -526,42 +630,69 @@ func getWindowsUpdates(ctx context.Context) (*UpdateList, error) {
 
 	// PowerShell script to install PSWindowsUpdate if needed and get updates
 	script := `
-$ErrorActionPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
+
+# Set execution policy for this process to allow module installation
+try {
+    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
+} catch {
+    # Ignore if we can't change it (already set or restricted by GPO)
+}
 
 # Check if PSWindowsUpdate module is installed
-if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
+$moduleInstalled = Get-Module -ListAvailable -Name PSWindowsUpdate
+if (-not $moduleInstalled) {
+    Write-Host "PSWindowsUpdate module not found, installing..."
     try {
+        # Set PSGallery as trusted
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+
         # Install NuGet provider if needed
-        if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
+        $nuget = Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue
+        if (-not $nuget -or $nuget.Version -lt [Version]"2.8.5.201") {
+            Write-Host "Installing NuGet provider..."
             Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers | Out-Null
         }
+
         # Install PSWindowsUpdate module
-        Install-Module -Name PSWindowsUpdate -Force -Scope AllUsers -AllowClobber | Out-Null
+        Write-Host "Installing PSWindowsUpdate module..."
+        Install-Module -Name PSWindowsUpdate -Force -Scope AllUsers -AllowClobber -SkipPublisherCheck | Out-Null
+        Write-Host "PSWindowsUpdate module installed successfully"
     } catch {
+        Write-Host "Module installation failed: $($_.Exception.Message)"
         # Fall back to COM object method if module installation fails
-        $UpdateSession = New-Object -ComObject Microsoft.Update.Session
-        $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
-        $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and Type='Software'")
-        $Updates = @()
-        foreach ($Update in $SearchResult.Updates) {
-            $Category = "standard"
-            foreach ($Cat in $Update.Categories) {
-                if ($Cat.Name -match "Security|Critical") { $Category = "security"; break }
+        Write-Host "Using COM object fallback..."
+        try {
+            $UpdateSession = New-Object -ComObject Microsoft.Update.Session
+            $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
+            $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and Type='Software'")
+            $Updates = @()
+            foreach ($Update in $SearchResult.Updates) {
+                $Category = "standard"
+                foreach ($Cat in $Update.Categories) {
+                    if ($Cat.Name -match "Security|Critical") { $Category = "security"; break }
+                }
+                $Updates += @{
+                    Title = $Update.Title
+                    KB = ""
+                    Size = $Update.MaxDownloadSize
+                    Category = $Category
+                }
             }
-            $Updates += @{
-                Title = $Update.Title
-                KB = ""
-                Size = $Update.MaxDownloadSize
-                Category = $Category
-            }
+            $Updates | ConvertTo-Json -Depth 3 -Compress
+        } catch {
+            Write-Host "COM fallback failed: $($_.Exception.Message)"
+            Write-Output "[]"
         }
-        $Updates | ConvertTo-Json -Depth 3 -Compress
         exit
     }
 }
 
 # Import module and get updates
-Import-Module PSWindowsUpdate -Force
+Write-Host "Importing PSWindowsUpdate module..."
+Import-Module PSWindowsUpdate -Force -ErrorAction Stop
+
+Write-Host "Running Get-WindowsUpdate..."
 $Updates = Get-WindowsUpdate -MicrosoftUpdate -AcceptAll -IgnoreReboot 2>$null | ForEach-Object {
     $Category = "standard"
     if ($_.Title -match "Security|Critical") { $Category = "security" }
@@ -574,6 +705,7 @@ $Updates = Get-WindowsUpdate -MicrosoftUpdate -AcceptAll -IgnoreReboot 2>$null |
     }
 }
 
+Write-Host "Found $($Updates.Count) updates"
 if ($Updates) {
     $Updates | ConvertTo-Json -Depth 3 -Compress
 } else {
@@ -584,30 +716,42 @@ if ($Updates) {
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
 	slog.Info("executing PowerShell for Windows updates")
 	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
 	if err != nil {
-		slog.Error("PowerShell Windows updates failed", "error", err, "output", string(output))
+		slog.Error("PowerShell Windows updates failed", "error", err, "output", outputStr)
 		return &UpdateList{
 			Updates: make([]Update, 0),
 			Source:  "pswindowsupdate",
 		}, nil
 	}
-	slog.Info("PowerShell Windows updates completed", "output_len", len(output))
+	slog.Info("PowerShell Windows updates completed", "output", outputStr)
 
 	updates := &UpdateList{
 		Updates: make([]Update, 0),
 		Source:  "pswindowsupdate",
 	}
 
-	outputStr := strings.TrimSpace(string(output))
-	if outputStr == "" || outputStr == "[]" || outputStr == "null" {
+	// Find JSON in output (last line that starts with [ or {)
+	jsonData := ""
+	lines := strings.Split(outputStr, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(line, "[") || strings.HasPrefix(line, "{") {
+			jsonData = line
+			break
+		}
+	}
+
+	if jsonData == "" || jsonData == "[]" || jsonData == "null" {
 		updates.Count = 0
 		return updates, nil
 	}
 
 	var rawUpdates []map[string]interface{}
-	if err := parseWindowsUpdateJSON(outputStr, &rawUpdates); err != nil {
+	if err := parseWindowsUpdateJSON(jsonData, &rawUpdates); err != nil {
+		slog.Warn("failed to parse updates JSON as array", "error", err, "json", jsonData)
 		var singleUpdate map[string]interface{}
-		if err := parseWindowsUpdateJSON(outputStr, &singleUpdate); err == nil {
+		if err := parseWindowsUpdateJSON(jsonData, &singleUpdate); err == nil {
 			rawUpdates = append(rawUpdates, singleUpdate)
 		}
 	}
