@@ -46,23 +46,30 @@ func HasDisplayServer() bool {
 		return true
 
 	case "linux":
+		logger := slog.Default()
+
 		// Check environment variables first (when run interactively)
 		if os.Getenv("WAYLAND_DISPLAY") != "" {
+			logger.Info("display server found via WAYLAND_DISPLAY", "value", os.Getenv("WAYLAND_DISPLAY"))
 			return true
 		}
 		if os.Getenv("DISPLAY") != "" {
+			logger.Info("display server found via DISPLAY", "value", os.Getenv("DISPLAY"))
 			return true
 		}
 
 		// When running as a service, try to find an active graphical session
+		logger.Info("no DISPLAY env var, searching for active graphical session")
 		display, xauth := findActiveLinuxDisplay()
 		if display != "" {
+			logger.Info("found active display", "display", display, "xauthority", xauth)
 			os.Setenv("DISPLAY", display)
 			if xauth != "" {
 				os.Setenv("XAUTHORITY", xauth)
 			}
 			return true
 		}
+		logger.Warn("no display server found")
 		return false
 
 	default:
@@ -73,92 +80,101 @@ func HasDisplayServer() bool {
 // findActiveLinuxDisplay attempts to find an active X11 display on Linux.
 // This is needed when running as a systemd service without access to user environment.
 func findActiveLinuxDisplay() (display, xauthority string) {
-	// Method 1: Check for X11 sockets directly
-	if _, err := os.Stat("/tmp/.X11-unix/X0"); err == nil {
-		// Found X0 socket, try common Xauthority locations
-		xauth := findXauthority()
-		return ":0", xauth
-	}
-	if _, err := os.Stat("/tmp/.X11-unix/X1"); err == nil {
-		xauth := findXauthority()
-		return ":1", xauth
-	}
-
-	// Method 2: Use loginctl to find active graphical sessions
+	// Use loginctl to find active graphical sessions first (most reliable)
 	cmd := exec.Command("loginctl", "list-sessions", "--no-legend")
 	output, err := cmd.Output()
-	if err != nil {
-		return "", ""
-	}
-
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) < 1 {
-			continue
-		}
-		sessionID := fields[0]
-
-		// Get session type
-		typeCmd := exec.Command("loginctl", "show-session", sessionID, "-p", "Type", "--value")
-		typeOutput, err := typeCmd.Output()
-		if err != nil {
-			continue
-		}
-		sessionType := strings.TrimSpace(string(typeOutput))
-
-		// Only graphical sessions (x11 or wayland)
-		if sessionType != "x11" && sessionType != "wayland" {
-			continue
-		}
-
-		// Get Display
-		displayCmd := exec.Command("loginctl", "show-session", sessionID, "-p", "Display", "--value")
-		displayOutput, err := displayCmd.Output()
-		if err != nil {
-			continue
-		}
-		display = strings.TrimSpace(string(displayOutput))
-
-		if display == "" {
-			continue
-		}
-
-		// Get user for Xauthority
-		userCmd := exec.Command("loginctl", "show-session", sessionID, "-p", "Name", "--value")
-		userOutput, err := userCmd.Output()
-		if err != nil {
-			continue
-		}
-		username := strings.TrimSpace(string(userOutput))
-
-		// Try common Xauthority paths for this user
-		if username != "" {
-			homeDir := "/home/" + username
-			if username == "root" {
-				homeDir = "/root"
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) < 1 {
+				continue
 			}
+			sessionID := fields[0]
+
+			// Get session type
+			typeCmd := exec.Command("loginctl", "show-session", sessionID, "-p", "Type", "--value")
+			typeOutput, err := typeCmd.Output()
+			if err != nil {
+				continue
+			}
+			sessionType := strings.TrimSpace(string(typeOutput))
+
+			// Only graphical sessions (x11 or wayland)
+			if sessionType != "x11" && sessionType != "wayland" {
+				continue
+			}
+
+			// Get user for Xauthority
+			userCmd := exec.Command("loginctl", "show-session", sessionID, "-p", "Name", "--value")
+			userOutput, err := userCmd.Output()
+			if err != nil {
+				continue
+			}
+			username := strings.TrimSpace(string(userOutput))
+			uid := getUID(username)
+
+			// For Wayland sessions, XWayland uses a special auth file
+			// Try to find the Xauthority in order of preference
 			xauthPaths := []string{
-				homeDir + "/.Xauthority",
-				"/run/user/" + getUID(username) + "/gdm/Xauthority",
-				"/run/user/" + getUID(username) + "/.mutter-Xwaylandauth.*",
+				// XWayland on GNOME/Mutter (Wayland)
+				"/run/user/" + uid + "/.mutter-Xwaylandauth.*",
+				// GDM Xauthority
+				"/run/user/" + uid + "/gdm/Xauthority",
+				// Standard X11
+				"/home/" + username + "/.Xauthority",
 			}
-			for _, path := range xauthPaths {
-				// Handle glob pattern
-				if strings.Contains(path, "*") {
-					matches, _ := filepath.Glob(path)
+
+			if username == "root" {
+				xauthPaths = append(xauthPaths, "/root/.Xauthority")
+			}
+
+			var foundXauth string
+			for _, pattern := range xauthPaths {
+				if strings.Contains(pattern, "*") {
+					matches, _ := filepath.Glob(pattern)
 					if len(matches) > 0 {
-						path = matches[0]
+						foundXauth = matches[0]
+						break
+					}
+				} else if _, err := os.Stat(pattern); err == nil {
+					foundXauth = pattern
+					break
+				}
+			}
+
+			// For Wayland, use :0 or :1 (XWayland display)
+			// Check which X socket exists and is owned by the user
+			for _, xDisplay := range []string{":0", ":1"} {
+				socketPath := "/tmp/.X11-unix/X" + strings.TrimPrefix(xDisplay, ":")
+				if info, err := os.Stat(socketPath); err == nil {
+					// Check if socket exists (we'll use Xauthority for auth)
+					_ = info
+					if foundXauth != "" {
+						return xDisplay, foundXauth
 					}
 				}
-				if _, err := os.Stat(path); err == nil {
-					return display, path
+			}
+
+			// Get Display from session (for pure X11)
+			displayCmd := exec.Command("loginctl", "show-session", sessionID, "-p", "Display", "--value")
+			displayOutput, err := displayCmd.Output()
+			if err == nil {
+				display = strings.TrimSpace(string(displayOutput))
+				if display != "" && foundXauth != "" {
+					return display, foundXauth
 				}
 			}
 		}
+	}
 
-		// Return display even without Xauthority (might work with xhost +)
-		return display, ""
+	// Fallback: Check for X11 sockets directly
+	for _, xDisplay := range []string{":0", ":1"} {
+		socketPath := "/tmp/.X11-unix/X" + strings.TrimPrefix(xDisplay, ":")
+		if _, err := os.Stat(socketPath); err == nil {
+			xauth := findXauthority()
+			return xDisplay, xauth
+		}
 	}
 
 	return "", ""
@@ -166,9 +182,13 @@ func findActiveLinuxDisplay() (display, xauthority string) {
 
 // findXauthority finds the Xauthority file for the current active session.
 func findXauthority() string {
-	// Check common locations
+	// Check common locations - order matters (most specific first)
 	paths := []string{
-		"/run/user/1000/gdm/Xauthority",
+		// XWayland on GNOME/Mutter (Wayland sessions)
+		"/run/user/*/.mutter-Xwaylandauth.*",
+		// GDM managed Xauthority
+		"/run/user/*/gdm/Xauthority",
+		// Standard user Xauthority
 		"/home/*/.Xauthority",
 		"/root/.Xauthority",
 	}
