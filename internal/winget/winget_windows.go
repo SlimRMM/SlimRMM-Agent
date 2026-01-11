@@ -27,40 +27,130 @@ var wingetSearchPaths = []string{
 
 // findWingetBinary searches for winget.exe in system-level locations.
 func findWingetBinary() string {
+	slog.Debug("searching for winget binary")
+
 	// First, try to find winget in WindowsApps (system-level App Installer)
 	windowsAppsPath := `C:\Program Files\WindowsApps`
+	slog.Debug("checking WindowsApps directory", "path", windowsAppsPath)
 	if entries, err := os.ReadDir(windowsAppsPath); err == nil {
+		var foundPaths []string
 		for _, entry := range entries {
 			if entry.IsDir() && strings.HasPrefix(entry.Name(), "Microsoft.DesktopAppInstaller_") {
 				wingetPath := filepath.Join(windowsAppsPath, entry.Name(), "winget.exe")
 				if _, err := os.Stat(wingetPath); err == nil {
-					// Verify it's actually executable by SYSTEM
-					if canExecuteAsSystem(wingetPath) {
-						return wingetPath
-					}
+					foundPaths = append(foundPaths, wingetPath)
 				}
 			}
 		}
+		slog.Debug("found DesktopAppInstaller directories", "count", len(foundPaths), "paths", foundPaths)
+		for _, wingetPath := range foundPaths {
+			slog.Debug("testing winget path", "path", wingetPath)
+			if canExecuteAsSystem(wingetPath) {
+				slog.Info("found working winget", "path", wingetPath)
+				return wingetPath
+			}
+		}
+	} else {
+		slog.Debug("failed to read WindowsApps directory", "error", err)
 	}
 
 	// Try direct path lookup (might work if PATH is set correctly for SYSTEM)
+	slog.Debug("trying PATH lookup for winget.exe")
 	if path, err := exec.LookPath("winget.exe"); err == nil {
+		slog.Debug("found winget in PATH", "path", path)
 		if canExecuteAsSystem(path) {
+			slog.Info("found working winget via PATH", "path", path)
 			return path
 		}
+	} else {
+		slog.Debug("winget.exe not found in PATH", "error", err)
 	}
 
 	// Check common alternative locations
 	alternativePaths := []string{
 		`C:\Windows\System32\winget.exe`,
 		filepath.Join(os.Getenv("LOCALAPPDATA"), `Microsoft\WindowsApps\winget.exe`),
+		filepath.Join(os.Getenv("ProgramFiles"), `WindowsApps\Microsoft.DesktopAppInstaller_*\winget.exe`),
+	}
+	slog.Debug("checking alternative paths", "paths", alternativePaths)
+
+	for _, pathPattern := range alternativePaths {
+		// Handle glob patterns
+		if strings.Contains(pathPattern, "*") {
+			matches, _ := filepath.Glob(pathPattern)
+			for _, path := range matches {
+				slog.Debug("testing glob match", "path", path)
+				if canExecuteAsSystem(path) {
+					slog.Info("found working winget via glob", "path", path)
+					return path
+				}
+			}
+		} else {
+			if _, err := os.Stat(pathPattern); err == nil {
+				slog.Debug("testing alternative path", "path", pathPattern)
+				if canExecuteAsSystem(pathPattern) {
+					slog.Info("found working winget at alternative path", "path", pathPattern)
+					return pathPattern
+				}
+			}
+		}
 	}
 
-	for _, path := range alternativePaths {
-		if _, err := os.Stat(path); err == nil {
-			if canExecuteAsSystem(path) {
-				return path
-			}
+	// Last resort: try PowerShell to find winget (handles more edge cases)
+	slog.Debug("trying PowerShell fallback to find winget")
+	if path := findWingetViaPowerShell(); path != "" {
+		slog.Info("found winget via PowerShell", "path", path)
+		return path
+	}
+
+	slog.Warn("winget not found in any location")
+	return ""
+}
+
+// findWingetViaPowerShell uses PowerShell to locate winget.exe
+func findWingetViaPowerShell() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// PowerShell command to find winget.exe
+	script := `
+$ErrorActionPreference = 'SilentlyContinue'
+# Try Get-Command first
+$cmd = Get-Command winget.exe -ErrorAction SilentlyContinue
+if ($cmd) { Write-Output $cmd.Source; exit 0 }
+
+# Try App Installer package
+$pkg = Get-AppxPackage Microsoft.DesktopAppInstaller -AllUsers | Select-Object -First 1
+if ($pkg) {
+    $path = Join-Path $pkg.InstallLocation "winget.exe"
+    if (Test-Path $path) { Write-Output $path; exit 0 }
+}
+
+# Search in WindowsApps
+$apps = Get-ChildItem "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+foreach ($app in $apps) {
+    $path = Join-Path $app.FullName "winget.exe"
+    if (Test-Path $path) { Write-Output $path; exit 0 }
+}
+`
+	cmd := exec.CommandContext(ctx, "powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-Command", script,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Debug("PowerShell winget search failed", "error", err)
+		return ""
+	}
+
+	path := strings.TrimSpace(string(output))
+	if path != "" && strings.HasSuffix(strings.ToLower(path), "winget.exe") {
+		// Verify it actually works
+		if canExecuteAsSystem(path) {
+			return path
 		}
 	}
 
@@ -70,7 +160,7 @@ func findWingetBinary() string {
 // canExecuteAsSystem verifies that the binary can be executed in SYSTEM context.
 func canExecuteAsSystem(path string) bool {
 	// Try to execute winget --version to verify it works
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "--version")
@@ -78,15 +168,25 @@ func canExecuteAsSystem(path string) bool {
 	cmd.Env = append(os.Environ(),
 		"WINGET_DISABLE_INTERACTIVITY=1",
 	)
+
+	slog.Debug("executing winget --version", "path", path)
 	output, err := cmd.CombinedOutput()
+	outputStr := strings.TrimSpace(string(output))
+
 	if err != nil {
 		slog.Debug("winget execution check failed",
 			"path", path,
 			"error", err,
-			"output", string(output),
+			"output", outputStr,
+			"ctx_error", ctx.Err(),
 		)
 		return false
 	}
+
+	slog.Debug("winget execution succeeded",
+		"path", path,
+		"output", outputStr,
+	)
 	return true
 }
 

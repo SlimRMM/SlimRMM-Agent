@@ -579,6 +579,12 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			Version:     status.Version,
 			SystemLevel: status.SystemLevel,
 		}
+		h.logger.Debug("winget status for heartbeat",
+			"available", status.Available,
+			"version", status.Version,
+			"path", status.BinaryPath,
+			"system_level", status.SystemLevel,
+		)
 	}
 
 	h.SendRaw(heartbeat)

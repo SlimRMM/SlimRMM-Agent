@@ -51,9 +51,19 @@ func (c *Client) detect() {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	slog.Debug("detecting winget installation")
 	c.binaryPath = findWingetBinary()
+
 	if c.binaryPath != "" {
 		c.version = getWingetVersion(c.binaryPath)
+		slog.Info("winget detected",
+			"path", c.binaryPath,
+			"version", c.version,
+		)
+	} else {
+		c.version = ""
+		slog.Info("winget not detected on this system")
 	}
 }
 
