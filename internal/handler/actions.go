@@ -643,6 +643,7 @@ func (h *Handler) handleDownloadChunk(ctx context.Context, data json.RawMessage)
 	}
 
 	return map[string]interface{}{
+		"path":        req.Path,
 		"chunk_index": req.ChunkIndex,
 		"data":        base64.StdEncoding.EncodeToString(chunkData),
 	}, nil

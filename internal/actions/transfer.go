@@ -17,10 +17,12 @@ import (
 )
 
 const (
-	DefaultChunkSize = 64 * 1024         // 64 KB
-	MaxFileSize      = 100 * 1024 * 1024 // 100 MB
-	SessionTimeout   = 30 * time.Minute  // Stale session timeout
-	CleanupInterval  = 5 * time.Minute   // Cleanup check interval
+	DefaultChunkSize    = 64 * 1024         // 64 KB for uploads
+	DownloadChunkSize   = 1024 * 1024       // 1 MB for downloads - larger chunks = faster transfer
+	DirectDownloadLimit = 50 * 1024 * 1024  // 50 MB - files up to this size are sent directly (modern networks)
+	MaxFileSize         = 100 * 1024 * 1024 // 100 MB
+	SessionTimeout      = 30 * time.Minute  // Stale session timeout
+	CleanupInterval     = 5 * time.Minute   // Cleanup check interval
 )
 
 // UploadSession tracks an ongoing file upload.
@@ -287,8 +289,9 @@ func DownloadFile(path string, offset, limit int64) (*DownloadResult, error) {
 		Hash: hex.EncodeToString(hasher.Sum(nil)),
 	}
 
-	// For small files, include content directly
-	if info.Size() <= DefaultChunkSize {
+	// For files up to DirectDownloadLimit (10MB), include content directly
+	// This provides instant downloads for most files without chunking overhead
+	if info.Size() <= DirectDownloadLimit {
 		file.Seek(0, io.SeekStart)
 		data, err := io.ReadAll(file)
 		if err != nil {
@@ -296,7 +299,8 @@ func DownloadFile(path string, offset, limit int64) (*DownloadResult, error) {
 		}
 		result.Content = base64.StdEncoding.EncodeToString(data)
 	} else {
-		result.ChunkCount = int((info.Size() + DefaultChunkSize - 1) / DefaultChunkSize)
+		// For larger files, use 1MB chunks for faster transfer
+		result.ChunkCount = int((info.Size() + DownloadChunkSize - 1) / DownloadChunkSize)
 	}
 
 	return result, nil
@@ -315,12 +319,12 @@ func DownloadChunk(path string, chunkIndex int) ([]byte, error) {
 	}
 	defer file.Close()
 
-	offset := int64(chunkIndex) * DefaultChunkSize
+	offset := int64(chunkIndex) * DownloadChunkSize
 	if _, err := file.Seek(offset, io.SeekStart); err != nil {
 		return nil, err
 	}
 
-	data := make([]byte, DefaultChunkSize)
+	data := make([]byte, DownloadChunkSize)
 	n, err := file.Read(data)
 	if err != nil && err != io.EOF {
 		return nil, err

@@ -214,9 +214,54 @@ func getUID(username string) string {
 	return strings.TrimSpace(string(output))
 }
 
+// IsWaylandSession checks if the current session is using Wayland.
+// Wayland doesn't support screen capture via XShm, only via PipeWire portal.
+func IsWaylandSession() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+
+	// Check environment variable
+	if os.Getenv("XDG_SESSION_TYPE") == "wayland" {
+		return true
+	}
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		return true
+	}
+
+	// Check via loginctl for the active session
+	cmd := exec.Command("loginctl", "list-sessions", "--no-legend")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 1 {
+			continue
+		}
+		sessionID := fields[0]
+
+		typeCmd := exec.Command("loginctl", "show-session", sessionID, "-p", "Type", "--value")
+		typeOutput, err := typeCmd.Output()
+		if err != nil {
+			continue
+		}
+		sessionType := strings.TrimSpace(string(typeOutput))
+		if sessionType == "wayland" {
+			return true
+		}
+	}
+
+	return false
+}
+
 // CheckDependencies returns availability of remote desktop features.
 func CheckDependencies() map[string]bool {
 	displayAvailable := HasDisplayServer()
+	waylandSession := IsWaylandSession()
 
 	screenRecordingOK := true
 	accessibilityOK := true
@@ -225,7 +270,9 @@ func CheckDependencies() map[string]bool {
 		accessibilityOK = CheckAccessibilityPermission()
 	}
 
-	screenCaptureOK := displayAvailable && screenRecordingOK
+	// On Wayland, screen capture via XShm doesn't work (returns black frames)
+	// Native Wayland screen capture requires PipeWire portal (not yet implemented)
+	screenCaptureOK := displayAvailable && screenRecordingOK && !waylandSession
 	inputControlOK := displayAvailable && accessibilityOK
 
 	return map[string]bool{
@@ -235,6 +282,7 @@ func CheckDependencies() map[string]bool {
 		"display_server":        displayAvailable,
 		"screen_recording_perm": screenRecordingOK,
 		"accessibility_perm":    accessibilityOK,
+		"wayland_session":       waylandSession,
 		"all_required":          screenCaptureOK,
 		"full_control":          screenCaptureOK && inputControlOK,
 		"cgo_enabled":           true,
