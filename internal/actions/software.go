@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"regexp"
@@ -519,6 +520,7 @@ func getMacOSUpdates(ctx context.Context) (*UpdateList, error) {
 
 // Windows updates using PSWindowsUpdate module
 func getWindowsUpdates(ctx context.Context) (*UpdateList, error) {
+	slog.Info("starting Windows updates scan using PSWindowsUpdate")
 	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
@@ -580,13 +582,16 @@ if ($Updates) {
 `
 
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
-	output, err := cmd.Output()
+	slog.Info("executing PowerShell for Windows updates")
+	output, err := cmd.CombinedOutput()
 	if err != nil {
+		slog.Error("PowerShell Windows updates failed", "error", err, "output", string(output))
 		return &UpdateList{
 			Updates: make([]Update, 0),
 			Source:  "pswindowsupdate",
 		}, nil
 	}
+	slog.Info("PowerShell Windows updates completed", "output_len", len(output))
 
 	updates := &UpdateList{
 		Updates: make([]Update, 0),

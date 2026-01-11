@@ -424,7 +424,16 @@ func (h *Handler) handleRunOsquery(ctx context.Context, data json.RawMessage) (i
 	// Handle updates scan type specially (agent-side, no SQL)
 	if req.ScanType == "updates" || (req.Query == "" && req.ScanType == "") {
 		// If no query provided or scan_type is updates, use internal update checker
-		return actions.GetAvailableUpdates(ctx)
+		h.logger.Info("starting updates scan")
+		result, err := actions.GetAvailableUpdates(ctx)
+		if err != nil {
+			h.logger.Error("updates scan failed", "error", err)
+			return nil, err
+		}
+		if result != nil {
+			h.logger.Info("updates scan completed", "count", result.Count, "source", result.Source)
+		}
+		return result, nil
 	}
 
 	// If query is empty but scan_type is set, we can't run osquery
