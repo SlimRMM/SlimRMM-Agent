@@ -571,6 +571,8 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 	// Add winget info on Windows
 	if runtime.GOOS == "windows" {
 		wingetClient := winget.GetDefault()
+		// Refresh winget detection on each heartbeat to pick up installations/uninstalls
+		wingetClient.Refresh()
 		status := wingetClient.GetStatus()
 		heartbeat.Winget = &HeartbeatWinget{
 			Available:   status.Available,
