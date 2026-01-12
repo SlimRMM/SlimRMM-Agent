@@ -171,6 +171,9 @@ type Handler struct {
 	// Adaptive heartbeat for dynamic intervals
 	adaptiveHeartbeat *monitor.AdaptiveHeartbeat
 
+	// Threshold monitor for proactive alerts
+	thresholdMonitor *monitor.ThresholdMonitor
+
 	// Delta tracking for heartbeat optimization - only send when changed
 	lastProxmoxHash string
 	lastWingetHash  string
@@ -197,21 +200,26 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	adaptiveCfg := monitor.DefaultAdaptiveConfig()
 	adaptiveHeartbeat := monitor.NewAdaptiveHeartbeat(adaptiveCfg)
 
+	// Initialize threshold monitor for proactive alerts
+	thresholdCfg := monitor.DefaultThresholdConfig()
+	thresholdMonitor := monitor.NewThresholdMonitor(thresholdCfg)
+
 	h := &Handler{
-		cfg:              cfg,
-		paths:            paths,
-		tlsConfig:        tlsConfig,
-		monitor:          monitor.New(),
-		logger:           logger,
-		handlers:         make(map[string]ActionHandler),
-		terminalManager:  actions.NewTerminalManager(),
-		uploadManager:    uploadManager,
-		sendCh:           make(chan []byte, 256),
-		done:             make(chan struct{}),
+		cfg:               cfg,
+		paths:             paths,
+		tlsConfig:         tlsConfig,
+		monitor:           monitor.New(),
+		logger:            logger,
+		handlers:          make(map[string]ActionHandler),
+		terminalManager:   actions.NewTerminalManager(),
+		uploadManager:     uploadManager,
+		sendCh:            make(chan []byte, 256),
+		done:              make(chan struct{}),
 		updater:           updater.New(logger),
 		tamperProtection:  tamperProtection,
 		inventoryWatcher:  inventoryWatcher,
 		adaptiveHeartbeat: adaptiveHeartbeat,
+		thresholdMonitor:  thresholdMonitor,
 	}
 
 	h.registerHandlers()
@@ -236,7 +244,31 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	inventoryWatcher.SetSoftwareCallback(h.sendSoftwareChanges)
 	inventoryWatcher.SetServiceCallback(h.sendServiceChanges)
 
+	// Set up threshold monitor callback for proactive alerts
+	thresholdMonitor.SetAlertCallback(h.sendThresholdAlert)
+
 	return h
+}
+
+// sendThresholdAlert sends a threshold alert to the backend.
+func (h *Handler) sendThresholdAlert(alert monitor.ThresholdAlert) {
+	h.logger.Warn("threshold alert triggered",
+		"metric", alert.Metric,
+		"value", alert.CurrentValue,
+		"threshold", alert.Threshold,
+		"severity", alert.Severity,
+		"duration_seconds", alert.DurationSeconds,
+	)
+	h.SendRaw(map[string]interface{}{
+		"action":           "threshold_alert",
+		"metric":           alert.Metric,
+		"current_value":    alert.CurrentValue,
+		"threshold":        alert.Threshold,
+		"severity":         alert.Severity,
+		"duration_seconds": alert.DurationSeconds,
+		"timestamp":        alert.Timestamp.Format(time.RFC3339),
+		"message":          alert.Message,
+	})
 }
 
 // sendSoftwareChanges sends software inventory changes to the backend.
@@ -725,6 +757,10 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 	}
 
 	h.SendRaw(heartbeat)
+
+	// Check thresholds and send proactive alerts if needed
+	// This runs alongside every heartbeat to detect critical conditions early
+	h.thresholdMonitor.Update(stats)
 
 	// Update last heartbeat time in config
 	h.cfg.SetLastHeartbeat(time.Now().UTC().Format(time.RFC3339))
