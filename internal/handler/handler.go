@@ -162,6 +162,12 @@ type Handler struct {
 
 	// Heartbeat counter for periodic config saves
 	heartbeatCount int
+
+	// Inventory watcher for event-driven updates
+	inventoryWatcher *monitor.InventoryWatcher
+
+	// Adaptive heartbeat for dynamic intervals
+	adaptiveHeartbeat *monitor.AdaptiveHeartbeat
 }
 
 // New creates a new Handler.
@@ -177,6 +183,14 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	}
 	tamperProtection := tamper.New(tamperConfig, logger)
 
+	// Initialize inventory watcher for event-driven updates
+	watcherCfg := monitor.DefaultWatcherConfig()
+	inventoryWatcher := monitor.NewInventoryWatcher(watcherCfg)
+
+	// Initialize adaptive heartbeat for dynamic intervals
+	adaptiveCfg := monitor.DefaultAdaptiveConfig()
+	adaptiveHeartbeat := monitor.NewAdaptiveHeartbeat(adaptiveCfg)
+
 	h := &Handler{
 		cfg:              cfg,
 		paths:            paths,
@@ -188,8 +202,10 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		uploadManager:    uploadManager,
 		sendCh:           make(chan []byte, 256),
 		done:             make(chan struct{}),
-		updater:          updater.New(logger),
-		tamperProtection: tamperProtection,
+		updater:           updater.New(logger),
+		tamperProtection:  tamperProtection,
+		inventoryWatcher:  inventoryWatcher,
+		adaptiveHeartbeat: adaptiveHeartbeat,
 	}
 
 	h.registerHandlers()
@@ -210,7 +226,33 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		}
 	}
 
+	// Set up inventory watcher callbacks for event-driven updates
+	inventoryWatcher.SetSoftwareCallback(h.sendSoftwareChanges)
+	inventoryWatcher.SetServiceCallback(h.sendServiceChanges)
+
 	return h
+}
+
+// sendSoftwareChanges sends software inventory changes to the backend.
+func (h *Handler) sendSoftwareChanges(changes []monitor.SoftwareChange) {
+	h.logger.Info("software changes detected", "count", len(changes))
+	h.SendRaw(map[string]interface{}{
+		"action":      "inventory_change",
+		"change_type": "software_change",
+		"changes":     changes,
+		"hash":        h.inventoryWatcher.GetSoftwareHash(),
+	})
+}
+
+// sendServiceChanges sends service state changes to the backend.
+func (h *Handler) sendServiceChanges(changes []monitor.ServiceChange) {
+	h.logger.Info("service changes detected", "count", len(changes))
+	h.SendRaw(map[string]interface{}{
+		"action":      "inventory_change",
+		"change_type": "service_change",
+		"changes":     changes,
+		"hash":        h.inventoryWatcher.GetServiceHash(),
+	})
 }
 
 // sendMaintenanceStatus sends maintenance mode status to the backend.
@@ -325,6 +367,10 @@ func (h *Handler) Run(ctx context.Context) error {
 	// Start background osquery updater (checks weekly)
 	osquery.StartBackgroundUpdater(ctx, h.logger)
 
+	// Start inventory watcher for event-driven updates
+	h.inventoryWatcher.Start()
+	h.logger.Info("inventory watcher started for software and service change detection")
+
 	// Start goroutines
 	errCh := make(chan error, 3)
 
@@ -400,25 +446,36 @@ func (h *Handler) writePump(ctx context.Context) error {
 	}
 }
 
-// heartbeatPump sends periodic heartbeats and checks certificate renewal.
+// heartbeatPump sends periodic heartbeats with adaptive intervals.
 func (h *Handler) heartbeatPump(ctx context.Context) error {
-	ticker := time.NewTicker(heartbeatPeriod)
-	defer ticker.Stop()
-
 	// Send initial heartbeat
-	h.sendHeartbeat(ctx)
+	snapshot := h.sendHeartbeatWithSnapshot(ctx)
 
 	// Initialize last cert check if not set
 	if h.lastCertCheck.IsZero() {
 		h.lastCertCheck = time.Now()
 	}
 
+	// Get initial interval
+	nextInterval := h.adaptiveHeartbeat.GetNextInterval(snapshot)
+	timer := time.NewTimer(nextInterval)
+	defer timer.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
-			h.sendHeartbeat(ctx)
+		case <-timer.C:
+			snapshot = h.sendHeartbeatWithSnapshot(ctx)
+
+			// Get next adaptive interval
+			nextInterval = h.adaptiveHeartbeat.GetNextInterval(snapshot)
+			timer.Reset(nextInterval)
+
+			h.logger.Debug("adaptive heartbeat",
+				"interval", nextInterval,
+				"activity", h.adaptiveHeartbeat.GetActivityLevel().String(),
+			)
 
 			// Check for certificate renewal (every 24 hours like Python agent)
 			if h.cfg.IsMTLSEnabled() && time.Since(h.lastCertCheck) >= certCheckInterval {
@@ -426,6 +483,43 @@ func (h *Handler) heartbeatPump(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// sendHeartbeatWithSnapshot sends a heartbeat and returns a snapshot for adaptive calculation.
+func (h *Handler) sendHeartbeatWithSnapshot(ctx context.Context) *monitor.SystemSnapshot {
+	stats, err := h.monitor.GetStats(ctx)
+	if err != nil {
+		h.logger.Error("getting stats for heartbeat", "error", err)
+		h.adaptiveHeartbeat.RecordError()
+		return nil
+	}
+
+	h.adaptiveHeartbeat.RecordSuccess()
+
+	// Calculate average disk usage for snapshot
+	var avgDiskPercent float64
+	if len(stats.Disk) > 0 {
+		for _, d := range stats.Disk {
+			avgDiskPercent += d.UsedPercent
+		}
+		avgDiskPercent /= float64(len(stats.Disk))
+	}
+
+	// Create snapshot for adaptive calculation
+	snapshot := &monitor.SystemSnapshot{
+		CPUPercent:    stats.CPU.UsagePercent,
+		MemoryPercent: stats.Memory.UsedPercent,
+		DiskPercent:   avgDiskPercent,
+		Timestamp:     time.Now(),
+	}
+
+	// Determine heartbeat type based on activity
+	heartbeatType := h.adaptiveHeartbeat.GetHeartbeatType()
+
+	// Send appropriate heartbeat based on type
+	h.sendHeartbeatByType(ctx, stats, heartbeatType)
+
+	return snapshot
 }
 
 // checkAndRenewCertificates checks if certificates need renewal.
@@ -610,6 +704,57 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 	}
 }
 
+// sendHeartbeatByType sends a heartbeat based on the adaptive heartbeat type.
+// Minimal heartbeats only send alive status, stats sends basic metrics,
+// and full sends complete system information.
+func (h *Handler) sendHeartbeatByType(ctx context.Context, stats *monitor.Stats, heartbeatType monitor.HeartbeatType) {
+	switch heartbeatType {
+	case monitor.HeartbeatMinimal:
+		// Minimal heartbeat - just alive status
+		h.SendRaw(map[string]interface{}{
+			"action":        "heartbeat",
+			"type":          "minimal",
+			"agent_version": version.Version,
+			"alive":         true,
+			"timestamp":     time.Now().Unix(),
+		})
+
+	case monitor.HeartbeatStats:
+		// Stats heartbeat - basic metrics without disk details
+		h.SendRaw(map[string]interface{}{
+			"action":        "heartbeat",
+			"type":          "stats",
+			"agent_version": version.Version,
+			"stats": map[string]interface{}{
+				"cpu_percent":    stats.CPU.UsagePercent,
+				"memory_percent": stats.Memory.UsedPercent,
+				"memory_used":    stats.Memory.Used,
+				"memory_total":   stats.Memory.Total,
+				"uptime_seconds": stats.Uptime,
+				"process_count":  stats.ProcessCount,
+				"timezone":       stats.Timezone,
+			},
+		})
+
+	case monitor.HeartbeatFull:
+		// Full heartbeat - use existing sendHeartbeat logic
+		h.sendHeartbeat(ctx)
+		return
+	}
+
+	// Update last heartbeat time in config
+	h.cfg.SetLastHeartbeat(time.Now().UTC().Format(time.RFC3339))
+
+	// Periodically save config to persist LastHeartbeat
+	h.heartbeatCount++
+	if h.heartbeatCount >= 10 {
+		h.heartbeatCount = 0
+		if err := h.cfg.Save(); err != nil {
+			h.logger.Warn("failed to save config with heartbeat", "error", err)
+		}
+	}
+}
+
 // handleMessage processes an incoming message.
 func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 	var msg Message
@@ -749,6 +894,11 @@ func (h *Handler) SendRaw(msg interface{}) {
 func (h *Handler) Close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	// Stop inventory watcher
+	if h.inventoryWatcher != nil {
+		h.inventoryWatcher.Stop()
+	}
 
 	// Stop upload manager cleanup goroutine
 	if h.uploadManager != nil {
