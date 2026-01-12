@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/security/pathval"
+	"github.com/slimrmm/slimrmm-agent/internal/security/urlval"
 )
 
 const (
@@ -335,9 +336,16 @@ func DownloadChunk(path string, chunkIndex int) ([]byte, error) {
 
 // DownloadURL downloads a file from a URL.
 func DownloadURL(url, destPath string) (*DownloadResult, error) {
-	validator := pathval.New()
-	if err := validator.Validate(filepath.Dir(destPath)); err != nil {
+	// Validate destination path
+	pathValidator := pathval.New()
+	if err := pathValidator.Validate(filepath.Dir(destPath)); err != nil {
 		return nil, fmt.Errorf("path validation failed: %w", err)
+	}
+
+	// Validate URL scheme and host (prevent SSRF attacks)
+	urlValidator := urlval.NewDefault()
+	if err := urlValidator.ValidateWithDNS(url); err != nil {
+		return nil, fmt.Errorf("url validation failed: %w", err)
 	}
 
 	client := &http.Client{Timeout: 5 * time.Minute}

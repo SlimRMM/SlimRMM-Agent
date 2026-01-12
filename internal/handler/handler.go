@@ -22,7 +22,10 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/config"
 	"github.com/slimrmm/slimrmm-agent/internal/monitor"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
+	"github.com/slimrmm/slimrmm-agent/internal/security/antireplay"
+	"github.com/slimrmm/slimrmm-agent/internal/security/audit"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
+	"github.com/slimrmm/slimrmm-agent/internal/security/ratelimit"
 	"github.com/slimrmm/slimrmm-agent/internal/tamper"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
@@ -177,6 +180,11 @@ type Handler struct {
 	// Delta tracking for heartbeat optimization - only send when changed
 	lastProxmoxHash string
 	lastWingetHash  string
+
+	// Security modules for multi-layered protection
+	rateLimiter      *ratelimit.ActionLimiter
+	antiReplay       *antireplay.Protector
+	auditLogger      *audit.Logger
 }
 
 // New creates a new Handler.
@@ -204,6 +212,17 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	thresholdCfg := monitor.DefaultThresholdConfig()
 	thresholdMonitor := monitor.NewThresholdMonitor(thresholdCfg)
 
+	// Initialize security modules for multi-layered protection
+	rateLimiter := ratelimit.NewActionLimiter(ratelimit.DefaultConfig())
+	antiReplay := antireplay.New(antireplay.DefaultConfig())
+	auditLogger := audit.GetLogger()
+
+	logger.Info("security modules initialized",
+		"rate_limiter", "enabled",
+		"anti_replay", "enabled",
+		"audit_logging", "enabled",
+	)
+
 	h := &Handler{
 		cfg:               cfg,
 		paths:             paths,
@@ -220,6 +239,9 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		inventoryWatcher:  inventoryWatcher,
 		adaptiveHeartbeat: adaptiveHeartbeat,
 		thresholdMonitor:  thresholdMonitor,
+		rateLimiter:       rateLimiter,
+		antiReplay:        antiReplay,
+		auditLogger:       auditLogger,
 	}
 
 	h.registerHandlers()
@@ -384,8 +406,21 @@ func (h *Handler) Connect(ctx context.Context) error {
 
 	h.logger.Info("connecting to server", "url", u.String())
 
+	// Audit log connection attempt
+	h.auditLogger.Log(ctx, audit.Event{
+		EventType: audit.EventConnectAttempt,
+		Severity:  audit.SeverityInfo,
+		Source:    "handler",
+		Details: map[string]interface{}{
+			"server_url": serverURL,
+		},
+	})
+
 	conn, resp, err := dialer.DialContext(ctx, u.String(), headers)
 	if err != nil {
+		// Audit log connection failure
+		h.auditLogger.LogConnect(ctx, false, serverURL, err)
+
 		if resp != nil {
 			return fmt.Errorf("connecting to server (status %d): %w", resp.StatusCode, err)
 		}
@@ -395,6 +430,9 @@ func (h *Handler) Connect(ctx context.Context) error {
 	h.mu.Lock()
 	h.conn = conn
 	h.mu.Unlock()
+
+	// Audit log successful connection
+	h.auditLogger.LogConnect(ctx, true, serverURL, nil)
 
 	h.logger.Info("connected to server")
 	return nil
@@ -861,6 +899,52 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 
 	h.logger.Debug("received message", "action", msg.Action, "request_id", msg.RequestID, "scan_type", msg.ScanType)
 
+	// Security Layer 1: Rate limiting
+	if !h.rateLimiter.Allow(msg.Action) {
+		h.logger.Warn("rate limit exceeded",
+			"action", msg.Action,
+			"request_id", msg.RequestID,
+		)
+		h.auditLogger.LogRateLimit(ctx, msg.Action, 0, 0)
+		h.Send(Response{
+			Action:    msg.Action,
+			RequestID: msg.RequestID,
+			Success:   false,
+			Error:     "rate limit exceeded",
+		})
+		return
+	}
+
+	// Security Layer 2: Anti-replay protection (for requests with request_id)
+	if msg.RequestID != "" {
+		// Extract timestamp if present in message
+		var msgWithTime struct {
+			Timestamp int64 `json:"timestamp"`
+		}
+		json.Unmarshal(data, &msgWithTime)
+
+		requestTime := time.Now()
+		if msgWithTime.Timestamp > 0 {
+			requestTime = time.Unix(msgWithTime.Timestamp, 0)
+		}
+
+		if err := h.antiReplay.ValidateRequest(msg.RequestID, requestTime); err != nil {
+			h.logger.Warn("replay detection triggered",
+				"action", msg.Action,
+				"request_id", msg.RequestID,
+				"error", err,
+			)
+			h.auditLogger.LogReplayAttempt(ctx, msg.RequestID, requestTime)
+			h.Send(Response{
+				Action:    msg.Action,
+				RequestID: msg.RequestID,
+				Success:   false,
+				Error:     "request validation failed",
+			})
+			return
+		}
+	}
+
 	handler, ok := h.handlers[msg.Action]
 	if !ok {
 		h.logger.Warn("unknown action", "action", msg.Action)
@@ -997,6 +1081,16 @@ func (h *Handler) Close() error {
 	// Stop upload manager cleanup goroutine
 	if h.uploadManager != nil {
 		h.uploadManager.Stop()
+	}
+
+	// Stop anti-replay protection cleanup
+	if h.antiReplay != nil {
+		h.antiReplay.Stop()
+	}
+
+	// Close audit logger
+	if h.auditLogger != nil {
+		h.auditLogger.Close()
 	}
 
 	// Close Proxmox client
