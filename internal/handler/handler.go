@@ -4,7 +4,9 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -168,6 +170,10 @@ type Handler struct {
 
 	// Adaptive heartbeat for dynamic intervals
 	adaptiveHeartbeat *monitor.AdaptiveHeartbeat
+
+	// Delta tracking for heartbeat optimization - only send when changed
+	lastProxmoxHash string
+	lastWingetHash  string
 }
 
 // New creates a new Handler.
@@ -603,8 +609,22 @@ func (h *Handler) renewCertificates(ctx context.Context) error {
 	return nil
 }
 
+// hashStruct creates a SHA256 hash of a struct for delta comparison.
+// Returns empty string if marshaling fails.
+func hashStruct(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for efficiency
+}
+
 // sendHeartbeat sends a heartbeat message in the format expected by the backend.
-// Matches Python agent format for full compatibility.
+// Optimized: Only sends Proxmox/winget info when changed (delta-based).
 func (h *Handler) sendHeartbeat(ctx context.Context) {
 	stats, err := h.monitor.GetStats(ctx)
 	if err != nil {
@@ -657,9 +677,9 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 		ExternalIP: stats.ExternalIP,
 	}
 
-	// Add Proxmox info if this is a Proxmox host
+	// Add Proxmox info if this is a Proxmox host - delta-based (only send if changed)
 	if proxmoxInfo := GetProxmoxInfo(ctx); proxmoxInfo != nil {
-		heartbeat.Proxmox = &HeartbeatProxmox{
+		proxmoxData := &HeartbeatProxmox{
 			IsProxmox:      proxmoxInfo.IsProxmox,
 			Version:        proxmoxInfo.Version,
 			Release:        proxmoxInfo.Release,
@@ -668,25 +688,40 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			NodeName:       proxmoxInfo.NodeName,
 			RepositoryType: proxmoxInfo.RepositoryType,
 		}
+		currentHash := hashStruct(proxmoxData)
+		if currentHash != h.lastProxmoxHash {
+			heartbeat.Proxmox = proxmoxData
+			h.lastProxmoxHash = currentHash
+			h.logger.Debug("proxmox info changed, including in heartbeat")
+		}
+		// If unchanged, omit Proxmox field entirely to save bandwidth
 	}
 
-	// Add winget info on Windows
+	// Add winget info on Windows - delta-based (only send if changed)
 	if runtime.GOOS == "windows" {
 		wingetClient := winget.GetDefault()
-		// Refresh winget detection on each heartbeat to pick up installations/uninstalls
-		wingetClient.Refresh()
+		// Only refresh winget detection every 10 heartbeats (~5 minutes)
+		// to reduce CPU overhead while still detecting changes
+		if h.heartbeatCount%10 == 0 {
+			wingetClient.Refresh()
+		}
 		status := wingetClient.GetStatus()
-		heartbeat.Winget = &HeartbeatWinget{
+		wingetData := &HeartbeatWinget{
 			Available:   status.Available,
 			Version:     status.Version,
 			SystemLevel: status.SystemLevel,
 		}
-		h.logger.Debug("winget status for heartbeat",
-			"available", status.Available,
-			"version", status.Version,
-			"path", status.BinaryPath,
-			"system_level", status.SystemLevel,
-		)
+		currentHash := hashStruct(wingetData)
+		if currentHash != h.lastWingetHash {
+			heartbeat.Winget = wingetData
+			h.lastWingetHash = currentHash
+			h.logger.Debug("winget status changed, including in heartbeat",
+				"available", status.Available,
+				"version", status.Version,
+				"system_level", status.SystemLevel,
+			)
+		}
+		// If unchanged, omit Winget field entirely to save bandwidth
 	}
 
 	h.SendRaw(heartbeat)
