@@ -247,6 +247,9 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	// Set up threshold monitor callback for proactive alerts
 	thresholdMonitor.SetAlertCallback(h.sendThresholdAlert)
 
+	// Set up log push callback for proactive log forwarding
+	actions.SetGlobalLogPushCallback(h.sendLogsPush)
+
 	return h
 }
 
@@ -268,6 +271,26 @@ func (h *Handler) sendThresholdAlert(alert monitor.ThresholdAlert) {
 		"duration_seconds": alert.DurationSeconds,
 		"timestamp":        alert.Timestamp.Format(time.RFC3339),
 		"message":          alert.Message,
+	})
+}
+
+// sendLogsPush proactively sends important logs to the backend.
+// Called when error/warn threshold is reached.
+func (h *Handler) sendLogsPush(logs []actions.LogEntry) {
+	if len(logs) == 0 {
+		return
+	}
+
+	h.logger.Info("proactively pushing important logs to backend",
+		"log_count", len(logs),
+	)
+
+	h.SendRaw(map[string]interface{}{
+		"action":    "logs_push",
+		"logs":      logs,
+		"count":     len(logs),
+		"timestamp": time.Now().Format(time.RFC3339),
+		"push_type": "threshold",
 	})
 }
 

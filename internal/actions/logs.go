@@ -31,13 +31,21 @@ const (
 	defaultBufferSize = 1000 // Keep last 1000 log entries in memory
 )
 
+// LogPushCallback is called when logs should be pushed to the backend.
+type LogPushCallback func(logs []LogEntry)
+
 // LogBuffer is a thread-safe circular buffer for recent log entries.
 type LogBuffer struct {
-	entries []LogEntry
-	size    int
-	head    int // Next write position
-	count   int // Current number of entries
-	mu      sync.RWMutex
+	entries      []LogEntry
+	size         int
+	head         int // Next write position
+	count        int // Current number of entries
+	mu           sync.RWMutex
+	pushCallback LogPushCallback
+	errorCount   int           // Count of error/warn logs since last push
+	pushThreshold int          // Number of important logs before auto-push
+	lastPush     time.Time     // Time of last push
+	minPushInterval time.Duration // Minimum interval between pushes
 }
 
 // globalLogBuffer is the singleton log buffer instance.
@@ -57,23 +65,84 @@ func GetLogBuffer() *LogBuffer {
 // NewLogBuffer creates a new log buffer with the specified size.
 func NewLogBuffer(size int) *LogBuffer {
 	return &LogBuffer{
-		entries: make([]LogEntry, size),
-		size:    size,
-		head:    0,
-		count:   0,
+		entries:         make([]LogEntry, size),
+		size:            size,
+		head:            0,
+		count:           0,
+		pushThreshold:   50, // Push after 50 error/warn logs
+		minPushInterval: 5 * time.Minute, // Minimum 5 minutes between pushes
 	}
 }
 
-// Add adds a log entry to the buffer.
-func (b *LogBuffer) Add(entry LogEntry) {
+// SetPushCallback sets the callback for pushing logs to the backend.
+func (b *LogBuffer) SetPushCallback(callback LogPushCallback) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.pushCallback = callback
+}
+
+// SetPushThreshold sets the number of error/warn logs before auto-push.
+func (b *LogBuffer) SetPushThreshold(threshold int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pushThreshold = threshold
+}
+
+// Add adds a log entry to the buffer.
+// Triggers proactive push if error/warn threshold reached.
+func (b *LogBuffer) Add(entry LogEntry) {
+	b.mu.Lock()
 
 	b.entries[b.head] = entry
 	b.head = (b.head + 1) % b.size
 	if b.count < b.size {
 		b.count++
 	}
+
+	// Track error/warn counts for proactive push
+	level := strings.ToLower(entry.Level)
+	shouldPush := false
+	var callback LogPushCallback
+	var logsToSend []LogEntry
+
+	if level == "error" || level == "warn" || level == "warning" {
+		b.errorCount++
+		// Check if we should trigger a push
+		if b.pushCallback != nil && b.errorCount >= b.pushThreshold {
+			timeSinceLastPush := time.Since(b.lastPush)
+			if timeSinceLastPush >= b.minPushInterval {
+				shouldPush = true
+				callback = b.pushCallback
+				// Get recent important logs to push
+				logsToSend = b.getRecentImportantLogsLocked(100)
+				b.errorCount = 0
+				b.lastPush = time.Now()
+			}
+		}
+	}
+
+	b.mu.Unlock()
+
+	// Call callback outside of lock to avoid deadlock
+	if shouldPush && callback != nil {
+		go callback(logsToSend)
+	}
+}
+
+// getRecentImportantLogsLocked returns error/warn logs (must hold lock).
+func (b *LogBuffer) getRecentImportantLogsLocked(limit int) []LogEntry {
+	result := make([]LogEntry, 0, limit)
+
+	for i := 0; i < b.count && len(result) < limit; i++ {
+		idx := (b.head - 1 - i + b.size) % b.size
+		entry := b.entries[idx]
+		level := strings.ToLower(entry.Level)
+		if level == "error" || level == "warn" || level == "warning" {
+			result = append(result, entry)
+		}
+	}
+
+	return result
 }
 
 // GetRecent returns up to limit recent entries after the given time.
@@ -117,6 +186,11 @@ func (b *LogBuffer) Count() int {
 // AddLogEntry is a convenience function to add to the global buffer.
 func AddLogEntry(entry LogEntry) {
 	GetLogBuffer().Add(entry)
+}
+
+// SetGlobalLogPushCallback sets the push callback on the global log buffer.
+func SetGlobalLogPushCallback(callback LogPushCallback) {
+	GetLogBuffer().SetPushCallback(callback)
 }
 
 // =============================================================================
