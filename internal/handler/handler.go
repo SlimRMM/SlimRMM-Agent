@@ -103,6 +103,7 @@ type HeartbeatStats struct {
 	NetworkIO     *HeartbeatNetworkIO `json:"network_io,omitempty"`
 	UptimeSeconds uint64              `json:"uptime_seconds,omitempty"`
 	ProcessCount  int                 `json:"process_count,omitempty"`
+	Timezone      string              `json:"timezone,omitempty"`
 }
 
 // HeartbeatDisk contains disk statistics for heartbeat.
@@ -557,6 +558,7 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			},
 			UptimeSeconds: stats.Uptime,
 			ProcessCount:  stats.ProcessCount,
+			Timezone:      stats.Timezone,
 		},
 		ExternalIP: stats.ExternalIP,
 	}

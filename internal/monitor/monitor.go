@@ -34,6 +34,7 @@ type Stats struct {
 	Disk         []DiskStats `json:"disk"`
 	Network      []NetStats `json:"network"`
 	ExternalIP   string     `json:"external_ip,omitempty"`
+	Timezone     string     `json:"timezone,omitempty"`
 	ProcessCount int        `json:"process_count"`
 	Timestamp    time.Time  `json:"timestamp"`
 }
@@ -264,6 +265,9 @@ func (m *Monitor) GetStats(ctx context.Context) (*Stats, error) {
 
 	// External IP (cached for 15 minutes)
 	stats.ExternalIP = m.getExternalIP()
+
+	// System timezone
+	stats.Timezone = getSystemTimezone()
 
 	return stats, nil
 }
