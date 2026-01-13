@@ -26,6 +26,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/proxmox"
 	"github.com/slimrmm/slimrmm-agent/internal/remotedesktop"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
+	"github.com/slimrmm/slimrmm-agent/internal/selfhealing"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
@@ -644,6 +645,12 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Create and start self-healing watchdog
+	watchdog := selfhealing.New(selfhealing.DefaultConfig(), logger)
+	h.SetSelfHealingWatchdog(watchdog)
+	watchdog.Start(ctx)
+	defer watchdog.Stop()
+
 	// Handle signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -654,8 +661,12 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 		cancel()
 	}()
 
-	// Run the agent loop
-	return runAgentLoop(ctx, h, cfg, logger)
+	// Run the agent loop with panic recovery
+	var exitCode int
+	watchdog.RecoverFromPanic("agent_loop", func() {
+		exitCode = runAgentLoop(ctx, h, cfg, logger)
+	})
+	return exitCode
 }
 
 // runAgentLoop contains the main connection loop logic, shared between cmdRun and Windows service mode
@@ -730,11 +741,12 @@ func runAgentLoop(ctx context.Context, h *handler.Handler, cfg *config.Config, l
 
 // agentRunner implements service.AgentRunner for Windows Service support
 type agentRunner struct {
-	paths   config.Paths
-	logger  *slog.Logger
-	handler *handler.Handler
-	cfg     *config.Config
-	cancel  context.CancelFunc
+	paths    config.Paths
+	logger   *slog.Logger
+	handler  *handler.Handler
+	cfg      *config.Config
+	cancel   context.CancelFunc
+	watchdog *selfhealing.Watchdog
 }
 
 // Run starts the agent and blocks until the context is cancelled
@@ -795,8 +807,17 @@ func (r *agentRunner) Run(ctx context.Context) error {
 	// Create handler
 	r.handler = handler.New(cfg, r.paths, tlsConfig, r.logger)
 
-	// Run the agent loop
-	exitCode := runAgentLoop(ctx, r.handler, cfg, r.logger)
+	// Create and start self-healing watchdog
+	r.watchdog = selfhealing.New(selfhealing.DefaultConfig(), r.logger)
+	r.handler.SetSelfHealingWatchdog(r.watchdog)
+	r.watchdog.Start(ctx)
+	defer r.watchdog.Stop()
+
+	// Run the agent loop with panic recovery
+	var exitCode int
+	r.watchdog.RecoverFromPanic("agent_loop", func() {
+		exitCode = runAgentLoop(ctx, r.handler, cfg, r.logger)
+	})
 	if exitCode != 0 {
 		return fmt.Errorf("agent exited with code %d", exitCode)
 	}

@@ -185,6 +185,15 @@ type Handler struct {
 	rateLimiter      *ratelimit.ActionLimiter
 	antiReplay       *antireplay.Protector
 	auditLogger      *audit.Logger
+
+	// Self-healing watchdog for connection monitoring
+	selfHealingWatchdog SelfHealingWatchdog
+}
+
+// SelfHealingWatchdog is the interface for the self-healing watchdog.
+type SelfHealingWatchdog interface {
+	RecordConnectionSuccess()
+	RecordConnectionFailure()
 }
 
 // New creates a new Handler.
@@ -273,6 +282,25 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	actions.SetGlobalLogPushCallback(h.sendLogsPush)
 
 	return h
+}
+
+// SetSelfHealingWatchdog sets the self-healing watchdog for connection monitoring.
+func (h *Handler) SetSelfHealingWatchdog(w SelfHealingWatchdog) {
+	h.selfHealingWatchdog = w
+}
+
+// recordConnectionSuccess notifies the watchdog of a successful connection.
+func (h *Handler) recordConnectionSuccess() {
+	if h.selfHealingWatchdog != nil {
+		h.selfHealingWatchdog.RecordConnectionSuccess()
+	}
+}
+
+// recordConnectionFailure notifies the watchdog of a connection failure.
+func (h *Handler) recordConnectionFailure() {
+	if h.selfHealingWatchdog != nil {
+		h.selfHealingWatchdog.RecordConnectionFailure()
+	}
 }
 
 // sendThresholdAlert sends a threshold alert to the backend.
@@ -434,6 +462,9 @@ func (h *Handler) Connect(ctx context.Context) error {
 	// Audit log successful connection
 	h.auditLogger.LogConnect(ctx, true, serverURL, nil)
 
+	// Notify self-healing watchdog of successful connection
+	h.recordConnectionSuccess()
+
 	h.logger.Info("connected to server")
 	return nil
 }
@@ -495,6 +526,11 @@ func (h *Handler) Run(ctx context.Context) error {
 		firstErr = ctx.Err()
 	case err := <-errCh:
 		firstErr = err
+	}
+
+	// Notify self-healing watchdog of connection failure
+	if firstErr != nil {
+		h.recordConnectionFailure()
 	}
 
 	// Cancel all goroutines and drain send channel to prevent blocking
@@ -618,6 +654,10 @@ func (h *Handler) sendHeartbeatWithSnapshot(ctx context.Context) *monitor.System
 	}
 
 	h.adaptiveHeartbeat.RecordSuccess()
+
+	// Record connection success for self-healing watchdog
+	// This resets the connection timeout on each successful heartbeat
+	h.recordConnectionSuccess()
 
 	// Calculate average disk usage for snapshot
 	var avgDiskPercent float64
