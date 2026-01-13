@@ -436,17 +436,7 @@ func (h *Handler) Connect(ctx context.Context) error {
 
 	headers := http.Header{}
 
-	h.logger.Info("connecting to server", "url", u.String())
-
-	// Audit log connection attempt
-	h.auditLogger.Log(ctx, audit.Event{
-		EventType: audit.EventConnectAttempt,
-		Severity:  audit.SeverityInfo,
-		Source:    "handler",
-		Details: map[string]interface{}{
-			"server_url": serverURL,
-		},
-	})
+	h.logger.Debug("connecting to server", "url", u.String())
 
 	conn, resp, err := dialer.DialContext(ctx, u.String(), headers)
 	if err != nil {
@@ -462,9 +452,6 @@ func (h *Handler) Connect(ctx context.Context) error {
 	h.mu.Lock()
 	h.conn = conn
 	h.mu.Unlock()
-
-	// Audit log successful connection
-	h.auditLogger.LogConnect(ctx, true, serverURL, nil)
 
 	// Notify self-healing watchdog of successful connection
 	h.recordConnectionSuccess()
