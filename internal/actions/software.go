@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -776,8 +777,11 @@ if ($UpdatesArray.Count -gt 0) {
 		if category, ok := raw["Category"].(string); ok {
 			update.Category = category
 		}
+		// Size can be either a number (bytes) or a string like "80MB", "2GB"
 		if size, ok := raw["Size"].(float64); ok {
 			update.Size = int64(size)
+		} else if sizeStr, ok := raw["Size"].(string); ok {
+			update.Size = parseSizeString(sizeStr)
 		}
 
 		if update.Name != "" {
@@ -796,4 +800,48 @@ func parseWindowsUpdateJSON(data string, v interface{}) error {
 	data = strings.TrimSpace(data)
 
 	return json.Unmarshal([]byte(data), v)
+}
+
+// parseSizeString parses a human-readable size string like "80MB", "2GB", "518KB" into bytes.
+func parseSizeString(s string) int64 {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	if s == "" {
+		return 0
+	}
+
+	// Extract numeric part and unit
+	var numStr string
+	var unit string
+	for i, c := range s {
+		if (c >= '0' && c <= '9') || c == '.' || c == ',' {
+			numStr += string(c)
+		} else {
+			unit = s[i:]
+			break
+		}
+	}
+
+	// Handle European decimal separator
+	numStr = strings.ReplaceAll(numStr, ",", ".")
+
+	num, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0
+	}
+
+	// Convert based on unit
+	unit = strings.TrimSpace(unit)
+	switch {
+	case strings.HasPrefix(unit, "GB"):
+		return int64(num * 1024 * 1024 * 1024)
+	case strings.HasPrefix(unit, "MB"):
+		return int64(num * 1024 * 1024)
+	case strings.HasPrefix(unit, "KB"):
+		return int64(num * 1024)
+	case strings.HasPrefix(unit, "B"):
+		return int64(num)
+	default:
+		// Assume bytes if no unit
+		return int64(num)
+	}
 }
