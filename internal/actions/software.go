@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/slimrmm/slimrmm-agent/internal/helper"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
 )
 
@@ -931,50 +932,114 @@ func GetWingetUpdates(ctx context.Context) (*UpdateList, error) {
 }
 
 // getWingetUpdates scans for available winget package updates.
-// Only runs if winget is properly detected on the system.
+// It scans both user context (via helper) and system context (direct) to catch all packages.
 func getWingetUpdates(ctx context.Context) (*UpdateList, error) {
 	updates := &UpdateList{
 		Updates: make([]Update, 0),
 		Source:  "winget",
 	}
 
-	// Use the winget client for proper detection
+	// Track seen package IDs to avoid duplicates
+	seenIDs := make(map[string]bool)
+
+	// First try to scan via helper (user context) to catch user-installed packages
+	userUpdates := scanWingetViaHelper()
+	for _, u := range userUpdates {
+		if u.KB != "" && !seenIDs[u.KB] {
+			seenIDs[u.KB] = true
+			updates.Updates = append(updates.Updates, u)
+		}
+	}
+
+	// Then scan in system context (as SYSTEM service) to catch system-wide packages
+	systemUpdates := scanWingetDirect(ctx)
+	for _, u := range systemUpdates {
+		if u.KB != "" && !seenIDs[u.KB] {
+			seenIDs[u.KB] = true
+			updates.Updates = append(updates.Updates, u)
+		}
+	}
+
+	updates.Count = len(updates.Updates)
+	slog.Info("winget scan completed", "user_updates", len(userUpdates), "system_updates", len(systemUpdates), "total_unique", updates.Count)
+
+	return updates, nil
+}
+
+// scanWingetViaHelper scans for winget updates using the helper in user context.
+func scanWingetViaHelper() []Update {
+	updates := make([]Update, 0)
+
+	// Start helper client
+	client := helper.NewClient()
+	if err := client.Start(); err != nil {
+		slog.Debug("failed to start helper for winget scan", "error", err)
+		return updates
+	}
+	defer client.Stop()
+
+	slog.Info("scanning winget updates via helper (user context)")
+
+	result, err := client.ScanWingetUpdates()
+	if err != nil {
+		slog.Debug("helper winget scan failed", "error", err)
+		return updates
+	}
+
+	if result.Error != "" {
+		slog.Debug("helper winget scan returned error", "error", result.Error)
+		return updates
+	}
+
+	// Convert helper updates to our Update type
+	for _, u := range result.Updates {
+		updates = append(updates, Update{
+			Name:       u.Name,
+			Version:    u.Available, // Available version is the target
+			CurrentVer: u.Version,
+			Category:   "standard",
+			Source:     "winget",
+			KB:         u.ID, // Store package ID in KB field
+		})
+	}
+
+	slog.Info("helper winget scan completed", "updates_found", len(updates))
+	return updates
+}
+
+// scanWingetDirect scans for winget updates directly (system context).
+func scanWingetDirect(ctx context.Context) []Update {
+	updates := make([]Update, 0)
+
 	wingetClient := winget.GetDefault()
 	if !wingetClient.IsAvailable() {
-		slog.Debug("winget not available, skipping update scan")
-		return updates, nil
+		slog.Debug("winget not available in system context")
+		return updates
 	}
 
 	wingetPath := wingetClient.GetBinaryPath()
 	if wingetPath == "" {
-		return updates, nil
+		return updates
 	}
 
-	slog.Info("scanning winget updates", "binary", wingetPath)
+	slog.Info("scanning winget updates directly (system context)", "binary", wingetPath)
 
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	// Use --include-unknown to catch packages where version detection may fail
-	// and --source winget to focus on winget repository
 	cmd := exec.CommandContext(ctx, wingetPath, "upgrade",
 		"--accept-source-agreements",
 		"--disable-interactivity",
 		"--include-unknown",
 	)
 	output, err := cmd.CombinedOutput()
-	outputStr := string(output)
-
 	if err != nil {
-		slog.Debug("winget upgrade command failed", "error", err, "output", outputStr)
-		return updates, nil
+		slog.Debug("winget direct scan failed", "error", err)
+		return updates
 	}
 
-	// Log raw output for debugging
-	slog.Debug("winget upgrade raw output", "output", outputStr)
-
 	// Parse output
-	lines := strings.Split(outputStr, "\n")
+	lines := strings.Split(string(output), "\n")
 	headerFound := false
 	separatorFound := false
 
@@ -984,47 +1049,34 @@ func getWingetUpdates(ctx context.Context) (*UpdateList, error) {
 			continue
 		}
 
-		// Skip progress indicators
 		if strings.Contains(trimmedLine, "█") || strings.Contains(trimmedLine, "▒") {
 			continue
 		}
 
-		// Handle separator line (dashes)
 		if strings.HasPrefix(trimmedLine, "---") || strings.HasPrefix(trimmedLine, "───") {
 			separatorFound = true
-			slog.Debug("winget: found separator line")
 			continue
 		}
 
-		// Detect header line
 		if strings.HasPrefix(trimmedLine, "Name") && strings.Contains(trimmedLine, "Id") {
 			headerFound = true
-			slog.Debug("winget: found header line", "line", trimmedLine)
 			continue
 		}
 
-		// Skip summary lines
 		if strings.Contains(trimmedLine, "upgrades available") || strings.Contains(trimmedLine, "upgrade available") ||
-			strings.Contains(trimmedLine, "No installed package") || strings.Contains(trimmedLine, "No applicable") ||
-			strings.Contains(trimmedLine, "Keine installierten") {
-			slog.Debug("winget: skipping summary line", "line", trimmedLine)
+			strings.Contains(trimmedLine, "No installed package") || strings.Contains(trimmedLine, "Keine installierten") {
 			continue
 		}
 
-		// Parse data lines after header and separator
 		if headerFound && separatorFound {
-			slog.Debug("winget: parsing data line", "line", trimmedLine)
 			if update := parseWingetLine(trimmedLine); update != nil {
-				updates.Updates = append(updates.Updates, *update)
-				slog.Debug("winget: parsed update", "name", update.Name, "version", update.Version)
+				updates = append(updates, *update)
 			}
 		}
 	}
 
-	updates.Count = len(updates.Updates)
-	slog.Info("winget scan completed", "updates_found", updates.Count)
-
-	return updates, nil
+	slog.Info("winget direct scan completed", "updates_found", len(updates))
+	return updates
 }
 
 // parseWingetLine parses a single line of winget upgrade output.

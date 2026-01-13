@@ -38,6 +38,21 @@ type InputEvent struct {
 	DeltaY int    `json:"delta_y,omitempty"`
 }
 
+// WingetUpdate represents an available winget update
+type WingetUpdate struct {
+	Name      string `json:"name"`
+	ID        string `json:"id"`
+	Version   string `json:"version"`
+	Available string `json:"available"`
+	Source    string `json:"source"`
+}
+
+// WingetScanResult contains the winget scan results
+type WingetScanResult struct {
+	Updates []WingetUpdate `json:"updates"`
+	Error   string         `json:"error,omitempty"`
+}
+
 // NewClient creates a new helper client
 func NewClient() *Client {
 	return &Client{}
@@ -81,4 +96,9 @@ func (c *Client) SendInput(event InputEvent) error {
 // Reconnect is a no-op on non-Windows
 func (c *Client) Reconnect() error {
 	return fmt.Errorf("helper not supported on this platform")
+}
+
+// ScanWingetUpdates is a no-op on non-Windows
+func (c *Client) ScanWingetUpdates() (*WingetScanResult, error) {
+	return nil, fmt.Errorf("helper not supported on this platform")
 }

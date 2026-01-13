@@ -28,15 +28,17 @@ const (
 
 // Message types - must match helper/main.go
 const (
-	MsgTypeCapture     = "capture"
-	MsgTypeFrame       = "frame"
-	MsgTypeInput       = "input"
-	MsgTypeMonitors    = "monitors"
-	MsgTypeMonitorList = "monitor_list"
-	MsgTypePing        = "ping"
-	MsgTypePong        = "pong"
-	MsgTypeError       = "error"
-	MsgTypeQuit        = "quit"
+	MsgTypeCapture      = "capture"
+	MsgTypeFrame        = "frame"
+	MsgTypeInput        = "input"
+	MsgTypeMonitors     = "monitors"
+	MsgTypeMonitorList  = "monitor_list"
+	MsgTypePing         = "ping"
+	MsgTypePong         = "pong"
+	MsgTypeError        = "error"
+	MsgTypeQuit         = "quit"
+	MsgTypeWingetScan   = "winget_scan"
+	MsgTypeWingetResult = "winget_result"
 )
 
 // Message is the IPC message format
@@ -79,6 +81,21 @@ type Monitor struct {
 	Width   int  `json:"width"`
 	Height  int  `json:"height"`
 	Primary bool `json:"primary"`
+}
+
+// WingetUpdate represents an available winget update
+type WingetUpdate struct {
+	Name      string `json:"name"`
+	ID        string `json:"id"`
+	Version   string `json:"version"`
+	Available string `json:"available"`
+	Source    string `json:"source"`
+}
+
+// WingetScanResult contains the winget scan results
+type WingetScanResult struct {
+	Updates []WingetUpdate `json:"updates"`
+	Error   string         `json:"error,omitempty"`
 }
 
 // Client manages communication with the helper process
@@ -527,6 +544,40 @@ func (c *Client) SendInput(event InputEvent) error {
 
 	payload, _ := json.Marshal(event)
 	return c.sendMessage(&Message{Type: MsgTypeInput, Payload: payload})
+}
+
+// ScanWingetUpdates requests the helper to scan for winget updates in the user context
+func (c *Client) ScanWingetUpdates() (*WingetScanResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	if err := c.sendMessage(&Message{Type: MsgTypeWingetScan}); err != nil {
+		return nil, err
+	}
+
+	msg, _, err := c.readMessage()
+	if err != nil {
+		return nil, err
+	}
+
+	if msg.Type == MsgTypeError {
+		return nil, fmt.Errorf("helper error: %s", string(msg.Payload))
+	}
+
+	if msg.Type != MsgTypeWingetResult {
+		return nil, fmt.Errorf("unexpected response: %s", msg.Type)
+	}
+
+	var result WingetScanResult
+	if err := json.Unmarshal(msg.Payload, &result); err != nil {
+		return nil, err
+	}
+
+	return &result, nil
 }
 
 // sendMessage sends a message to the helper

@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -86,15 +87,17 @@ var (
 
 // Message types
 const (
-	MsgTypeCapture    = "capture"
-	MsgTypeFrame      = "frame"
-	MsgTypeInput      = "input"
-	MsgTypeMonitors   = "monitors"
-	MsgTypeMonitorList = "monitor_list"
-	MsgTypePing       = "ping"
-	MsgTypePong       = "pong"
-	MsgTypeError      = "error"
-	MsgTypeQuit       = "quit"
+	MsgTypeCapture       = "capture"
+	MsgTypeFrame         = "frame"
+	MsgTypeInput         = "input"
+	MsgTypeMonitors      = "monitors"
+	MsgTypeMonitorList   = "monitor_list"
+	MsgTypePing          = "ping"
+	MsgTypePong          = "pong"
+	MsgTypeError         = "error"
+	MsgTypeQuit          = "quit"
+	MsgTypeWingetScan    = "winget_scan"
+	MsgTypeWingetResult  = "winget_result"
 )
 
 // Message is the IPC message format
@@ -139,6 +142,21 @@ type Monitor struct {
 	Width   int  `json:"width"`
 	Height  int  `json:"height"`
 	Primary bool `json:"primary"`
+}
+
+// WingetUpdate represents an available winget update
+type WingetUpdate struct {
+	Name       string `json:"name"`
+	ID         string `json:"id"`
+	Version    string `json:"version"`
+	Available  string `json:"available"`
+	Source     string `json:"source"`
+}
+
+// WingetScanResult contains the winget scan results
+type WingetScanResult struct {
+	Updates []WingetUpdate `json:"updates"`
+	Error   string         `json:"error,omitempty"`
 }
 
 func main() {
@@ -350,6 +368,9 @@ func handleMessage(msg *Message) (*Message, []byte) {
 		}
 		handleInput(input)
 		return nil, nil // No response for input events
+
+	case MsgTypeWingetScan:
+		return scanWingetUpdates()
 
 	case MsgTypeQuit:
 		return nil, nil
@@ -682,6 +703,132 @@ func keyNameToVK(key string) uint32 {
 	// return 0 to be handled via KEYEVENTF_UNICODE
 	// This ensures correct behavior regardless of keyboard layout
 	return 0
+}
+
+// scanWingetUpdates runs winget upgrade in the user context and returns available updates.
+func scanWingetUpdates() (*Message, []byte) {
+	log.Println("Scanning for winget updates in user context")
+
+	result := WingetScanResult{
+		Updates: make([]WingetUpdate, 0),
+	}
+
+	// Find winget
+	wingetPath, err := exec.LookPath("winget")
+	if err != nil {
+		result.Error = "winget not found in PATH"
+		payload, _ := json.Marshal(result)
+		return &Message{Type: MsgTypeWingetResult, Payload: payload}, nil
+	}
+
+	// Run winget upgrade
+	cmd := exec.Command(wingetPath, "upgrade", "--accept-source-agreements", "--disable-interactivity", "--include-unknown")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("winget command failed: %v", err)
+		// Don't return error, try to parse output anyway
+	}
+
+	// Parse output
+	lines := strings.Split(string(output), "\n")
+	headerFound := false
+	separatorFound := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		// Skip progress indicators
+		if strings.Contains(trimmed, "█") || strings.Contains(trimmed, "▒") {
+			continue
+		}
+
+		// Handle separator
+		if strings.HasPrefix(trimmed, "---") || strings.HasPrefix(trimmed, "───") {
+			separatorFound = true
+			continue
+		}
+
+		// Detect header
+		if strings.HasPrefix(trimmed, "Name") && strings.Contains(trimmed, "Id") {
+			headerFound = true
+			continue
+		}
+
+		// Skip summary lines
+		if strings.Contains(trimmed, "upgrades available") || strings.Contains(trimmed, "upgrade available") ||
+			strings.Contains(trimmed, "No installed package") || strings.Contains(trimmed, "Keine installierten") {
+			continue
+		}
+
+		// Parse data lines
+		if headerFound && separatorFound {
+			if update := parseWingetUpdateLine(trimmed); update != nil {
+				result.Updates = append(result.Updates, *update)
+			}
+		}
+	}
+
+	log.Printf("Found %d winget updates in user context", len(result.Updates))
+
+	payload, _ := json.Marshal(result)
+	return &Message{Type: MsgTypeWingetResult, Payload: payload}, nil
+}
+
+// parseWingetUpdateLine parses a winget upgrade output line.
+func parseWingetUpdateLine(line string) *WingetUpdate {
+	fields := strings.Fields(line)
+	if len(fields) < 4 {
+		return nil
+	}
+
+	// Format: Name [Name...] Id Version Available [Source]
+	// Work backwards from the end
+	lastIdx := len(fields) - 1
+	source := "winget"
+
+	// Check if last field is source
+	if fields[lastIdx] == "winget" || fields[lastIdx] == "msstore" {
+		source = fields[lastIdx]
+		lastIdx--
+	}
+
+	if lastIdx < 3 {
+		return nil
+	}
+
+	available := fields[lastIdx]
+	version := fields[lastIdx-1]
+	id := fields[lastIdx-2]
+
+	// Validate versions contain digits
+	if !containsDigit(version) || !containsDigit(available) {
+		return nil
+	}
+
+	// Name is everything before the ID
+	nameEndIdx := lastIdx - 2
+	name := strings.Join(fields[:nameEndIdx], " ")
+
+	return &WingetUpdate{
+		Name:      name,
+		ID:        id,
+		Version:   version,
+		Available: available,
+		Source:    source,
+	}
+}
+
+// containsDigit checks if a string contains at least one digit.
+func containsDigit(s string) bool {
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 // runUpdateMode performs deferred binary replacement after the agent exits.
