@@ -13,8 +13,10 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -142,8 +144,27 @@ type Monitor struct {
 func main() {
 	// Parse flags
 	var sessionID string
+	var updateMode bool
+	var updateSrc string
+	var updateDst string
+	var updatePID int
+	var serviceName string
+
 	flag.StringVar(&sessionID, "session", "", "Session ID for the pipe name")
+	flag.BoolVar(&updateMode, "update", false, "Run in update mode to replace agent binary")
+	flag.StringVar(&updateSrc, "src", "", "Source path for new binary (update mode)")
+	flag.StringVar(&updateDst, "dst", "", "Destination path for binary (update mode)")
+	flag.IntVar(&updatePID, "pid", 0, "PID of agent process to wait for (update mode)")
+	flag.StringVar(&serviceName, "service", "SlimRMMAgent", "Service name (update mode)")
 	flag.Parse()
+
+	// Handle update mode
+	if updateMode {
+		if err := runUpdateMode(updateSrc, updateDst, updatePID, serviceName); err != nil {
+			log.Fatalf("Update failed: %v", err)
+		}
+		return
+	}
 
 	// Determine pipe name
 	pName := pipeName
@@ -661,4 +682,176 @@ func keyNameToVK(key string) uint32 {
 	// return 0 to be handled via KEYEVENTF_UNICODE
 	// This ensures correct behavior regardless of keyboard layout
 	return 0
+}
+
+// runUpdateMode performs deferred binary replacement after the agent exits.
+// This is used when updating from command line where the running binary is locked.
+func runUpdateMode(srcPath, dstPath string, pid int, serviceName string) error {
+	log.Printf("Update mode: src=%s dst=%s pid=%d service=%s", srcPath, dstPath, pid, serviceName)
+
+	if srcPath == "" || dstPath == "" {
+		return fmt.Errorf("source and destination paths are required")
+	}
+
+	// Wait for the parent process to exit if PID is provided
+	if pid > 0 {
+		log.Printf("Waiting for process %d to exit...", pid)
+		if err := waitForProcessExit(pid, 30*time.Second); err != nil {
+			log.Printf("Warning: %v, continuing anyway", err)
+		}
+		// Give extra time for file handles to be released
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Try to stop the service (in case it's running)
+	log.Println("Stopping service...")
+	stopService(serviceName)
+	time.Sleep(500 * time.Millisecond)
+
+	// Replace the binary
+	log.Println("Replacing binary...")
+	if err := replaceBinary(srcPath, dstPath); err != nil {
+		return fmt.Errorf("replacing binary: %w", err)
+	}
+
+	// Start the service
+	log.Println("Starting service...")
+	if err := startService(serviceName); err != nil {
+		return fmt.Errorf("starting service: %w", err)
+	}
+
+	log.Println("Update completed successfully")
+
+	// Clean up the source file
+	os.Remove(srcPath)
+
+	return nil
+}
+
+// waitForProcessExit waits for a process to exit.
+func waitForProcessExit(pid int, timeout time.Duration) error {
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
+	if err != nil {
+		// Process might already be gone
+		return nil
+	}
+	defer windows.CloseHandle(handle)
+
+	// Wait for process to exit
+	event, err := windows.WaitForSingleObject(handle, uint32(timeout.Milliseconds()))
+	if err != nil {
+		return fmt.Errorf("waiting for process: %w", err)
+	}
+
+	if event == windows.WAIT_TIMEOUT {
+		return fmt.Errorf("timeout waiting for process %d to exit", pid)
+	}
+
+	return nil
+}
+
+// replaceBinary replaces the destination binary with the source.
+func replaceBinary(srcPath, dstPath string) error {
+	// First, try to rename the old binary out of the way
+	oldPath := dstPath + ".old"
+	os.Remove(oldPath) // Remove any previous .old file
+
+	if err := os.Rename(dstPath, oldPath); err != nil {
+		log.Printf("Rename failed: %v, trying direct removal", err)
+		if rmErr := os.Remove(dstPath); rmErr != nil {
+			return fmt.Errorf("cannot remove old binary: %w", rmErr)
+		}
+	}
+
+	// Try to rename the new binary into place (atomic)
+	if err := os.Rename(srcPath, dstPath); err != nil {
+		log.Printf("Rename of new binary failed: %v, falling back to copy", err)
+		// Fall back to copy if cross-device
+		if err := copyFile(srcPath, dstPath); err != nil {
+			// Try to restore the old binary
+			os.Rename(oldPath, dstPath)
+			return fmt.Errorf("copy failed: %w", err)
+		}
+	}
+
+	// Set executable permissions (no-op on Windows but good practice)
+	os.Chmod(dstPath, 0755)
+
+	// Clean up old binary
+	os.Remove(oldPath)
+
+	return nil
+}
+
+// copyFile copies a file from src to dst.
+func copyFile(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	if _, err := copyBuffer(dst, src); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// copyBuffer copies from src to dst using a buffer.
+func copyBuffer(dst *os.File, src *os.File) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		nr, readErr := src.Read(buf)
+		if nr > 0 {
+			nw, writeErr := dst.Write(buf[:nr])
+			if nw > 0 {
+				written += int64(nw)
+			}
+			if writeErr != nil {
+				return written, writeErr
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return written, nil
+			}
+			return written, readErr
+		}
+	}
+}
+
+// stopService stops the Windows service.
+func stopService(name string) error {
+	cmd := exec.Command("net", "stop", name)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("net stop failed: %v, output: %s", err, string(output))
+		// Try sc stop as fallback
+		cmd = exec.Command("sc", "stop", name)
+		cmd.CombinedOutput()
+	}
+	return nil
+}
+
+// startService starts the Windows service.
+func startService(name string) error {
+	cmd := exec.Command("net", "start", name)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("net start failed: %v, output: %s", err, string(output))
+		// Try sc start as fallback
+		cmd = exec.Command("sc", "start", name)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("sc start failed: %v, output: %s", err, string(output))
+		}
+	}
+	return nil
 }

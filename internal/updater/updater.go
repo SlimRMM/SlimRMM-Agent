@@ -358,6 +358,44 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 
 	// Replace binary
 	if err := u.replaceBinary(newBinaryPath); err != nil {
+		// On Windows, if the binary is locked (running from CLI), use helper for deferred update
+		if runtime.GOOS == "windows" && isFileLocked(err) {
+			u.logger.Info("binary is locked, using helper for deferred update")
+
+			// Copy the new binary to a persistent temp location (not in the temp dir we're about to delete)
+			persistentTempDir := filepath.Join(u.dataDir, "update-pending")
+			os.MkdirAll(persistentTempDir, 0755)
+			persistentBinaryPath := filepath.Join(persistentTempDir, "slimrmm-agent.exe")
+
+			if copyErr := u.copyFileDirect(newBinaryPath, persistentBinaryPath); copyErr != nil {
+				result.Error = fmt.Sprintf("failed to stage update: %v", copyErr)
+				u.logError("update failed", result.Error)
+				return result, errors.New(result.Error)
+			}
+
+			// Spawn the helper to perform the update after we exit
+			if spawnErr := u.spawnHelperForUpdate(persistentBinaryPath); spawnErr != nil {
+				result.Error = fmt.Sprintf("failed to spawn helper: %v", spawnErr)
+				u.logError("update failed", result.Error)
+				os.Remove(persistentBinaryPath)
+				return result, errors.New(result.Error)
+			}
+
+			result.Success = true
+			result.RestartNeeded = true
+			u.logger.Info("update staged, helper will complete after agent exits")
+			fmt.Println("Update staged. Exiting to allow helper to complete the update...")
+
+			// Exit immediately so the helper can replace the binary
+			// The helper will start the service after replacing the binary
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				os.Exit(0)
+			}()
+
+			return result, nil
+		}
+
 		result.Error = fmt.Sprintf("replace failed: %v", err)
 		u.logError("update failed", result.Error)
 		// Attempt rollback
@@ -1178,6 +1216,66 @@ func VerifyChecksum(filePath, expectedHash string) error {
 	actualHash := hex.EncodeToString(h.Sum(nil))
 	if actualHash != expectedHash {
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedHash, actualHash)
+	}
+
+	return nil
+}
+
+// isFileLocked checks if the error indicates the file is locked/in use (Windows).
+func isFileLocked(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// Windows error messages for file in use
+	return strings.Contains(errStr, "verwendet wird") || // German
+		strings.Contains(errStr, "being used by another process") || // English
+		strings.Contains(errStr, "Access is denied") ||
+		strings.Contains(errStr, "Zugriff verweigert")
+}
+
+// spawnHelperForUpdate spawns the helper process to complete the update after the agent exits.
+func (u *Updater) spawnHelperForUpdate(newBinaryPath string) error {
+	helperPath := filepath.Join(filepath.Dir(u.binaryPath), "slimrmm-helper.exe")
+
+	// Check if helper exists
+	if _, err := os.Stat(helperPath); err != nil {
+		return fmt.Errorf("helper not found at %s: %w", helperPath, err)
+	}
+
+	// Get current process ID
+	pid := os.Getpid()
+
+	// Build command arguments
+	args := []string{
+		"-update",
+		"-src", newBinaryPath,
+		"-dst", u.binaryPath,
+		"-pid", fmt.Sprintf("%d", pid),
+		"-service", u.serviceName,
+	}
+
+	u.logger.Info("spawning helper for update",
+		"helper", helperPath,
+		"src", newBinaryPath,
+		"dst", u.binaryPath,
+		"pid", pid,
+	)
+
+	// Create detached process so it survives after we exit
+	cmd := exec.Command(helperPath, args...)
+	cmd.Dir = filepath.Dir(helperPath)
+
+	// Start the helper process detached
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting helper: %w", err)
+	}
+
+	u.logger.Info("helper spawned", "helper_pid", cmd.Process.Pid)
+
+	// Release the process so it can run independently
+	if err := cmd.Process.Release(); err != nil {
+		u.logger.Warn("failed to release helper process", "error", err)
 	}
 
 	return nil
