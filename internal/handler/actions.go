@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
+	"github.com/slimrmm/slimrmm-agent/internal/helper"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/security/archive"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
@@ -2708,6 +2709,7 @@ type wingetManualUpdatesRequest struct {
 }
 
 // handleExecuteWingetUpdate handles single package winget update.
+// It first tries user context via helper, then falls back to system context.
 func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
@@ -2727,8 +2729,8 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 	)
 
 	// Check if winget is available
-	client := winget.GetDefault()
-	if !client.IsAvailable() {
+	wingetClient := winget.GetDefault()
+	if !wingetClient.IsAvailable() {
 		response := map[string]interface{}{
 			"action":       "winget_update_result",
 			"execution_id": req.ExecutionID,
@@ -2740,6 +2742,100 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 	}
 
 	startedAt := time.Now()
+	wingetPath := wingetClient.GetBinaryPath()
+
+	// First try user context via helper (for per-user installed packages)
+	h.logger.Info("trying winget update in user context first", "package_id", req.PackageID)
+	h.SendRaw(map[string]interface{}{
+		"action":       "winget_update_output",
+		"execution_id": req.ExecutionID,
+		"output":       "Trying user context...\n",
+	})
+
+	helperClient := helper.NewClient()
+	if err := helperClient.Start(); err == nil {
+		defer helperClient.Stop()
+
+		result, err := helperClient.UpgradeWingetPackage(wingetPath, req.PackageID)
+		if err == nil && result != nil {
+			// Check if user context succeeded
+			if result.Success {
+				h.SendRaw(map[string]interface{}{
+					"action":       "winget_update_output",
+					"execution_id": req.ExecutionID,
+					"output":       result.Output,
+				})
+
+				response := map[string]interface{}{
+					"action":       "winget_update_result",
+					"execution_id": req.ExecutionID,
+					"status":       "completed",
+					"package_id":   req.PackageID,
+					"package_name": req.PackageName,
+					"output":       result.Output,
+					"context":      "user",
+					"started_at":   startedAt.UTC().Format(time.RFC3339),
+					"completed_at": time.Now().UTC().Format(time.RFC3339),
+					"duration_ms":  time.Since(startedAt).Milliseconds(),
+				}
+
+				if req.Reboot {
+					response["reboot_scheduled"] = true
+					go func() {
+						time.Sleep(30 * time.Second)
+						h.logger.Info("initiating reboot after winget update")
+						exec.Command("shutdown", "/r", "/t", "0").Run()
+					}()
+				}
+
+				h.SendRaw(response)
+				h.logger.Info("winget update completed via user context",
+					"execution_id", req.ExecutionID,
+					"package_id", req.PackageID,
+				)
+				return response, nil
+			}
+
+			// Check for "no installed package" error - means we should try system context
+			// Exit code 0x8a150014 = package not found
+			if result.ExitCode == 0x8a150014 || result.ExitCode == -1978335212 ||
+				strings.Contains(strings.ToLower(result.Output), "no installed package") {
+				h.logger.Info("package not found in user context, trying system context", "package_id", req.PackageID)
+				h.SendRaw(map[string]interface{}{
+					"action":       "winget_update_output",
+					"execution_id": req.ExecutionID,
+					"output":       "Not found in user context, trying system context...\n",
+				})
+			} else {
+				// User context failed for other reason
+				response := map[string]interface{}{
+					"action":       "winget_update_result",
+					"execution_id": req.ExecutionID,
+					"status":       "failed",
+					"package_id":   req.PackageID,
+					"package_name": req.PackageName,
+					"output":       result.Output,
+					"error":        result.Error,
+					"context":      "user",
+					"started_at":   startedAt.UTC().Format(time.RFC3339),
+					"completed_at": time.Now().UTC().Format(time.RFC3339),
+					"duration_ms":  time.Since(startedAt).Milliseconds(),
+				}
+				h.SendRaw(response)
+				h.logger.Error("winget update failed in user context",
+					"execution_id", req.ExecutionID,
+					"package_id", req.PackageID,
+					"error", result.Error,
+				)
+				return response, nil
+			}
+		}
+	} else {
+		h.logger.Debug("helper not available, trying system context directly", "error", err)
+	}
+
+	// Fall back to system context (original behavior)
+	h.logger.Info("trying winget update in system context", "package_id", req.PackageID)
 
 	// Set timeout
 	timeout := time.Duration(req.TimeoutSeconds) * time.Second
@@ -2749,9 +2845,7 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	wingetPath := client.GetBinaryPath()
-
-	// Run winget upgrade
+	// Run winget upgrade in system context
 	cmd := exec.CommandContext(ctx, wingetPath, "upgrade",
 		"--id", req.PackageID,
 		"--accept-source-agreements",
@@ -2775,6 +2869,7 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 			"package_id":   req.PackageID,
 			"package_name": req.PackageName,
 			"error":        fmt.Sprintf("failed to start winget: %v", err),
+			"context":      "system",
 			"started_at":   startedAt.UTC().Format(time.RFC3339),
 			"completed_at": time.Now().UTC().Format(time.RFC3339),
 			"duration_ms":  time.Since(startedAt).Milliseconds(),
@@ -2857,6 +2952,7 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 		"output":       outputBuffer.String(),
 		"error_output": errorBuffer.String(),
 		"error":        errorMsg,
+		"context":      "system", // System context fallback
 		"started_at":   startedAt.UTC().Format(time.RFC3339),
 		"completed_at": completedAt.UTC().Format(time.RFC3339),
 		"duration_ms":  durationMs,

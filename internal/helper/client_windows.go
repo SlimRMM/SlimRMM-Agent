@@ -28,17 +28,19 @@ const (
 
 // Message types - must match helper/main.go
 const (
-	MsgTypeCapture      = "capture"
-	MsgTypeFrame        = "frame"
-	MsgTypeInput        = "input"
-	MsgTypeMonitors     = "monitors"
-	MsgTypeMonitorList  = "monitor_list"
-	MsgTypePing         = "ping"
-	MsgTypePong         = "pong"
-	MsgTypeError        = "error"
-	MsgTypeQuit         = "quit"
-	MsgTypeWingetScan   = "winget_scan"
-	MsgTypeWingetResult = "winget_result"
+	MsgTypeCapture        = "capture"
+	MsgTypeFrame          = "frame"
+	MsgTypeInput          = "input"
+	MsgTypeMonitors       = "monitors"
+	MsgTypeMonitorList    = "monitor_list"
+	MsgTypePing           = "ping"
+	MsgTypePong           = "pong"
+	MsgTypeError          = "error"
+	MsgTypeQuit           = "quit"
+	MsgTypeWingetScan     = "winget_scan"
+	MsgTypeWingetResult   = "winget_result"
+	MsgTypeWingetUpgrade  = "winget_upgrade"
+	MsgTypeWingetUpgradeResult = "winget_upgrade_result"
 )
 
 // Message is the IPC message format
@@ -102,6 +104,20 @@ type WingetScanResult struct {
 // WingetScanRequest contains the winget scan parameters
 type WingetScanRequest struct {
 	WingetPath string `json:"winget_path,omitempty"`
+}
+
+// WingetUpgradeRequest contains the winget upgrade parameters
+type WingetUpgradeRequest struct {
+	WingetPath string `json:"winget_path,omitempty"`
+	PackageID  string `json:"package_id"`
+}
+
+// WingetUpgradeResult contains the winget upgrade result
+type WingetUpgradeResult struct {
+	Success   bool   `json:"success"`
+	Output    string `json:"output"`
+	Error     string `json:"error,omitempty"`
+	ExitCode  int    `json:"exit_code"`
 }
 
 // Client manages communication with the helper process
@@ -581,6 +597,42 @@ func (c *Client) ScanWingetUpdates(wingetPath string) (*WingetScanResult, error)
 	}
 
 	var result WingetScanResult
+	if err := json.Unmarshal(msg.Payload, &result); err != nil {
+		return nil, err
+	}
+
+	return &result, nil
+}
+
+// UpgradeWingetPackage requests the helper to upgrade a winget package in the user context
+func (c *Client) UpgradeWingetPackage(wingetPath, packageID string) (*WingetUpgradeResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	req := WingetUpgradeRequest{WingetPath: wingetPath, PackageID: packageID}
+	payload, _ := json.Marshal(req)
+	if err := c.sendMessage(&Message{Type: MsgTypeWingetUpgrade, Payload: payload}); err != nil {
+		return nil, err
+	}
+
+	msg, _, err := c.readMessage()
+	if err != nil {
+		return nil, err
+	}
+
+	if msg.Type == MsgTypeError {
+		return nil, fmt.Errorf("helper error: %s", string(msg.Payload))
+	}
+
+	if msg.Type != MsgTypeWingetUpgradeResult {
+		return nil, fmt.Errorf("unexpected response: %s", msg.Type)
+	}
+
+	var result WingetUpgradeResult
 	if err := json.Unmarshal(msg.Payload, &result); err != nil {
 		return nil, err
 	}

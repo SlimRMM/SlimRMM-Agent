@@ -39,6 +39,7 @@ type Update struct {
 	Category   string `json:"category"`           // security, kernel, standard
 	Size       int64  `json:"size,omitempty"`
 	Source     string `json:"source"`
+	Context    string `json:"context,omitempty"` // user or system (for winget packages)
 }
 
 // SoftwareInventory contains the list of installed software.
@@ -1011,7 +1012,8 @@ func scanWingetViaHelper() []Update {
 			CurrentVer: u.Version,
 			Category:   "standard",
 			Source:     "winget",
-			KB:         u.ID, // Store package ID in KB field
+			KB:         u.ID,     // Store package ID in KB field
+			Context:    "user",   // User context packages
 		})
 	}
 
@@ -1150,7 +1152,8 @@ func parseWingetLine(line string) *Update {
 			CurrentVer: currentVer,
 			Category:   "standard",
 			Source:     "winget",
-			KB:         pkgID, // Store package ID in KB field for reference
+			KB:         pkgID,    // Store package ID in KB field for reference
+			Context:    "system", // System context packages
 		}
 	}
 
@@ -1170,6 +1173,7 @@ func parseWingetLine(line string) *Update {
 				Category:   "standard",
 				Source:     "winget",
 				KB:         pkgID,
+				Context:    "system", // System context packages
 			}
 		}
 	}

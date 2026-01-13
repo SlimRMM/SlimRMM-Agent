@@ -87,17 +87,19 @@ var (
 
 // Message types
 const (
-	MsgTypeCapture       = "capture"
-	MsgTypeFrame         = "frame"
-	MsgTypeInput         = "input"
-	MsgTypeMonitors      = "monitors"
-	MsgTypeMonitorList   = "monitor_list"
-	MsgTypePing          = "ping"
-	MsgTypePong          = "pong"
-	MsgTypeError         = "error"
-	MsgTypeQuit          = "quit"
-	MsgTypeWingetScan    = "winget_scan"
-	MsgTypeWingetResult  = "winget_result"
+	MsgTypeCapture             = "capture"
+	MsgTypeFrame               = "frame"
+	MsgTypeInput               = "input"
+	MsgTypeMonitors            = "monitors"
+	MsgTypeMonitorList         = "monitor_list"
+	MsgTypePing                = "ping"
+	MsgTypePong                = "pong"
+	MsgTypeError               = "error"
+	MsgTypeQuit                = "quit"
+	MsgTypeWingetScan          = "winget_scan"
+	MsgTypeWingetResult        = "winget_result"
+	MsgTypeWingetUpgrade       = "winget_upgrade"
+	MsgTypeWingetUpgradeResult = "winget_upgrade_result"
 )
 
 // Message is the IPC message format
@@ -163,6 +165,20 @@ type WingetScanResult struct {
 // WingetScanRequest contains the winget scan parameters
 type WingetScanRequest struct {
 	WingetPath string `json:"winget_path,omitempty"`
+}
+
+// WingetUpgradeRequest contains the winget upgrade parameters
+type WingetUpgradeRequest struct {
+	WingetPath string `json:"winget_path,omitempty"`
+	PackageID  string `json:"package_id"`
+}
+
+// WingetUpgradeResult contains the winget upgrade result
+type WingetUpgradeResult struct {
+	Success  bool   `json:"success"`
+	Output   string `json:"output"`
+	Error    string `json:"error,omitempty"`
+	ExitCode int    `json:"exit_code"`
 }
 
 func main() {
@@ -381,6 +397,14 @@ func handleMessage(msg *Message) (*Message, []byte) {
 			json.Unmarshal(msg.Payload, &req)
 		}
 		return scanWingetUpdates(req.WingetPath)
+
+	case MsgTypeWingetUpgrade:
+		var req WingetUpgradeRequest
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			errPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
+			return &Message{Type: MsgTypeError, Payload: errPayload}, nil
+		}
+		return upgradeWingetPackage(req.WingetPath, req.PackageID)
 
 	case MsgTypeQuit:
 		return nil, nil
@@ -1078,4 +1102,62 @@ func startService(name string) error {
 	}
 	log.Printf("Service start result: %s", strings.TrimSpace(string(output)))
 	return nil
+}
+
+// upgradeWingetPackage runs winget upgrade for a specific package in user context.
+func upgradeWingetPackage(providedPath, packageID string) (*Message, []byte) {
+	log.Printf("Upgrading winget package in user context: %s", packageID)
+
+	result := WingetUpgradeResult{}
+
+	// Use provided path or try to find winget
+	wingetPath := providedPath
+	if wingetPath == "" {
+		var err error
+		wingetPath, err = exec.LookPath("winget")
+		if err != nil {
+			result.Error = "winget not found in PATH"
+			result.ExitCode = -1
+			payload, _ := json.Marshal(result)
+			return &Message{Type: MsgTypeWingetUpgradeResult, Payload: payload}, nil
+		}
+	}
+
+	log.Printf("Using winget at: %s", wingetPath)
+
+	// Run winget upgrade with timeout
+	cmd := exec.Command(wingetPath, "upgrade",
+		"--id", packageID,
+		"--accept-source-agreements",
+		"--accept-package-agreements",
+		"--disable-interactivity",
+		"--silent",
+	)
+
+	output, err := cmd.CombinedOutput()
+	result.Output = string(output)
+
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+			// Check for "already up to date" exit code
+			if result.ExitCode == 0x8A150011 || result.ExitCode == -1978335215 {
+				result.Success = true
+				result.Error = "already up to date"
+			} else {
+				result.Error = fmt.Sprintf("upgrade failed with exit code %d", result.ExitCode)
+			}
+		} else {
+			result.ExitCode = -1
+			result.Error = err.Error()
+		}
+	} else {
+		result.Success = true
+		result.ExitCode = 0
+	}
+
+	log.Printf("Winget upgrade completed: success=%v exitCode=%d", result.Success, result.ExitCode)
+
+	payload, _ := json.Marshal(result)
+	return &Message{Type: MsgTypeWingetUpgradeResult, Payload: payload}, nil
 }

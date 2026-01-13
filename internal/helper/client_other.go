@@ -59,6 +59,20 @@ type WingetScanRequest struct {
 	WingetPath string `json:"winget_path,omitempty"`
 }
 
+// WingetUpgradeRequest contains the winget upgrade parameters
+type WingetUpgradeRequest struct {
+	WingetPath string `json:"winget_path,omitempty"`
+	PackageID  string `json:"package_id"`
+}
+
+// WingetUpgradeResult contains the winget upgrade result
+type WingetUpgradeResult struct {
+	Success  bool   `json:"success"`
+	Output   string `json:"output"`
+	Error    string `json:"error,omitempty"`
+	ExitCode int    `json:"exit_code"`
+}
+
 // NewClient creates a new helper client
 func NewClient() *Client {
 	return &Client{}
@@ -106,5 +120,10 @@ func (c *Client) Reconnect() error {
 
 // ScanWingetUpdates is a no-op on non-Windows
 func (c *Client) ScanWingetUpdates(wingetPath string) (*WingetScanResult, error) {
+	return nil, fmt.Errorf("helper not supported on this platform")
+}
+
+// UpgradeWingetPackage is a no-op on non-Windows
+func (c *Client) UpgradeWingetPackage(wingetPath, packageID string) (*WingetUpgradeResult, error) {
 	return nil, fmt.Errorf("helper not supported on this platform")
 }
