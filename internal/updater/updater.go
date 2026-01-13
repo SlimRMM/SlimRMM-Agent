@@ -330,9 +330,22 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	// On Windows, we must stop the service before replacing the binary because
 	// Windows locks running executables. On Unix (Linux/macOS), we can replace
 	// the binary while it's running - the kernel keeps the old one in memory.
+	var useHelperForUpdate bool
 	if runtime.GOOS == "windows" {
 		if err := u.stopService(); err != nil {
 			u.logger.Warn("failed to stop service", "error", err)
+		}
+
+		// Wait for service to fully stop and verify binary is unlocked
+		u.waitForServiceStopped(15 * time.Second)
+
+		// Check if binary is still locked by trying to open it exclusively
+		if f, err := os.OpenFile(u.binaryPath, os.O_RDWR, 0); err != nil {
+			u.logger.Info("binary is still locked after service stop, will use helper", "error", err)
+			useHelperForUpdate = true
+		} else {
+			f.Close()
+			u.logger.Info("binary is unlocked, proceeding with direct update")
 		}
 	}
 
@@ -356,58 +369,69 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 		}
 	}
 
-	// Replace binary
-	if err := u.replaceBinary(newBinaryPath); err != nil {
-		// On Windows, if the binary is locked (running from CLI), use helper for deferred update
-		if runtime.GOOS == "windows" && isFileLocked(err) {
-			u.logger.Info("binary is locked, using helper for deferred update")
-
-			// Copy the new binary to a persistent temp location (not in the temp dir we're about to delete)
-			persistentTempDir := filepath.Join(u.dataDir, "update-pending")
-			os.MkdirAll(persistentTempDir, 0755)
-			persistentBinaryPath := filepath.Join(persistentTempDir, "slimrmm-agent.exe")
-
-			if copyErr := u.copyFileDirect(newBinaryPath, persistentBinaryPath); copyErr != nil {
-				result.Error = fmt.Sprintf("failed to stage update: %v", copyErr)
-				u.logError("update failed", result.Error)
-				return result, errors.New(result.Error)
-			}
-
-			// Spawn the helper to perform the update after we exit
-			if spawnErr := u.spawnHelperForUpdate(persistentBinaryPath); spawnErr != nil {
-				result.Error = fmt.Sprintf("failed to spawn helper: %v", spawnErr)
-				u.logError("update failed", result.Error)
-				os.Remove(persistentBinaryPath)
-				return result, errors.New(result.Error)
-			}
-
-			result.Success = true
-			result.RestartNeeded = true
-			u.logger.Info("update staged, helper will complete after agent exits")
-			fmt.Println("Update staged. Exiting to allow helper to complete the update...")
-
-			// Exit immediately so the helper can replace the binary
-			// The helper will start the service after replacing the binary
-			go func() {
-				time.Sleep(500 * time.Millisecond)
-				os.Exit(0)
-			}()
-
-			return result, nil
+	// Replace binary - on Windows, use helper if binary is locked
+	if useHelperForUpdate || (func() bool {
+		err := u.replaceBinary(newBinaryPath)
+		if err == nil {
+			u.logger.Info("replaced binary")
+			return false // success, don't use helper
 		}
-
+		// On Windows, if the binary is locked, use helper for deferred update
+		if runtime.GOOS == "windows" && isFileLocked(err) {
+			return true // use helper
+		}
+		// Other error - fail the update
 		result.Error = fmt.Sprintf("replace failed: %v", err)
 		u.logError("update failed", result.Error)
-		// Attempt rollback
 		if rbErr := u.rollback(backupFile); rbErr != nil {
 			result.Error += fmt.Sprintf("; rollback failed: %v", rbErr)
 		} else {
 			result.RolledBack = true
 		}
 		u.startService()
+		return false // error already handled
+	}()) {
+		// Use helper for Windows deferred update
+		u.logger.Info("using helper for deferred update")
+
+		// Copy the new binary to a persistent temp location (not in the temp dir we're about to delete)
+		persistentTempDir := filepath.Join(u.dataDir, "update-pending")
+		os.MkdirAll(persistentTempDir, 0755)
+		persistentBinaryPath := filepath.Join(persistentTempDir, "slimrmm-agent.exe")
+
+		if copyErr := u.copyFileDirect(newBinaryPath, persistentBinaryPath); copyErr != nil {
+			result.Error = fmt.Sprintf("failed to stage update: %v", copyErr)
+			u.logError("update failed", result.Error)
+			return result, errors.New(result.Error)
+		}
+
+		// Spawn the helper to perform the update after we exit
+		if spawnErr := u.spawnHelperForUpdate(persistentBinaryPath); spawnErr != nil {
+			result.Error = fmt.Sprintf("failed to spawn helper: %v", spawnErr)
+			u.logError("update failed", result.Error)
+			os.Remove(persistentBinaryPath)
+			return result, errors.New(result.Error)
+		}
+
+		result.Success = true
+		result.RestartNeeded = true
+		u.logger.Info("update staged, helper will complete after agent exits")
+		fmt.Println("Update staged. Exiting to allow helper to complete the update...")
+
+		// Exit immediately so the helper can replace the binary
+		// The helper will start the service after replacing the binary
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			os.Exit(0)
+		}()
+
+		return result, nil
+	}
+
+	// Check if there was an error from the inline function
+	if result.Error != "" {
 		return result, errors.New(result.Error)
 	}
-	u.logger.Info("replaced binary")
 
 	// Success - clean up old backups before restart (keep only last 2)
 	u.cleanOldBackups(2)
