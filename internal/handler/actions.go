@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -93,6 +94,9 @@ func (h *Handler) registerHandlers() {
 	// Winget handlers (Windows only)
 	h.handlers["install_winget"] = h.handleInstallWinget
 	h.handlers["get_winget_status"] = h.handleGetWingetStatus
+	h.handlers["execute_winget_policy"] = h.handleExecuteWingetPolicy
+	h.handlers["execute_winget_update"] = h.handleExecuteWingetUpdate
+	h.handlers["execute_winget_updates"] = h.handleExecuteWingetUpdates
 
 	// Proxmox handlers (only active on Proxmox hosts)
 	h.registerProxmoxHandlers()
@@ -2408,4 +2412,740 @@ func (h *Handler) handleInstallWinget(ctx context.Context, data json.RawMessage)
 		"system_level": status.SystemLevel,
 		"message":      "winget installed successfully",
 	}, nil
+}
+
+// Winget Policy Handler
+
+type wingetPolicyRequest struct {
+	ExecutionID            string   `json:"execution_id"`
+	PolicyID               string   `json:"policy_id"`
+	PolicyName             string   `json:"policy_name"`
+	FilterMode             string   `json:"filter_mode"`      // all, whitelist, blacklist
+	PackageFilters         []string `json:"package_filters"`  // Package IDs for filter
+	Reboot                 bool     `json:"reboot"`
+	TimeoutSeconds         int      `json:"timeout_seconds"`
+	MaxConcurrent          int      `json:"max_concurrent"`
+	RollbackEnabled        bool     `json:"rollback_enabled"`
+	ExcludeSystemComponents bool    `json:"exclude_system_components"`
+}
+
+type wingetUpdateResult struct {
+	PackageID   string `json:"package_id"`
+	PackageName string `json:"package_name"`
+	OldVersion  string `json:"old_version"`
+	NewVersion  string `json:"new_version"`
+	Status      string `json:"status"` // success, failed, skipped
+	Error       string `json:"error,omitempty"`
+}
+
+func (h *Handler) handleExecuteWingetPolicy(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if runtime.GOOS != "windows" {
+		return map[string]interface{}{
+			"status": "failed",
+			"error":  "winget is only available on Windows",
+		}, nil
+	}
+
+	var req wingetPolicyRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	h.logger.Info("executing winget policy",
+		"execution_id", req.ExecutionID,
+		"policy_id", req.PolicyID,
+		"filter_mode", req.FilterMode,
+	)
+
+	// Check if winget is available
+	client := winget.GetDefault()
+	if !client.IsAvailable() {
+		response := map[string]interface{}{
+			"action":       "winget_policy_result",
+			"execution_id": req.ExecutionID,
+			"policy_id":    req.PolicyID,
+			"status":       "failed",
+			"error":        "winget is not available on this system",
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	startedAt := time.Now()
+
+	// Set timeout
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Get available updates
+	updateList, err := actions.GetAvailableUpdates(ctx)
+	if err != nil {
+		h.logger.Error("failed to get available updates", "error", err)
+		response := map[string]interface{}{
+			"action":       "winget_policy_result",
+			"execution_id": req.ExecutionID,
+			"policy_id":    req.PolicyID,
+			"status":       "failed",
+			"error":        fmt.Sprintf("failed to get updates: %v", err),
+			"started_at":   startedAt.UTC().Format(time.RFC3339),
+			"completed_at": time.Now().UTC().Format(time.RFC3339),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	// Filter updates to only winget updates
+	var wingetUpdates []actions.Update
+	for _, u := range updateList.Updates {
+		if u.Source == "winget" {
+			wingetUpdates = append(wingetUpdates, u)
+		}
+	}
+
+	// Apply filter mode
+	var updatesToProcess []actions.Update
+	switch req.FilterMode {
+	case "whitelist":
+		// Only update packages in the filter list
+		filterSet := make(map[string]bool)
+		for _, id := range req.PackageFilters {
+			filterSet[strings.ToLower(id)] = true
+		}
+		for _, u := range wingetUpdates {
+			if filterSet[strings.ToLower(u.KB)] { // KB contains package ID for winget
+				updatesToProcess = append(updatesToProcess, u)
+			}
+		}
+	case "blacklist":
+		// Update all packages except those in the filter list
+		filterSet := make(map[string]bool)
+		for _, id := range req.PackageFilters {
+			filterSet[strings.ToLower(id)] = true
+		}
+		for _, u := range wingetUpdates {
+			if !filterSet[strings.ToLower(u.KB)] {
+				updatesToProcess = append(updatesToProcess, u)
+			}
+		}
+	default: // "all"
+		updatesToProcess = wingetUpdates
+	}
+
+	if len(updatesToProcess) == 0 {
+		h.logger.Info("no updates to process after filtering")
+		response := map[string]interface{}{
+			"action":         "winget_policy_result",
+			"execution_id":   req.ExecutionID,
+			"policy_id":      req.PolicyID,
+			"status":         "completed",
+			"total_packages": 0,
+			"succeeded":      0,
+			"failed":         0,
+			"results":        []wingetUpdateResult{},
+			"started_at":     startedAt.UTC().Format(time.RFC3339),
+			"completed_at":   time.Now().UTC().Format(time.RFC3339),
+			"duration_ms":    time.Since(startedAt).Milliseconds(),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	// Execute updates
+	var results []wingetUpdateResult
+	var succeeded, failed int
+	wingetPath := client.GetBinaryPath()
+
+	for i, update := range updatesToProcess {
+		// Send progress
+		h.SendRaw(map[string]interface{}{
+			"action":          "winget_policy_progress",
+			"execution_id":    req.ExecutionID,
+			"policy_id":       req.PolicyID,
+			"current_package": update.Name,
+			"current_index":   i + 1,
+			"total_packages":  len(updatesToProcess),
+		})
+
+		// Execute winget upgrade for this package
+		result := h.executeWingetUpgrade(ctx, wingetPath, update)
+		results = append(results, result)
+
+		if result.Status == "success" {
+			succeeded++
+		} else {
+			failed++
+		}
+
+		// Send progress with result
+		h.SendRaw(map[string]interface{}{
+			"action":          "winget_policy_progress",
+			"execution_id":    req.ExecutionID,
+			"policy_id":       req.PolicyID,
+			"current_package": update.Name,
+			"current_index":   i + 1,
+			"total_packages":  len(updatesToProcess),
+			"package_status":  result.Status,
+		})
+	}
+
+	completedAt := time.Now()
+	durationMs := completedAt.Sub(startedAt).Milliseconds()
+
+	// Determine overall status
+	status := "completed"
+	if failed > 0 && succeeded == 0 {
+		status = "failed"
+	} else if failed > 0 {
+		status = "partial"
+	}
+
+	response := map[string]interface{}{
+		"action":         "winget_policy_result",
+		"execution_id":   req.ExecutionID,
+		"policy_id":      req.PolicyID,
+		"status":         status,
+		"total_packages": len(updatesToProcess),
+		"succeeded":      succeeded,
+		"failed":         failed,
+		"results":        results,
+		"started_at":     startedAt.UTC().Format(time.RFC3339),
+		"completed_at":   completedAt.UTC().Format(time.RFC3339),
+		"duration_ms":    durationMs,
+	}
+
+	// Handle reboot if requested
+	if req.Reboot && succeeded > 0 {
+		response["reboot_scheduled"] = true
+		// Schedule reboot after sending response
+		go func() {
+			time.Sleep(30 * time.Second)
+			h.logger.Info("initiating reboot after winget policy execution")
+			exec.Command("shutdown", "/r", "/t", "0").Run()
+		}()
+	}
+
+	h.SendRaw(response)
+	h.logger.Info("winget policy execution completed",
+		"execution_id", req.ExecutionID,
+		"status", status,
+		"succeeded", succeeded,
+		"failed", failed,
+	)
+
+	return response, nil
+}
+
+// executeWingetUpgrade runs winget upgrade for a single package.
+func (h *Handler) executeWingetUpgrade(ctx context.Context, wingetPath string, update actions.Update) wingetUpdateResult {
+	result := wingetUpdateResult{
+		PackageID:   update.KB, // KB contains the package ID for winget updates
+		PackageName: update.Name,
+		OldVersion:  update.CurrentVer,
+		NewVersion:  update.Version,
+	}
+
+	// Run winget upgrade --id <package_id>
+	cmd := exec.CommandContext(ctx, wingetPath, "upgrade",
+		"--id", update.KB,
+		"--accept-source-agreements",
+		"--accept-package-agreements",
+		"--disable-interactivity",
+		"--silent",
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check for specific exit codes
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode := exitErr.ExitCode()
+			// 0x8A150011 = No applicable upgrade found (already up to date)
+			if exitCode == 0x8A150011 || exitCode == -1978335215 {
+				result.Status = "skipped"
+				result.Error = "already up to date"
+				return result
+			}
+		}
+		result.Status = "failed"
+		result.Error = fmt.Sprintf("upgrade failed: %v - %s", err, string(output))
+		h.logger.Error("winget upgrade failed",
+			"package", update.KB,
+			"error", err,
+			"output", string(output),
+		)
+		return result
+	}
+
+	result.Status = "success"
+	h.logger.Info("winget upgrade succeeded",
+		"package", update.KB,
+		"old_version", update.CurrentVer,
+		"new_version", update.Version,
+	)
+	return result
+}
+
+// Manual Winget Update Handlers
+
+// wingetManualUpdateRequest is the request for single package update.
+type wingetManualUpdateRequest struct {
+	ExecutionID    string `json:"execution_id"`
+	PackageID      string `json:"package_id"`
+	PackageName    string `json:"package_name,omitempty"`
+	Reboot         bool   `json:"reboot"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+// wingetManualUpdatesRequest is the request for bulk update.
+type wingetManualUpdatesRequest struct {
+	ExecutionID    string   `json:"execution_id"`
+	PackageIDs     []string `json:"package_ids"` // empty = update all
+	Reboot         bool     `json:"reboot"`
+	TimeoutSeconds int      `json:"timeout_seconds"`
+}
+
+// handleExecuteWingetUpdate handles single package winget update.
+func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if runtime.GOOS != "windows" {
+		return map[string]interface{}{
+			"status": "failed",
+			"error":  "winget is only available on Windows",
+		}, nil
+	}
+
+	var req wingetManualUpdateRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	h.logger.Info("executing winget single package update",
+		"execution_id", req.ExecutionID,
+		"package_id", req.PackageID,
+	)
+
+	// Check if winget is available
+	client := winget.GetDefault()
+	if !client.IsAvailable() {
+		response := map[string]interface{}{
+			"action":       "winget_update_result",
+			"execution_id": req.ExecutionID,
+			"status":       "failed",
+			"error":        "winget is not available on this system",
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	startedAt := time.Now()
+
+	// Set timeout
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	wingetPath := client.GetBinaryPath()
+
+	// Run winget upgrade
+	cmd := exec.CommandContext(ctx, wingetPath, "upgrade",
+		"--id", req.PackageID,
+		"--accept-source-agreements",
+		"--accept-package-agreements",
+		"--disable-interactivity",
+		"--silent",
+	)
+
+	// Stream output
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+
+	var outputBuffer strings.Builder
+	var errorBuffer strings.Builder
+
+	if err := cmd.Start(); err != nil {
+		response := map[string]interface{}{
+			"action":       "winget_update_result",
+			"execution_id": req.ExecutionID,
+			"status":       "failed",
+			"package_id":   req.PackageID,
+			"package_name": req.PackageName,
+			"error":        fmt.Sprintf("failed to start winget: %v", err),
+			"started_at":   startedAt.UTC().Format(time.RFC3339),
+			"completed_at": time.Now().UTC().Format(time.RFC3339),
+			"duration_ms":  time.Since(startedAt).Milliseconds(),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	// Stream stdout in goroutine
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				outputBuffer.WriteString(chunk)
+				h.SendRaw(map[string]interface{}{
+					"action":       "winget_update_output",
+					"execution_id": req.ExecutionID,
+					"output":       chunk,
+				})
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	// Stream stderr in goroutine
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stderr.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				errorBuffer.WriteString(chunk)
+				h.SendRaw(map[string]interface{}{
+					"action":       "winget_update_output",
+					"execution_id": req.ExecutionID,
+					"output":       chunk,
+				})
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	err := cmd.Wait()
+	completedAt := time.Now()
+	durationMs := completedAt.Sub(startedAt).Milliseconds()
+
+	status := "completed"
+	errorMsg := ""
+
+	if err != nil {
+		// Check for specific exit codes
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode := exitErr.ExitCode()
+			// 0x8A150011 = No applicable upgrade found (already up to date)
+			if exitCode == 0x8A150011 || exitCode == -1978335215 {
+				status = "completed"
+				errorMsg = "already up to date"
+			} else {
+				status = "failed"
+				errorMsg = fmt.Sprintf("upgrade failed with exit code %d: %v", exitCode, err)
+			}
+		} else {
+			status = "failed"
+			errorMsg = fmt.Sprintf("upgrade failed: %v", err)
+		}
+	}
+
+	response := map[string]interface{}{
+		"action":       "winget_update_result",
+		"execution_id": req.ExecutionID,
+		"status":       status,
+		"package_id":   req.PackageID,
+		"package_name": req.PackageName,
+		"output":       outputBuffer.String(),
+		"error_output": errorBuffer.String(),
+		"error":        errorMsg,
+		"started_at":   startedAt.UTC().Format(time.RFC3339),
+		"completed_at": completedAt.UTC().Format(time.RFC3339),
+		"duration_ms":  durationMs,
+	}
+
+	// Handle reboot if requested and successful
+	if req.Reboot && status == "completed" {
+		response["reboot_scheduled"] = true
+		go func() {
+			time.Sleep(30 * time.Second)
+			h.logger.Info("initiating reboot after winget update")
+			exec.Command("shutdown", "/r", "/t", "0").Run()
+		}()
+	}
+
+	h.SendRaw(response)
+	h.logger.Info("winget single package update completed",
+		"execution_id", req.ExecutionID,
+		"package_id", req.PackageID,
+		"status", status,
+	)
+
+	return response, nil
+}
+
+// handleExecuteWingetUpdates handles bulk winget update.
+func (h *Handler) handleExecuteWingetUpdates(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if runtime.GOOS != "windows" {
+		return map[string]interface{}{
+			"status": "failed",
+			"error":  "winget is only available on Windows",
+		}, nil
+	}
+
+	var req wingetManualUpdatesRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	h.logger.Info("executing winget bulk update",
+		"execution_id", req.ExecutionID,
+		"package_count", len(req.PackageIDs),
+	)
+
+	// Check if winget is available
+	client := winget.GetDefault()
+	if !client.IsAvailable() {
+		response := map[string]interface{}{
+			"action":       "winget_updates_result",
+			"execution_id": req.ExecutionID,
+			"status":       "failed",
+			"error":        "winget is not available on this system",
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	startedAt := time.Now()
+
+	// Set timeout
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 60 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	wingetPath := client.GetBinaryPath()
+
+	// Determine packages to update
+	var packagesToUpdate []string
+
+	if len(req.PackageIDs) == 0 {
+		// Get all available winget updates
+		updateList, err := actions.GetAvailableUpdates(ctx)
+		if err != nil {
+			response := map[string]interface{}{
+				"action":       "winget_updates_result",
+				"execution_id": req.ExecutionID,
+				"status":       "failed",
+				"error":        fmt.Sprintf("failed to get updates: %v", err),
+				"started_at":   startedAt.UTC().Format(time.RFC3339),
+				"completed_at": time.Now().UTC().Format(time.RFC3339),
+			}
+			h.SendRaw(response)
+			return response, nil
+		}
+
+		for _, u := range updateList.Updates {
+			if u.Source == "winget" && u.KB != "" {
+				packagesToUpdate = append(packagesToUpdate, u.KB)
+			}
+		}
+	} else {
+		packagesToUpdate = req.PackageIDs
+	}
+
+	if len(packagesToUpdate) == 0 {
+		response := map[string]interface{}{
+			"action":         "winget_updates_result",
+			"execution_id":   req.ExecutionID,
+			"status":         "completed",
+			"total_packages": 0,
+			"succeeded":      0,
+			"failed":         0,
+			"results":        []wingetUpdateResult{},
+			"started_at":     startedAt.UTC().Format(time.RFC3339),
+			"completed_at":   time.Now().UTC().Format(time.RFC3339),
+			"duration_ms":    time.Since(startedAt).Milliseconds(),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	// Execute updates
+	var results []wingetUpdateResult
+	var succeeded, failed int
+
+	for i, packageID := range packagesToUpdate {
+		// Send progress
+		h.SendRaw(map[string]interface{}{
+			"action":       "winget_updates_progress",
+			"execution_id": req.ExecutionID,
+			"current":      i + 1,
+			"total":        len(packagesToUpdate),
+			"package_id":   packageID,
+			"status":       "running",
+		})
+
+		// Execute upgrade
+		result := h.executeWingetUpgradeByID(ctx, wingetPath, packageID, req.ExecutionID)
+		results = append(results, result)
+
+		if result.Status == "success" {
+			succeeded++
+		} else if result.Status != "skipped" {
+			failed++
+		}
+
+		// Send progress with result
+		h.SendRaw(map[string]interface{}{
+			"action":       "winget_updates_progress",
+			"execution_id": req.ExecutionID,
+			"current":      i + 1,
+			"total":        len(packagesToUpdate),
+			"package_id":   packageID,
+			"status":       result.Status,
+		})
+	}
+
+	completedAt := time.Now()
+	durationMs := completedAt.Sub(startedAt).Milliseconds()
+
+	// Determine overall status
+	status := "completed"
+	if failed > 0 && succeeded == 0 {
+		status = "failed"
+	} else if failed > 0 {
+		status = "partial"
+	}
+
+	response := map[string]interface{}{
+		"action":           "winget_updates_result",
+		"execution_id":     req.ExecutionID,
+		"status":           status,
+		"total_packages":   len(packagesToUpdate),
+		"succeeded":        succeeded,
+		"failed":           failed,
+		"results":          results,
+		"started_at":       startedAt.UTC().Format(time.RFC3339),
+		"completed_at":     completedAt.UTC().Format(time.RFC3339),
+		"duration_ms":      durationMs,
+		"reboot_scheduled": false,
+	}
+
+	// Handle reboot if requested and at least one update succeeded
+	if req.Reboot && succeeded > 0 {
+		response["reboot_scheduled"] = true
+		go func() {
+			time.Sleep(30 * time.Second)
+			h.logger.Info("initiating reboot after winget bulk update")
+			exec.Command("shutdown", "/r", "/t", "0").Run()
+		}()
+	}
+
+	h.SendRaw(response)
+	h.logger.Info("winget bulk update completed",
+		"execution_id", req.ExecutionID,
+		"status", status,
+		"succeeded", succeeded,
+		"failed", failed,
+	)
+
+	return response, nil
+}
+
+// executeWingetUpgradeByID runs winget upgrade for a single package by ID.
+func (h *Handler) executeWingetUpgradeByID(ctx context.Context, wingetPath, packageID, executionID string) wingetUpdateResult {
+	result := wingetUpdateResult{
+		PackageID:   packageID,
+		PackageName: packageID, // Use ID as name if not known
+	}
+
+	// Run winget upgrade
+	cmd := exec.CommandContext(ctx, wingetPath, "upgrade",
+		"--id", packageID,
+		"--accept-source-agreements",
+		"--accept-package-agreements",
+		"--disable-interactivity",
+		"--silent",
+	)
+
+	// Stream output
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+
+	var outputBuffer strings.Builder
+
+	if err := cmd.Start(); err != nil {
+		result.Status = "failed"
+		result.Error = fmt.Sprintf("failed to start winget: %v", err)
+		return result
+	}
+
+	// Stream stdout
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				outputBuffer.WriteString(chunk)
+				h.SendRaw(map[string]interface{}{
+					"action":       "winget_update_output",
+					"execution_id": executionID,
+					"output":       chunk,
+				})
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	// Stream stderr
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stderr.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				outputBuffer.WriteString(chunk)
+				h.SendRaw(map[string]interface{}{
+					"action":       "winget_update_output",
+					"execution_id": executionID,
+					"output":       chunk,
+				})
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	err := cmd.Wait()
+
+	if err != nil {
+		// Check for specific exit codes
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode := exitErr.ExitCode()
+			// 0x8A150011 = No applicable upgrade found (already up to date)
+			if exitCode == 0x8A150011 || exitCode == -1978335215 {
+				result.Status = "skipped"
+				result.Error = "already up to date"
+				return result
+			}
+		}
+		result.Status = "failed"
+		result.Error = fmt.Sprintf("upgrade failed: %v - %s", err, outputBuffer.String())
+		h.logger.Error("winget upgrade failed",
+			"package", packageID,
+			"error", err,
+		)
+		return result
+	}
+
+	result.Status = "success"
+	h.logger.Info("winget upgrade succeeded",
+		"package", packageID,
+	)
+	return result
 }
