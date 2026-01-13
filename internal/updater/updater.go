@@ -1007,7 +1007,21 @@ func (u *Updater) restartService() error {
 		u.logger.Info("restart scheduled, process will be restarted shortly")
 		return nil
 	case "windows":
-		// Windows already stopped the service, just start it
+		// On Windows, the service might be running (if stop failed earlier)
+		// or stopped (if stop succeeded). Try to restart properly.
+		running, _ := u.isServiceRunning()
+		if running {
+			// Service is running - need to restart it to load new binary
+			u.logger.Info("service is running, restarting to load new binary")
+			if err := u.stopService(); err != nil {
+				u.logger.Warn("failed to stop service for restart", "error", err)
+				// Try force kill if net stop fails
+				exec.Command("taskkill", "/F", "/IM", "slimrmm-agent.exe").Run()
+				time.Sleep(time.Second)
+			}
+			// Wait for service to fully stop
+			u.waitForServiceStopped(10 * time.Second)
+		}
 		return u.startService()
 	default:
 		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
