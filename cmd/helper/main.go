@@ -738,12 +738,14 @@ func waitForProcessExit(pid int, timeout time.Duration) error {
 	defer windows.CloseHandle(handle)
 
 	// Wait for process to exit
+	// WAIT_TIMEOUT is 0x00000102 = 258
+	const waitTimeout = 0x00000102
 	event, err := windows.WaitForSingleObject(handle, uint32(timeout.Milliseconds()))
 	if err != nil {
 		return fmt.Errorf("waiting for process: %w", err)
 	}
 
-	if event == windows.WAIT_TIMEOUT {
+	if event == waitTimeout {
 		return fmt.Errorf("timeout waiting for process %d to exit", pid)
 	}
 
