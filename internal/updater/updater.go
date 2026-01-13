@@ -965,10 +965,36 @@ func (u *Updater) startService() error {
 	case "windows":
 		// Use 'net start' instead of 'sc start' - net start waits synchronously
 		// until the service is fully started
-		if err := exec.Command("net", "start", u.serviceName).Run(); err != nil {
+		cmd := exec.Command("net", "start", u.serviceName)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			outputStr := string(output)
+			u.logger.Debug("net start output", "output", outputStr, "error", err)
+
+			// Check if service is already running (error 1056 or "already been started" message)
+			// Exit code 2 with "already been started" means service is running - treat as success
+			if strings.Contains(outputStr, "already been started") ||
+				strings.Contains(outputStr, "wurde bereits gestartet") ||
+				strings.Contains(outputStr, "1056") {
+				u.logger.Info("service already running, treating as success")
+				return nil
+			}
+
 			// Fallback to sc start
 			u.logger.Debug("net start failed, trying sc start", "error", err)
-			return exec.Command("sc", "start", u.serviceName).Run()
+			scCmd := exec.Command("sc", "start", u.serviceName)
+			scOutput, scErr := scCmd.CombinedOutput()
+			if scErr != nil {
+				scOutputStr := string(scOutput)
+				// sc start returns "1056" in output if already running
+				if strings.Contains(scOutputStr, "1056") ||
+					strings.Contains(scOutputStr, "RUNNING") {
+					u.logger.Info("service already running (sc), treating as success")
+					return nil
+				}
+				u.logger.Error("sc start failed", "output", scOutputStr, "error", scErr)
+				return scErr
+			}
 		}
 		return nil
 	default:

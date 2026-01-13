@@ -31,7 +31,8 @@ type Update struct {
 	Name       string `json:"name"`
 	Version    string `json:"version"`
 	CurrentVer string `json:"current_version,omitempty"`
-	Category   string `json:"category"` // security, kernel, standard
+	KB         string `json:"kb,omitempty"`       // KB article number for Windows updates
+	Category   string `json:"category"`           // security, kernel, standard
 	Size       int64  `json:"size,omitempty"`
 	Source     string `json:"source"`
 }
@@ -770,7 +771,7 @@ if ($UpdatesArray.Count -gt 0) {
 			update.Name = title
 		}
 		if kb, ok := raw["KB"].(string); ok && kb != "" {
-			update.Version = kb
+			update.KB = kb
 		}
 		if category, ok := raw["Category"].(string); ok {
 			update.Category = category
