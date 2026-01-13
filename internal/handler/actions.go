@@ -2873,11 +2873,22 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 	}
 
 	h.SendRaw(response)
-	h.logger.Info("winget single package update completed",
-		"execution_id", req.ExecutionID,
-		"package_id", req.PackageID,
-		"status", status,
-	)
+
+	if status == "failed" {
+		h.logger.Error("winget single package update failed",
+			"execution_id", req.ExecutionID,
+			"package_id", req.PackageID,
+			"error", errorMsg,
+			"output", outputBuffer.String(),
+			"error_output", errorBuffer.String(),
+		)
+	} else {
+		h.logger.Info("winget single package update completed",
+			"execution_id", req.ExecutionID,
+			"package_id", req.PackageID,
+			"status", status,
+		)
+	}
 
 	return response, nil
 }
@@ -3043,12 +3054,22 @@ func (h *Handler) handleExecuteWingetUpdates(ctx context.Context, data json.RawM
 	}
 
 	h.SendRaw(response)
-	h.logger.Info("winget bulk update completed",
-		"execution_id", req.ExecutionID,
-		"status", status,
-		"succeeded", succeeded,
-		"failed", failed,
-	)
+
+	if status == "failed" {
+		h.logger.Error("winget bulk update failed",
+			"execution_id", req.ExecutionID,
+			"status", status,
+			"succeeded", succeeded,
+			"failed", failed,
+		)
+	} else {
+		h.logger.Info("winget bulk update completed",
+			"execution_id", req.ExecutionID,
+			"status", status,
+			"succeeded", succeeded,
+			"failed", failed,
+		)
+	}
 
 	return response, nil
 }
