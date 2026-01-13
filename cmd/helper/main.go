@@ -775,16 +775,18 @@ func scanWingetUpdates(providedPath string) (*Message, []byte) {
 			continue
 		}
 
-		// Detect header
-		if strings.HasPrefix(trimmed, "Name") && strings.Contains(trimmed, "Id") {
+		// Detect header (case-insensitive for localization support)
+		lowerLine := strings.ToLower(trimmed)
+		if strings.HasPrefix(lowerLine, "name") && (strings.Contains(lowerLine, "id") || strings.Contains(lowerLine, "version")) {
 			headerFound = true
 			log.Printf("Line %d: HEADER - %s", i, trimmed)
 			continue
 		}
 
-		// Skip summary lines
+		// Skip summary lines (English and German)
 		if strings.Contains(trimmed, "upgrades available") || strings.Contains(trimmed, "upgrade available") ||
-			strings.Contains(trimmed, "No installed package") || strings.Contains(trimmed, "Keine installierten") {
+			strings.Contains(trimmed, "No installed package") || strings.Contains(trimmed, "Keine installierten") ||
+			strings.Contains(trimmed, "Aktualisierungen verfügbar") || strings.Contains(trimmed, "Aktualisierung verfügbar") {
 			log.Printf("Line %d: SUMMARY - %s", i, trimmed)
 			continue
 		}

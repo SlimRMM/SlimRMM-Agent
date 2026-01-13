@@ -1070,13 +1070,17 @@ func scanWingetDirect(ctx context.Context) []Update {
 			continue
 		}
 
-		if strings.HasPrefix(trimmedLine, "Name") && strings.Contains(trimmedLine, "Id") {
+		// Detect header (case-insensitive for localization support)
+		lowerLine := strings.ToLower(trimmedLine)
+		if strings.HasPrefix(lowerLine, "name") && (strings.Contains(lowerLine, "id") || strings.Contains(lowerLine, "version")) {
 			headerFound = true
 			continue
 		}
 
+		// Skip summary lines (English and German)
 		if strings.Contains(trimmedLine, "upgrades available") || strings.Contains(trimmedLine, "upgrade available") ||
-			strings.Contains(trimmedLine, "No installed package") || strings.Contains(trimmedLine, "Keine installierten") {
+			strings.Contains(trimmedLine, "No installed package") || strings.Contains(trimmedLine, "Keine installierten") ||
+			strings.Contains(trimmedLine, "Aktualisierungen verfügbar") || strings.Contains(trimmedLine, "Aktualisierung verfügbar") {
 			continue
 		}
 
