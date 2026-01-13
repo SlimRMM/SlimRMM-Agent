@@ -750,8 +750,11 @@ func scanWingetUpdates(providedPath string) (*Message, []byte) {
 		// Don't return error, try to parse output anyway
 	}
 
-	// Parse output
-	lines := strings.Split(outputStr, "\n")
+	// Parse output - split on both \n and \r to handle Windows line endings
+	// and progress indicator resets (winget uses \r for spinner animation)
+	lines := strings.FieldsFunc(outputStr, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
 	headerFound := false
 	separatorFound := false
 
@@ -763,8 +766,9 @@ func scanWingetUpdates(providedPath string) (*Message, []byte) {
 			continue
 		}
 
-		// Skip progress indicators
-		if strings.Contains(trimmed, "█") || strings.Contains(trimmed, "▒") {
+		// Skip progress indicators (spinner animation characters)
+		if strings.Contains(trimmed, "█") || strings.Contains(trimmed, "▒") ||
+			trimmed == "-" || trimmed == "\\" || trimmed == "|" || trimmed == "/" {
 			continue
 		}
 
@@ -777,16 +781,18 @@ func scanWingetUpdates(providedPath string) (*Message, []byte) {
 
 		// Detect header (case-insensitive for localization support)
 		lowerLine := strings.ToLower(trimmed)
-		if strings.HasPrefix(lowerLine, "name") && (strings.Contains(lowerLine, "id") || strings.Contains(lowerLine, "version")) {
+		if strings.Contains(lowerLine, "name") && strings.Contains(lowerLine, "id") && strings.Contains(lowerLine, "version") {
 			headerFound = true
 			log.Printf("Line %d: HEADER - %s", i, trimmed)
 			continue
 		}
 
 		// Skip summary lines (English and German)
-		if strings.Contains(trimmed, "upgrades available") || strings.Contains(trimmed, "upgrade available") ||
-			strings.Contains(trimmed, "No installed package") || strings.Contains(trimmed, "Keine installierten") ||
-			strings.Contains(trimmed, "Aktualisierungen verfügbar") || strings.Contains(trimmed, "Aktualisierung verfügbar") {
+		lowerTrimmed := strings.ToLower(trimmed)
+		if strings.Contains(lowerTrimmed, "upgrades available") || strings.Contains(lowerTrimmed, "upgrade available") ||
+			strings.Contains(lowerTrimmed, "no installed package") || strings.Contains(lowerTrimmed, "keine installierten") ||
+			strings.Contains(lowerTrimmed, "aktualisierungen verfügbar") || strings.Contains(lowerTrimmed, "aktualisierung verfügbar") ||
+			strings.Contains(lowerTrimmed, "aktualisierungen verf") { // Handle encoding issues
 			log.Printf("Line %d: SUMMARY - %s", i, trimmed)
 			continue
 		}
