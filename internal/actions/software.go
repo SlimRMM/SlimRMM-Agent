@@ -693,24 +693,26 @@ Write-Host "Importing PSWindowsUpdate module..."
 Import-Module PSWindowsUpdate -Force -ErrorAction Stop
 
 Write-Host "Running Get-WindowsUpdate..."
-$Updates = Get-WindowsUpdate -MicrosoftUpdate -AcceptAll -IgnoreReboot 2>$null | ForEach-Object {
+$RawUpdates = Get-WindowsUpdate -MicrosoftUpdate -AcceptAll -IgnoreReboot 2>$null
+
+# Build array of update objects explicitly (avoid PowerShell pipeline grouping issues)
+$UpdatesArray = @()
+foreach ($Update in $RawUpdates) {
     $Category = "standard"
-    if ($_.Title -match "Security|Critical") { $Category = "security" }
-    if ($_.Title -match "Cumulative|Feature") { $Category = "feature" }
-    @{
-        Title = $_.Title
-        KB = $_.KB
-        Size = $_.Size
+    if ($Update.Title -match "Security|Critical") { $Category = "security" }
+    if ($Update.Title -match "Cumulative|Feature") { $Category = "feature" }
+    $UpdatesArray += [PSCustomObject]@{
+        Title = $Update.Title
+        KB = $Update.KB
+        Size = $Update.Size
         Category = $Category
     }
 }
 
-# Ensure $Updates is always an array
-$UpdatesArray = @($Updates)
 Write-Host "Found $($UpdatesArray.Count) updates"
 if ($UpdatesArray.Count -gt 0) {
-    # Use ConvertTo-Json with explicit array wrapping
-    ConvertTo-Json -InputObject $UpdatesArray -Depth 3 -Compress
+    # Output as JSON array - use @() to ensure array even with single item
+    ConvertTo-Json -InputObject @($UpdatesArray) -Depth 3 -Compress
 } else {
     Write-Output "[]"
 }

@@ -83,6 +83,7 @@ type HeartbeatMessage struct {
 type HeartbeatWinget struct {
 	Available   bool   `json:"available"`
 	Version     string `json:"version,omitempty"`
+	BinaryPath  string `json:"binary_path,omitempty"`
 	SystemLevel bool   `json:"system_level"`
 }
 
@@ -866,6 +867,7 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 		wingetData := &HeartbeatWinget{
 			Available:   status.Available,
 			Version:     status.Version,
+			BinaryPath:  status.BinaryPath,
 			SystemLevel: status.SystemLevel,
 		}
 		currentHash := hashStruct(wingetData)
@@ -875,6 +877,7 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			h.logger.Debug("winget status changed, including in heartbeat",
 				"available", status.Available,
 				"version", status.Version,
+				"binary_path", status.BinaryPath,
 				"system_level", status.SystemLevel,
 			)
 		}
