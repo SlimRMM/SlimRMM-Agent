@@ -49,8 +49,9 @@ type WingetUpdate struct {
 
 // WingetScanResult contains the winget scan results
 type WingetScanResult struct {
-	Updates []WingetUpdate `json:"updates"`
-	Error   string         `json:"error,omitempty"`
+	Updates   []WingetUpdate `json:"updates"`
+	Error     string         `json:"error,omitempty"`
+	RawOutput string         `json:"raw_output,omitempty"`
 }
 
 // WingetScanRequest contains the winget scan parameters

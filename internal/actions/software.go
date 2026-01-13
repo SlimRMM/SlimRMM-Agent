@@ -993,6 +993,11 @@ func scanWingetViaHelper() []Update {
 		return updates
 	}
 
+	// Log raw output for debugging
+	if result.RawOutput != "" {
+		slog.Info("helper winget raw output", "output", result.RawOutput)
+	}
+
 	if result.Error != "" {
 		slog.Debug("helper winget scan returned error", "error", result.Error)
 		return updates

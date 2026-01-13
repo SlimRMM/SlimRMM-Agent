@@ -155,8 +155,9 @@ type WingetUpdate struct {
 
 // WingetScanResult contains the winget scan results
 type WingetScanResult struct {
-	Updates []WingetUpdate `json:"updates"`
-	Error   string         `json:"error,omitempty"`
+	Updates   []WingetUpdate `json:"updates"`
+	Error     string         `json:"error,omitempty"`
+	RawOutput string         `json:"raw_output,omitempty"`
 }
 
 // WingetScanRequest contains the winget scan parameters
@@ -739,17 +740,24 @@ func scanWingetUpdates(providedPath string) (*Message, []byte) {
 	// Run winget upgrade
 	cmd := exec.Command(wingetPath, "upgrade", "--accept-source-agreements", "--disable-interactivity", "--include-unknown")
 	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+
+	log.Printf("winget command output length: %d", len(outputStr))
+	log.Printf("winget command output:\n%s", outputStr)
+
 	if err != nil {
 		log.Printf("winget command failed: %v", err)
 		// Don't return error, try to parse output anyway
 	}
 
 	// Parse output
-	lines := strings.Split(string(output), "\n")
+	lines := strings.Split(outputStr, "\n")
 	headerFound := false
 	separatorFound := false
 
-	for _, line := range lines {
+	log.Printf("Parsing %d lines", len(lines))
+
+	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
@@ -763,30 +771,46 @@ func scanWingetUpdates(providedPath string) (*Message, []byte) {
 		// Handle separator
 		if strings.HasPrefix(trimmed, "---") || strings.HasPrefix(trimmed, "───") {
 			separatorFound = true
+			log.Printf("Line %d: SEPARATOR", i)
 			continue
 		}
 
 		// Detect header
 		if strings.HasPrefix(trimmed, "Name") && strings.Contains(trimmed, "Id") {
 			headerFound = true
+			log.Printf("Line %d: HEADER - %s", i, trimmed)
 			continue
 		}
 
 		// Skip summary lines
 		if strings.Contains(trimmed, "upgrades available") || strings.Contains(trimmed, "upgrade available") ||
 			strings.Contains(trimmed, "No installed package") || strings.Contains(trimmed, "Keine installierten") {
+			log.Printf("Line %d: SUMMARY - %s", i, trimmed)
 			continue
 		}
 
 		// Parse data lines
 		if headerFound && separatorFound {
+			log.Printf("Line %d: DATA - %s", i, trimmed)
 			if update := parseWingetUpdateLine(trimmed); update != nil {
 				result.Updates = append(result.Updates, *update)
+				log.Printf("  -> Parsed: %s (%s) %s -> %s", update.Name, update.ID, update.Version, update.Available)
+			} else {
+				log.Printf("  -> Failed to parse")
 			}
+		} else {
+			log.Printf("Line %d: SKIP (header=%v sep=%v) - %s", i, headerFound, separatorFound, trimmed)
 		}
 	}
 
 	log.Printf("Found %d winget updates in user context", len(result.Updates))
+
+	// Include raw output for debugging (truncate if too long)
+	if len(outputStr) > 2000 {
+		result.RawOutput = outputStr[:2000] + "...(truncated)"
+	} else {
+		result.RawOutput = outputStr
+	}
 
 	payload, _ := json.Marshal(result)
 	return &Message{Type: MsgTypeWingetResult, Payload: payload}, nil
