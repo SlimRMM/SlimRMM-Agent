@@ -955,51 +955,68 @@ func getWingetUpdates(ctx context.Context) (*UpdateList, error) {
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, wingetPath, "upgrade", "--accept-source-agreements", "--disable-interactivity")
+	// Use --include-unknown to catch packages where version detection may fail
+	// and --source winget to focus on winget repository
+	cmd := exec.CommandContext(ctx, wingetPath, "upgrade",
+		"--accept-source-agreements",
+		"--disable-interactivity",
+		"--include-unknown",
+	)
 	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+
 	if err != nil {
-		slog.Debug("winget upgrade command failed", "error", err)
+		slog.Debug("winget upgrade command failed", "error", err, "output", outputStr)
 		return updates, nil
 	}
 
+	// Log raw output for debugging
+	slog.Debug("winget upgrade raw output", "output", outputStr)
+
 	// Parse output
-	lines := strings.Split(string(output), "\n")
+	lines := strings.Split(outputStr, "\n")
 	headerFound := false
 	separatorFound := false
 
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine == "" {
 			continue
 		}
 
 		// Skip progress indicators
-		if strings.Contains(line, "█") || strings.Contains(line, "▒") {
+		if strings.Contains(trimmedLine, "█") || strings.Contains(trimmedLine, "▒") {
 			continue
 		}
 
-		// Handle separator line
-		if strings.HasPrefix(line, "---") {
+		// Handle separator line (dashes)
+		if strings.HasPrefix(trimmedLine, "---") || strings.HasPrefix(trimmedLine, "───") {
 			separatorFound = true
+			slog.Debug("winget: found separator line")
 			continue
 		}
 
 		// Detect header line
-		if strings.HasPrefix(line, "Name") && strings.Contains(line, "Id") && strings.Contains(line, "Version") {
+		if strings.HasPrefix(trimmedLine, "Name") && strings.Contains(trimmedLine, "Id") {
 			headerFound = true
+			slog.Debug("winget: found header line", "line", trimmedLine)
 			continue
 		}
 
 		// Skip summary lines
-		if strings.Contains(line, "upgrades available") || strings.Contains(line, "upgrade available") ||
-			strings.Contains(line, "No installed package") || strings.Contains(line, "No applicable") {
+		if strings.Contains(trimmedLine, "upgrades available") || strings.Contains(trimmedLine, "upgrade available") ||
+			strings.Contains(trimmedLine, "No installed package") || strings.Contains(trimmedLine, "No applicable") ||
+			strings.Contains(trimmedLine, "Keine installierten") {
+			slog.Debug("winget: skipping summary line", "line", trimmedLine)
 			continue
 		}
 
 		// Parse data lines after header and separator
 		if headerFound && separatorFound {
-			if update := parseWingetLine(line); update != nil {
+			slog.Debug("winget: parsing data line", "line", trimmedLine)
+			if update := parseWingetLine(trimmedLine); update != nil {
 				updates.Updates = append(updates.Updates, *update)
+				slog.Debug("winget: parsed update", "name", update.Name, "version", update.Version)
 			}
 		}
 	}
