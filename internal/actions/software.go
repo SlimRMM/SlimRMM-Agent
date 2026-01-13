@@ -243,7 +243,9 @@ func getWindowsSoftware(ctx context.Context) (*SoftwareInventory, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	script := `Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*,
+	script := `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*,
 HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* |
 Where-Object { $_.DisplayName } |
 Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, EstimatedSize |
@@ -633,6 +635,10 @@ func getWindowsUpdates(ctx context.Context) (*UpdateList, error) {
 	// PowerShell script to install PSWindowsUpdate if needed and get updates
 	script := `
 $ErrorActionPreference = 'Stop'
+
+# Force UTF-8 output encoding to handle German/Unicode characters correctly
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 
 # Set execution policy for this process to allow module installation
 try {
