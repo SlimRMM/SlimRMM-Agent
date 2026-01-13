@@ -728,14 +728,14 @@ if ($UpdatesArray.Count -gt 0) {
 		slog.Error("PowerShell Windows updates failed", "error", err, "output", outputStr)
 		return &UpdateList{
 			Updates: make([]Update, 0),
-			Source:  "pswindowsupdate",
+			Source:  "System",
 		}, nil
 	}
 	slog.Info("PowerShell Windows updates completed", "output", outputStr)
 
 	updates := &UpdateList{
 		Updates: make([]Update, 0),
-		Source:  "pswindowsupdate",
+		Source:  "System",
 	}
 
 	// Find JSON in output (last line that starts with [ or {)
@@ -765,7 +765,7 @@ if ($UpdatesArray.Count -gt 0) {
 
 	for _, raw := range rawUpdates {
 		update := Update{
-			Source: "pswindowsupdate",
+			Source: "System",
 		}
 
 		if title, ok := raw["Title"].(string); ok {

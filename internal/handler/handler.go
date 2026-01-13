@@ -169,6 +169,9 @@ type Handler struct {
 	// Heartbeat counter for periodic config saves
 	heartbeatCount int
 
+	// Full heartbeat counter - force full heartbeat every N heartbeats
+	fullHeartbeatCounter int
+
 	// Inventory watcher for event-driven updates
 	inventoryWatcher *monitor.InventoryWatcher
 
@@ -679,6 +682,17 @@ func (h *Handler) sendHeartbeatWithSnapshot(ctx context.Context) *monitor.System
 
 	// Determine heartbeat type based on activity
 	heartbeatType := h.adaptiveHeartbeat.GetHeartbeatType()
+
+	// Force full heartbeat every 10 heartbeats (~5 minutes) to ensure
+	// Proxmox/winget data is sent periodically, even during normal activity.
+	// Also force full on first heartbeat (counter == 0) after connection.
+	h.fullHeartbeatCounter++
+	if h.fullHeartbeatCounter >= 10 || h.fullHeartbeatCounter == 1 {
+		heartbeatType = monitor.HeartbeatFull
+		if h.fullHeartbeatCounter >= 10 {
+			h.fullHeartbeatCounter = 0
+		}
+	}
 
 	// Send appropriate heartbeat based on type
 	h.sendHeartbeatByType(ctx, stats, heartbeatType)
