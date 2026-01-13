@@ -970,6 +970,13 @@ func getWingetUpdates(ctx context.Context) (*UpdateList, error) {
 func scanWingetViaHelper() []Update {
 	updates := make([]Update, 0)
 
+	// Get winget path from the agent's detection (it knows where winget is)
+	wingetClient := winget.GetDefault()
+	wingetPath := ""
+	if wingetClient.IsAvailable() {
+		wingetPath = wingetClient.GetBinaryPath()
+	}
+
 	// Start helper client
 	client := helper.NewClient()
 	if err := client.Start(); err != nil {
@@ -978,9 +985,9 @@ func scanWingetViaHelper() []Update {
 	}
 	defer client.Stop()
 
-	slog.Info("scanning winget updates via helper (user context)")
+	slog.Info("scanning winget updates via helper (user context)", "winget_path", wingetPath)
 
-	result, err := client.ScanWingetUpdates()
+	result, err := client.ScanWingetUpdates(wingetPath)
 	if err != nil {
 		slog.Debug("helper winget scan failed", "error", err)
 		return updates

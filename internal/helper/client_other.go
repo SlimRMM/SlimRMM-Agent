@@ -53,6 +53,11 @@ type WingetScanResult struct {
 	Error   string         `json:"error,omitempty"`
 }
 
+// WingetScanRequest contains the winget scan parameters
+type WingetScanRequest struct {
+	WingetPath string `json:"winget_path,omitempty"`
+}
+
 // NewClient creates a new helper client
 func NewClient() *Client {
 	return &Client{}
@@ -99,6 +104,6 @@ func (c *Client) Reconnect() error {
 }
 
 // ScanWingetUpdates is a no-op on non-Windows
-func (c *Client) ScanWingetUpdates() (*WingetScanResult, error) {
+func (c *Client) ScanWingetUpdates(wingetPath string) (*WingetScanResult, error) {
 	return nil, fmt.Errorf("helper not supported on this platform")
 }

@@ -98,6 +98,11 @@ type WingetScanResult struct {
 	Error   string         `json:"error,omitempty"`
 }
 
+// WingetScanRequest contains the winget scan parameters
+type WingetScanRequest struct {
+	WingetPath string `json:"winget_path,omitempty"`
+}
+
 // Client manages communication with the helper process
 type Client struct {
 	pipe       windows.Handle
@@ -547,7 +552,7 @@ func (c *Client) SendInput(event InputEvent) error {
 }
 
 // ScanWingetUpdates requests the helper to scan for winget updates in the user context
-func (c *Client) ScanWingetUpdates() (*WingetScanResult, error) {
+func (c *Client) ScanWingetUpdates(wingetPath string) (*WingetScanResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -555,7 +560,9 @@ func (c *Client) ScanWingetUpdates() (*WingetScanResult, error) {
 		return nil, fmt.Errorf("not connected")
 	}
 
-	if err := c.sendMessage(&Message{Type: MsgTypeWingetScan}); err != nil {
+	req := WingetScanRequest{WingetPath: wingetPath}
+	payload, _ := json.Marshal(req)
+	if err := c.sendMessage(&Message{Type: MsgTypeWingetScan, Payload: payload}); err != nil {
 		return nil, err
 	}
 

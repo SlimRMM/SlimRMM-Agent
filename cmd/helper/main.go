@@ -159,6 +159,11 @@ type WingetScanResult struct {
 	Error   string         `json:"error,omitempty"`
 }
 
+// WingetScanRequest contains the winget scan parameters
+type WingetScanRequest struct {
+	WingetPath string `json:"winget_path,omitempty"`
+}
+
 func main() {
 	// Parse flags
 	var sessionID string
@@ -370,7 +375,11 @@ func handleMessage(msg *Message) (*Message, []byte) {
 		return nil, nil // No response for input events
 
 	case MsgTypeWingetScan:
-		return scanWingetUpdates()
+		var req WingetScanRequest
+		if msg.Payload != nil {
+			json.Unmarshal(msg.Payload, &req)
+		}
+		return scanWingetUpdates(req.WingetPath)
 
 	case MsgTypeQuit:
 		return nil, nil
@@ -706,20 +715,26 @@ func keyNameToVK(key string) uint32 {
 }
 
 // scanWingetUpdates runs winget upgrade in the user context and returns available updates.
-func scanWingetUpdates() (*Message, []byte) {
+func scanWingetUpdates(providedPath string) (*Message, []byte) {
 	log.Println("Scanning for winget updates in user context")
 
 	result := WingetScanResult{
 		Updates: make([]WingetUpdate, 0),
 	}
 
-	// Find winget
-	wingetPath, err := exec.LookPath("winget")
-	if err != nil {
-		result.Error = "winget not found in PATH"
-		payload, _ := json.Marshal(result)
-		return &Message{Type: MsgTypeWingetResult, Payload: payload}, nil
+	// Use provided path or try to find winget
+	wingetPath := providedPath
+	if wingetPath == "" {
+		var err error
+		wingetPath, err = exec.LookPath("winget")
+		if err != nil {
+			result.Error = "winget not found in PATH"
+			payload, _ := json.Marshal(result)
+			return &Message{Type: MsgTypeWingetResult, Payload: payload}, nil
+		}
 	}
+
+	log.Printf("Using winget at: %s", wingetPath)
 
 	// Run winget upgrade
 	cmd := exec.Command(wingetPath, "upgrade", "--accept-source-agreements", "--disable-interactivity", "--include-unknown")
