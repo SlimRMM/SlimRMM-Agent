@@ -928,17 +928,50 @@ func (u *Updater) stopService() error {
 		}
 		return nil
 	case "windows":
-		// Use 'net stop' instead of 'sc stop' - net stop waits synchronously
-		// until the service is fully stopped, preventing "file in use" errors
-		// when replacing the binary
-		if err := exec.Command("net", "stop", u.serviceName).Run(); err != nil {
-			// Fallback to sc stop + wait
-			u.logger.Debug("net stop failed, trying sc stop with wait", "error", err)
-			if scErr := exec.Command("sc", "stop", u.serviceName).Run(); scErr != nil {
-				return scErr
+		// Use PowerShell Stop-Service with -Force flag for reliable stopping
+		// This handles dependent services and provides proper timeout handling
+		psStop := fmt.Sprintf(`
+			$ErrorActionPreference = 'SilentlyContinue'
+			$serviceName = '%s'
+			$svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+			if (-not $svc) {
+				Write-Output 'NOT_FOUND'
+				exit 0
 			}
-			// Wait for service to actually stop
-			return u.waitForServiceStopped(30 * time.Second)
+			if ($svc.Status -eq 'Stopped') {
+				Write-Output 'ALREADY_STOPPED'
+				exit 0
+			}
+			try {
+				Stop-Service -Name $serviceName -Force -NoWait -ErrorAction Stop
+				$svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+				Write-Output 'SUCCESS'
+			} catch [System.ServiceProcess.TimeoutException] {
+				# Force kill the process if timeout occurs
+				try {
+					$proc = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" | Select-Object -ExpandProperty ProcessId
+					if ($proc -and $proc -ne 0) {
+						Stop-Process -Id $proc -Force -ErrorAction SilentlyContinue
+						Start-Sleep -Seconds 2
+					}
+				} catch {}
+				Write-Output 'FORCE_KILLED'
+			} catch {
+				Write-Error $_.Exception.Message
+				exit 1
+			}
+		`, u.serviceName)
+
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psStop)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			outputStr := strings.TrimSpace(string(output))
+			// Ignore "not started" or "already stopped" situations
+			if !strings.Contains(strings.ToLower(outputStr), "not started") &&
+				!strings.Contains(strings.ToLower(outputStr), "already stopped") {
+				u.logger.Warn("stop service via PowerShell failed", "error", err, "output", outputStr)
+				return err
+			}
 		}
 		return nil
 	default:
@@ -946,21 +979,28 @@ func (u *Updater) stopService() error {
 	}
 }
 
-// waitForServiceStopped polls until the Windows service is fully stopped.
-func (u *Updater) waitForServiceStopped(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		output, err := exec.Command("sc", "query", u.serviceName).Output()
-		if err != nil {
-			// Service might not exist or other error - consider it stopped
-			return nil
-		}
-		if strings.Contains(string(output), "STOPPED") {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
+// waitForServiceStopped waits until the Windows service is fully stopped.
+func (u *Updater) waitForServiceStopped(timeout time.Duration) {
+	if runtime.GOOS != "windows" {
+		return
 	}
-	return fmt.Errorf("timeout waiting for service to stop")
+
+	timeoutSec := int(timeout.Seconds())
+
+	// Use PowerShell to wait for service to be stopped
+	psWait := fmt.Sprintf(`
+		$svc = Get-Service -Name '%s' -ErrorAction SilentlyContinue
+		if ($svc -and $svc.Status -ne 'Stopped') {
+			try {
+				$svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(%d))
+			} catch {
+				# Timeout or error - just continue
+			}
+		}
+	`, u.serviceName, timeoutSec)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psWait)
+	cmd.Run() // Ignore errors - this is just a best-effort wait
 }
 
 // startService starts the agent service.
@@ -987,39 +1027,35 @@ func (u *Updater) startService() error {
 		}
 		return nil
 	case "windows":
-		// Use 'net start' instead of 'sc start' - net start waits synchronously
-		// until the service is fully started
-		cmd := exec.Command("net", "start", u.serviceName)
+		// Use PowerShell Start-Service with proper timeout handling
+		psStart := fmt.Sprintf(`
+			$ErrorActionPreference = 'Stop'
+			$serviceName = '%s'
+			try {
+				$svc = Get-Service -Name $serviceName -ErrorAction Stop
+				if ($svc.Status -eq 'Running') {
+					Write-Output 'ALREADY_RUNNING'
+					exit 0
+				}
+				Start-Service -Name $serviceName -ErrorAction Stop
+				$svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+				Write-Output 'SUCCESS'
+			} catch [System.ServiceProcess.TimeoutException] {
+				Write-Error "Timeout waiting for service to start"
+				exit 2
+			} catch {
+				Write-Error $_.Exception.Message
+				exit 1
+			}
+		`, u.serviceName)
+
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psStart)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
-			outputStr := string(output)
-			u.logger.Debug("net start output", "output", outputStr, "error", err)
-
-			// Check if service is already running (error 1056 or "already been started" message)
-			// Exit code 2 with "already been started" means service is running - treat as success
-			if strings.Contains(outputStr, "already been started") ||
-				strings.Contains(outputStr, "wurde bereits gestartet") ||
-				strings.Contains(outputStr, "1056") {
-				u.logger.Info("service already running, treating as success")
-				return nil
-			}
-
-			// Fallback to sc start
-			u.logger.Debug("net start failed, trying sc start", "error", err)
-			scCmd := exec.Command("sc", "start", u.serviceName)
-			scOutput, scErr := scCmd.CombinedOutput()
-			if scErr != nil {
-				scOutputStr := string(scOutput)
-				// sc start returns "1056" in output if already running
-				if strings.Contains(scOutputStr, "1056") ||
-					strings.Contains(scOutputStr, "RUNNING") {
-					u.logger.Info("service already running (sc), treating as success")
-					return nil
-				}
-				u.logger.Error("sc start failed", "output", scOutputStr, "error", scErr)
-				return scErr
-			}
+			u.logger.Error("start service via PowerShell failed", "error", err, "output", strings.TrimSpace(string(output)))
+			return err
 		}
+		u.logger.Info("PowerShell start service completed", "output", strings.TrimSpace(string(output)))
 		return nil
 	default:
 		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
@@ -1115,36 +1151,32 @@ func (u *Updater) healthCheck(ctx context.Context) error {
 
 // isServiceRunning checks if the service is running.
 func (u *Updater) isServiceRunning() (bool, error) {
-	var cmd *exec.Cmd
-
 	switch runtime.GOOS {
 	case "linux":
-		cmd = exec.Command("systemctl", "is-active", u.serviceName)
+		cmd := exec.Command("systemctl", "is-active", u.serviceName)
+		output, err := cmd.Output()
+		if err != nil {
+			return false, nil
+		}
+		return strings.TrimSpace(string(output)) == "active", nil
 	case "darwin":
-		cmd = exec.Command("launchctl", "list", u.serviceName)
+		cmd := exec.Command("launchctl", "list", u.serviceName)
+		output, err := cmd.Output()
+		if err != nil {
+			return false, nil
+		}
+		return strings.Contains(string(output), u.serviceName), nil
 	case "windows":
-		cmd = exec.Command("sc", "query", u.serviceName)
+		// Use PowerShell Get-Service for reliable status check
+		psCheck := fmt.Sprintf(`
+			$svc = Get-Service -Name '%s' -ErrorAction SilentlyContinue
+			if ($svc -and $svc.Status -eq 'Running') { exit 0 } else { exit 1 }
+		`, u.serviceName)
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psCheck)
+		return cmd.Run() == nil, nil
 	default:
 		return false, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
-
-	output, err := cmd.Output()
-	if err != nil {
-		return false, nil
-	}
-
-	outputStr := string(output)
-
-	switch runtime.GOOS {
-	case "linux":
-		return strings.TrimSpace(outputStr) == "active", nil
-	case "darwin":
-		return strings.Contains(outputStr, u.serviceName), nil
-	case "windows":
-		return strings.Contains(outputStr, "RUNNING"), nil
-	}
-
-	return false, nil
 }
 
 // cleanOldBackups removes old backup files, keeping only the specified number.

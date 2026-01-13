@@ -204,35 +204,45 @@ func installLaunchdService(binaryPath string) error {
 
 // installWindowsService installs a Windows service.
 func installWindowsService(binaryPath string) error {
-	// Check if service exists
-	checkCmd := exec.Command("sc", "query", "SlimRMMAgent")
-	if checkCmd.Run() == nil {
-		// Service exists, stop it first
-		exec.Command("sc", "stop", "SlimRMMAgent").Run()
-	}
+	// Use PowerShell for better error handling and timeout support
+	psInstall := fmt.Sprintf(`
+		$ErrorActionPreference = 'Stop'
+		try {
+			$serviceName = 'SlimRMMAgent'
+			$binaryPath = '%s'
 
-	// Create or update service
-	createCmd := exec.Command("sc", "create", "SlimRMMAgent",
-		"binPath=", binaryPath,
-		"start=", "auto",
-		"DisplayName=", "SlimRMM Agent",
-	)
-	if err := createCmd.Run(); err != nil {
-		// Try to update if creation fails
-		updateCmd := exec.Command("sc", "config", "SlimRMMAgent",
-			"binPath=", binaryPath,
-		)
-		if err := updateCmd.Run(); err != nil {
-			return fmt.Errorf("configuring service: %w", err)
+			# Stop existing service if running
+			$existing = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+			if ($existing) {
+				if ($existing.Status -ne 'Stopped') {
+					Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+					$existing.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30)) 2>$null
+				}
+				# Update binary path if service exists
+				Set-Service -Name $serviceName -BinaryPathName $binaryPath -ErrorAction Stop
+			} else {
+				# Create new service
+				New-Service -Name $serviceName -BinaryPathName $binaryPath -DisplayName 'SlimRMM Agent' -StartupType Automatic -Description 'SlimRMM Remote Monitoring and Management Agent' | Out-Null
+			}
+
+			# Configure failure recovery using sc.exe
+			& sc.exe failure $serviceName reset= 86400 actions= restart/10000/restart/10000/restart/10000 | Out-Null
+
+			# Start service
+			Start-Service -Name $serviceName -ErrorAction Stop
+			$svc = Get-Service -Name $serviceName
+			$svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+
+			Write-Output 'SUCCESS'
+		} catch {
+			Write-Error $_.Exception.Message
+			exit 1
 		}
-	}
+	`, binaryPath)
 
-	// Set service description
-	exec.Command("sc", "description", "SlimRMMAgent", "SlimRMM Remote Monitoring and Management Agent").Run()
-
-	// Start service
-	if err := exec.Command("sc", "start", "SlimRMMAgent").Run(); err != nil {
-		return fmt.Errorf("starting service: %w", err)
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psInstall)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("installing service: %s", strings.TrimSpace(string(output)))
 	}
 
 	return nil
@@ -284,12 +294,31 @@ func uninstallLaunchdService() error {
 
 // uninstallWindowsService stops and removes the Windows service.
 func uninstallWindowsService() error {
-	// Stop service
-	exec.Command("sc", "stop", "SlimRMMAgent").Run()
+	// Use PowerShell for reliable service removal with force stop
+	psUninstall := `
+		$ErrorActionPreference = 'SilentlyContinue'
+		$serviceName = 'SlimRMMAgent'
 
-	// Delete service
-	exec.Command("sc", "delete", "SlimRMMAgent").Run()
+		$svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+		if ($svc) {
+			# Force stop with timeout
+			if ($svc.Status -ne 'Stopped') {
+				Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+				$svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30)) 2>$null
+			}
 
+			# Remove service (Windows 10 1903+ has Remove-Service)
+			if (Get-Command Remove-Service -ErrorAction SilentlyContinue) {
+				Remove-Service -Name $serviceName -ErrorAction SilentlyContinue
+			} else {
+				& sc.exe delete $serviceName 2>&1 | Out-Null
+			}
+		}
+		Write-Output 'SUCCESS'
+	`
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psUninstall)
+	cmd.Run() // Ignore errors - service may not exist
 	return nil
 }
 
@@ -303,7 +332,13 @@ func IsServiceInstalled() bool {
 		_, err := os.Stat(launchdPlistPath)
 		return err == nil
 	case "windows":
-		return exec.Command("sc", "query", "SlimRMMAgent").Run() == nil
+		// Use PowerShell Get-Service for reliable detection
+		psCheck := `
+			$svc = Get-Service -Name 'SlimRMMAgent' -ErrorAction SilentlyContinue
+			if ($svc) { exit 0 } else { exit 1 }
+		`
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psCheck)
+		return cmd.Run() == nil
 	default:
 		return false
 	}
@@ -322,11 +357,13 @@ func IsServiceRunning() (bool, error) {
 		err := exec.Command("launchctl", "list", launchdPlistName).Run()
 		return err == nil, nil
 	case "windows":
-		out, err := exec.Command("sc", "query", "SlimRMMAgent").Output()
-		if err != nil {
-			return false, nil
-		}
-		return strings.Contains(string(out), "RUNNING"), nil
+		// Use PowerShell Get-Service for reliable status check
+		psCheck := `
+			$svc = Get-Service -Name 'SlimRMMAgent' -ErrorAction SilentlyContinue
+			if ($svc -and $svc.Status -eq 'Running') { exit 0 } else { exit 1 }
+		`
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psCheck)
+		return cmd.Run() == nil, nil
 	default:
 		return false, fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
@@ -346,7 +383,17 @@ func StopService() error {
 		}
 		return nil
 	case "windows":
-		return exec.Command("sc", "stop", "SlimRMMAgent").Run()
+		// Use PowerShell Stop-Service with -Force and timeout
+		psStop := `
+			$ErrorActionPreference = 'SilentlyContinue'
+			$svc = Get-Service -Name 'SlimRMMAgent' -ErrorAction SilentlyContinue
+			if ($svc -and $svc.Status -ne 'Stopped') {
+				Stop-Service -Name 'SlimRMMAgent' -Force -ErrorAction SilentlyContinue
+				$svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30)) 2>$null
+			}
+		`
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psStop)
+		return cmd.Run()
 	default:
 		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
@@ -372,8 +419,24 @@ func RestartService() error {
 		}
 		return nil
 	case "windows":
-		exec.Command("sc", "stop", "SlimRMMAgent").Run()
-		return exec.Command("sc", "start", "SlimRMMAgent").Run()
+		// Use PowerShell Restart-Service with -Force and timeout
+		psRestart := `
+			$ErrorActionPreference = 'Stop'
+			try {
+				Restart-Service -Name 'SlimRMMAgent' -Force -ErrorAction Stop
+				$svc = Get-Service -Name 'SlimRMMAgent'
+				$svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+				Write-Output 'SUCCESS'
+			} catch {
+				Write-Error $_.Exception.Message
+				exit 1
+			}
+		`
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psRestart)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("restarting service: %s", strings.TrimSpace(string(output)))
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}

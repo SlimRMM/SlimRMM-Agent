@@ -9,6 +9,12 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
+)
+
+const (
+	// defaultServiceTimeout is the default timeout for service operations.
+	defaultServiceTimeout = 30 * time.Second
 )
 
 // WindowsManager manages Windows services.
@@ -25,41 +31,61 @@ func (m *WindowsManager) Install(name, displayName, description, execPath string
 		return ErrServiceExists
 	}
 
-	// Use sc.exe to create the service
-	cmd := exec.Command("sc", "create", name,
-		"binPath=", execPath,
-		"DisplayName=", displayName,
-		"start=", "auto",
-		"obj=", "LocalSystem",
-	)
+	// Use PowerShell New-Service for better error handling
+	psScript := fmt.Sprintf(`
+		$ErrorActionPreference = 'Stop'
+		try {
+			New-Service -Name '%s' -BinaryPathName '%s' -DisplayName '%s' -StartupType Automatic -Description '%s' | Out-Null
+			# Configure failure recovery using sc.exe (no PowerShell equivalent)
+			& sc.exe failure '%s' reset= 86400 actions= restart/10000/restart/10000/restart/10000 | Out-Null
+			Write-Output 'SUCCESS'
+		} catch {
+			Write-Error $_.Exception.Message
+			exit 1
+		}
+	`, name, execPath, displayName, description, name)
 
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("creating service: %s", string(output))
+		return fmt.Errorf("creating service: %s", strings.TrimSpace(string(output)))
 	}
-
-	// Set description
-	cmd = exec.Command("sc", "description", name, description)
-	cmd.Run()
-
-	// Configure failure recovery
-	cmd = exec.Command("sc", "failure", name,
-		"reset=", "86400",
-		"actions=", "restart/10000/restart/10000/restart/10000",
-	)
-	cmd.Run()
 
 	return nil
 }
 
 // Uninstall removes a Windows service.
 func (m *WindowsManager) Uninstall(name string) error {
-	// Stop service first
-	m.Stop(name)
+	// Stop service first with force
+	m.StopWithTimeout(name, defaultServiceTimeout)
 
-	// Delete service
-	cmd := exec.Command("sc", "delete", name)
+	// Use PowerShell Remove-Service (Windows 10 1903+) with sc.exe fallback
+	psScript := fmt.Sprintf(`
+		$ErrorActionPreference = 'Stop'
+		try {
+			if (Get-Command Remove-Service -ErrorAction SilentlyContinue) {
+				Remove-Service -Name '%s' -ErrorAction Stop
+			} else {
+				$result = & sc.exe delete '%s' 2>&1
+				if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1060) {
+					throw "sc delete failed: $result"
+				}
+			}
+			Write-Output 'SUCCESS'
+		} catch {
+			if ($_.Exception.Message -notmatch 'does not exist') {
+				Write-Error $_.Exception.Message
+				exit 1
+			}
+		}
+	`, name, name)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("deleting service: %s", string(output))
+		outputStr := strings.TrimSpace(string(output))
+		// Ignore "service does not exist" errors
+		if !strings.Contains(strings.ToLower(outputStr), "does not exist") {
+			return fmt.Errorf("deleting service: %s", outputStr)
+		}
 	}
 
 	return nil
@@ -67,20 +93,92 @@ func (m *WindowsManager) Uninstall(name string) error {
 
 // Start starts a Windows service.
 func (m *WindowsManager) Start(name string) error {
-	cmd := exec.Command("sc", "start", name)
+	return m.StartWithTimeout(name, defaultServiceTimeout)
+}
+
+// StartWithTimeout starts a Windows service with a specified timeout.
+func (m *WindowsManager) StartWithTimeout(name string, timeout time.Duration) error {
+	timeoutSec := int(timeout.Seconds())
+
+	psScript := fmt.Sprintf(`
+		$ErrorActionPreference = 'Stop'
+		try {
+			$svc = Get-Service -Name '%s' -ErrorAction Stop
+			if ($svc.Status -eq 'Running') {
+				Write-Output 'ALREADY_RUNNING'
+				exit 0
+			}
+			Start-Service -Name '%s' -ErrorAction Stop
+			$svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(%d))
+			Write-Output 'SUCCESS'
+		} catch [System.ServiceProcess.TimeoutException] {
+			Write-Error "Timeout waiting for service to start"
+			exit 2
+		} catch {
+			Write-Error $_.Exception.Message
+			exit 1
+		}
+	`, name, name, timeoutSec)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("starting service: %s", string(output))
+		return fmt.Errorf("starting service: %s", strings.TrimSpace(string(output)))
 	}
 	return nil
 }
 
 // Stop stops a Windows service.
 func (m *WindowsManager) Stop(name string) error {
-	cmd := exec.Command("sc", "stop", name)
+	return m.StopWithTimeout(name, defaultServiceTimeout)
+}
+
+// StopWithTimeout stops a Windows service with a specified timeout and force option.
+func (m *WindowsManager) StopWithTimeout(name string, timeout time.Duration) error {
+	timeoutSec := int(timeout.Seconds())
+
+	// Use PowerShell Stop-Service with -Force flag for reliable stopping
+	// -Force stops dependent services as well and handles more edge cases
+	psScript := fmt.Sprintf(`
+		$ErrorActionPreference = 'Stop'
+		try {
+			$svc = Get-Service -Name '%s' -ErrorAction SilentlyContinue
+			if (-not $svc) {
+				Write-Output 'NOT_FOUND'
+				exit 0
+			}
+			if ($svc.Status -eq 'Stopped') {
+				Write-Output 'ALREADY_STOPPED'
+				exit 0
+			}
+			Stop-Service -Name '%s' -Force -NoWait -ErrorAction Stop
+			$svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(%d))
+			Write-Output 'SUCCESS'
+		} catch [System.ServiceProcess.TimeoutException] {
+			# Force kill the process if timeout occurs
+			try {
+				$proc = Get-CimInstance Win32_Service -Filter "Name='%s'" | Select-Object -ExpandProperty ProcessId
+				if ($proc -and $proc -ne 0) {
+					Stop-Process -Id $proc -Force -ErrorAction SilentlyContinue
+					Start-Sleep -Seconds 2
+				}
+			} catch {}
+			Write-Output 'FORCE_KILLED'
+		} catch {
+			if ($_.Exception.Message -notmatch 'not started|already stopped') {
+				Write-Error $_.Exception.Message
+				exit 1
+			}
+			Write-Output 'ALREADY_STOPPED'
+		}
+	`, name, name, timeoutSec, name)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		// Ignore if service is already stopped
-		if !strings.Contains(string(output), "not started") {
-			return fmt.Errorf("stopping service: %s", string(output))
+		outputStr := strings.TrimSpace(string(output))
+		// Ignore "not started" errors
+		if !strings.Contains(strings.ToLower(outputStr), "not started") &&
+			!strings.Contains(strings.ToLower(outputStr), "already stopped") {
+			return fmt.Errorf("stopping service: %s", outputStr)
 		}
 	}
 	return nil
@@ -88,41 +186,64 @@ func (m *WindowsManager) Stop(name string) error {
 
 // Status returns the status of a Windows service.
 func (m *WindowsManager) Status(name string) (ServiceStatus, error) {
-	cmd := exec.Command("sc", "query", name)
+	psScript := fmt.Sprintf(`
+		$svc = Get-Service -Name '%s' -ErrorAction SilentlyContinue
+		if (-not $svc) {
+			Write-Output 'NOT_FOUND'
+			exit 1
+		}
+		Write-Output $svc.Status
+	`, name)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 	output, err := cmd.Output()
 	if err != nil {
 		return StatusUnknown, ErrServiceNotFound
 	}
 
-	outputStr := string(output)
-	if strings.Contains(outputStr, "RUNNING") {
+	outputStr := strings.TrimSpace(string(output))
+	switch outputStr {
+	case "Running":
 		return StatusRunning, nil
-	} else if strings.Contains(outputStr, "STOPPED") {
+	case "Stopped":
 		return StatusStopped, nil
+	case "NOT_FOUND":
+		return StatusUnknown, ErrServiceNotFound
+	default:
+		return StatusUnknown, nil
 	}
-
-	return StatusUnknown, nil
 }
 
 // IsInstalled checks if a Windows service is installed.
 func (m *WindowsManager) IsInstalled(name string) bool {
-	cmd := exec.Command("sc", "query", name)
+	psScript := fmt.Sprintf(`
+		$svc = Get-Service -Name '%s' -ErrorAction SilentlyContinue
+		if ($svc) { exit 0 } else { exit 1 }
+	`, name)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 	err := cmd.Run()
 	return err == nil
 }
 
 // Restart restarts a Windows service.
-// For self-restart (slimrmm-agent), uses cmd.exe to schedule restart externally
+// For self-restart (slimrmm-agent), uses PowerShell to schedule restart externally
 // since stopping the service terminates the process before Start can be called.
 func (m *WindowsManager) Restart(name string) error {
 	// Check if this is a self-restart
-	isSelf := strings.EqualFold(name, "slimrmm-agent") || strings.EqualFold(name, "slimrmm")
+	isSelf := strings.EqualFold(name, "SlimRMMAgent") || strings.EqualFold(name, "slimrmm-agent")
 
 	if isSelf {
-		// Use cmd.exe to stop and start in background
+		// Use PowerShell to stop and start in background
 		// This allows the current process to respond before being killed
-		cmd := exec.Command("cmd", "/c",
-			fmt.Sprintf("net stop %s & timeout /t 2 /nobreak > nul & net start %s", name, name))
+		psScript := fmt.Sprintf(`
+			Start-Job -ScriptBlock {
+				Stop-Service -Name '%s' -Force -ErrorAction SilentlyContinue
+				Start-Sleep -Seconds 2
+				Start-Service -Name '%s' -ErrorAction SilentlyContinue
+			} | Out-Null
+		`, name, name)
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("scheduling restart: %w", err)
 		}
@@ -130,11 +251,35 @@ func (m *WindowsManager) Restart(name string) error {
 		return nil
 	}
 
-	// Normal restart for other services
-	if err := m.Stop(name); err != nil {
-		return err
+	return m.RestartWithTimeout(name, defaultServiceTimeout)
+}
+
+// RestartWithTimeout restarts a Windows service with a specified timeout.
+func (m *WindowsManager) RestartWithTimeout(name string, timeout time.Duration) error {
+	timeoutSec := int(timeout.Seconds())
+
+	// Use Restart-Service with -Force for atomic restart operation
+	psScript := fmt.Sprintf(`
+		$ErrorActionPreference = 'Stop'
+		try {
+			$svc = Get-Service -Name '%s' -ErrorAction Stop
+			Restart-Service -Name '%s' -Force -ErrorAction Stop
+			$svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(%d))
+			Write-Output 'SUCCESS'
+		} catch [System.ServiceProcess.TimeoutException] {
+			Write-Error "Timeout waiting for service to restart"
+			exit 2
+		} catch {
+			Write-Error $_.Exception.Message
+			exit 1
+		}
+	`, name, name, timeoutSec)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("restarting service: %s", strings.TrimSpace(string(output)))
 	}
-	return m.Start(name)
+	return nil
 }
 
 // List lists all Windows services.
