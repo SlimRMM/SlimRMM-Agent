@@ -470,26 +470,50 @@ func (h *Handler) Run(ctx context.Context) error {
 	h.inventoryWatcher.Start()
 	h.logger.Info("inventory watcher started for software and service change detection")
 
+	// Create a child context to cancel all goroutines when any one fails
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// Start goroutines
 	errCh := make(chan error, 3)
 
 	go func() {
-		errCh <- h.readPump(ctx)
+		errCh <- h.readPump(runCtx)
 	}()
 
 	go func() {
-		errCh <- h.writePump(ctx)
+		errCh <- h.writePump(runCtx)
 	}()
 
 	go func() {
-		errCh <- h.heartbeatPump(ctx)
+		errCh <- h.heartbeatPump(runCtx)
 	}()
 
+	var firstErr error
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		firstErr = ctx.Err()
 	case err := <-errCh:
-		return err
+		firstErr = err
+	}
+
+	// Cancel all goroutines and drain send channel to prevent blocking
+	cancel()
+	h.drainSendChannel()
+
+	return firstErr
+}
+
+// drainSendChannel removes all pending messages from the send channel.
+// This prevents goroutines from blocking when the connection is lost.
+func (h *Handler) drainSendChannel() {
+	for {
+		select {
+		case <-h.sendCh:
+			// Discard message
+		default:
+			return
+		}
 	}
 }
 

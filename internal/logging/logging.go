@@ -74,11 +74,18 @@ func Setup(cfg Config) (*slog.Logger, func(), error) {
 	return logger, cleanup, nil
 }
 
-// SetupWithDefaults creates a logger that writes to both file and stdout.
+// SetupWithDefaults creates a logger that writes to file and optionally stdout.
+// When running as a service (SLIMRMM_SERVICE=1), stdout is disabled to prevent
+// duplicate logs when the service manager also redirects stdout to the log file.
 func SetupWithDefaults(logDir string, debug bool) (*slog.Logger, func(), error) {
+	// Don't log to stdout when running as a service to prevent duplicate logs
+	// Service managers (launchd, systemd) redirect stdout to the log file,
+	// which causes duplicates when we also write directly to the file
+	logToStdout := os.Getenv("SLIMRMM_SERVICE") != "1"
+
 	return Setup(Config{
 		LogDir:      logDir,
 		Debug:       debug,
-		LogToStdout: true, // Always write to stdout as well
+		LogToStdout: logToStdout,
 	})
 }
