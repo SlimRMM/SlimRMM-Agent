@@ -1018,30 +1018,58 @@ func copyBuffer(dst *os.File, src *os.File) (int64, error) {
 	}
 }
 
-// stopService stops the Windows service.
+// stopService stops the Windows service using PowerShell with force and timeout.
 func stopService(name string) error {
-	cmd := exec.Command("net", "stop", name)
+	psScript := fmt.Sprintf(`
+		$ErrorActionPreference = 'SilentlyContinue'
+		$svc = Get-Service -Name '%s' -ErrorAction SilentlyContinue
+		if ($svc -and $svc.Status -ne 'Stopped') {
+			Stop-Service -Name '%s' -Force -NoWait -ErrorAction SilentlyContinue
+			try {
+				$svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+			} catch {
+				# Force kill if timeout
+				$proc = Get-CimInstance Win32_Service -Filter "Name='%s'" | Select-Object -ExpandProperty ProcessId
+				if ($proc -and $proc -ne 0) {
+					Stop-Process -Id $proc -Force -ErrorAction SilentlyContinue
+					Start-Sleep -Seconds 2
+				}
+			}
+		}
+	`, name, name, name)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("net stop failed: %v, output: %s", err, string(output))
-		// Try sc stop as fallback
-		cmd = exec.Command("sc", "stop", name)
-		cmd.CombinedOutput()
+		log.Printf("PowerShell stop failed: %v, output: %s", err, string(output))
 	}
 	return nil
 }
 
-// startService starts the Windows service.
+// startService starts the Windows service using PowerShell with timeout.
 func startService(name string) error {
-	cmd := exec.Command("net", "start", name)
+	psScript := fmt.Sprintf(`
+		$ErrorActionPreference = 'Stop'
+		try {
+			$svc = Get-Service -Name '%s' -ErrorAction Stop
+			if ($svc.Status -eq 'Running') {
+				Write-Output 'ALREADY_RUNNING'
+				exit 0
+			}
+			Start-Service -Name '%s' -ErrorAction Stop
+			$svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+			Write-Output 'SUCCESS'
+		} catch {
+			Write-Error $_.Exception.Message
+			exit 1
+		}
+	`, name, name)
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("net start failed: %v, output: %s", err, string(output))
-		// Try sc start as fallback
-		cmd = exec.Command("sc", "start", name)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("sc start failed: %v, output: %s", err, string(output))
-		}
+		return fmt.Errorf("PowerShell start failed: %v, output: %s", err, string(output))
 	}
+	log.Printf("Service start result: %s", strings.TrimSpace(string(output)))
 	return nil
 }
