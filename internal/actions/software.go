@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/slimrmm/slimrmm-agent/internal/winget"
 )
 
 // Software represents an installed software package.
@@ -74,10 +76,46 @@ func GetAvailableUpdates(ctx context.Context) (*UpdateList, error) {
 	case "darwin":
 		return getMacOSUpdates(ctx)
 	case "windows":
-		return getWindowsUpdates(ctx)
+		return getWindowsUpdatesWithWinget(ctx)
 	default:
 		return nil, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
+}
+
+// getWindowsUpdatesWithWinget gets both Windows system updates and winget updates.
+func getWindowsUpdatesWithWinget(ctx context.Context) (*UpdateList, error) {
+	slog.Info("starting Windows combined update scan")
+
+	// Get Windows system updates (PSWindowsUpdate)
+	systemUpdates, err := getWindowsUpdates(ctx)
+	if err != nil {
+		slog.Warn("Windows system updates scan failed", "error", err)
+		systemUpdates = &UpdateList{Updates: make([]Update, 0), Source: "System"}
+	}
+
+	// Get winget updates - only if winget is detected
+	wingetUpdates, err := getWingetUpdates(ctx)
+	if err != nil {
+		slog.Warn("winget updates scan failed", "error", err)
+		wingetUpdates = &UpdateList{Updates: make([]Update, 0), Source: "winget"}
+	}
+
+	// Combine both update lists
+	combined := &UpdateList{
+		Updates: make([]Update, 0, len(systemUpdates.Updates)+len(wingetUpdates.Updates)),
+		Source:  "combined",
+	}
+	combined.Updates = append(combined.Updates, systemUpdates.Updates...)
+	combined.Updates = append(combined.Updates, wingetUpdates.Updates...)
+	combined.Count = len(combined.Updates)
+
+	slog.Info("Windows update scan completed",
+		"system_updates", len(systemUpdates.Updates),
+		"winget_updates", len(wingetUpdates.Updates),
+		"total", combined.Count,
+	)
+
+	return combined, nil
 }
 
 // Linux software inventory
@@ -249,28 +287,61 @@ Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*,
 HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* |
 Where-Object { $_.DisplayName } |
 Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, EstimatedSize |
-ConvertTo-Json`
+ConvertTo-Json -Compress`
 
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	output, err := cmd.Output()
 	if err != nil {
+		slog.Debug("PowerShell software inventory failed", "error", err)
 		return nil, err
 	}
 
-	// Parse JSON output (simplified)
 	inventory := &SoftwareInventory{
 		Packages: make([]Software, 0),
 		Source:   "registry",
 	}
 
-	// Basic parsing - in production would use proper JSON parsing
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "DisplayName") {
-			// Extract values - simplified
-			inventory.Packages = append(inventory.Packages, Software{
-				Source: "registry",
-			})
+	// Parse JSON output
+	outputStr := strings.TrimSpace(string(output))
+	outputStr = strings.TrimPrefix(outputStr, "\xef\xbb\xbf") // Remove BOM if present
+
+	if outputStr == "" || outputStr == "null" {
+		return inventory, nil
+	}
+
+	// Try parsing as array first
+	var rawItems []map[string]interface{}
+	if err := json.Unmarshal([]byte(outputStr), &rawItems); err != nil {
+		// Try as single object (PowerShell returns object if only one result)
+		var singleItem map[string]interface{}
+		if err := json.Unmarshal([]byte(outputStr), &singleItem); err != nil {
+			slog.Debug("failed to parse software inventory JSON", "error", err)
+			return inventory, nil
+		}
+		rawItems = []map[string]interface{}{singleItem}
+	}
+
+	for _, item := range rawItems {
+		pkg := Software{Source: "registry"}
+
+		if name, ok := item["DisplayName"].(string); ok {
+			pkg.Name = name
+		}
+		if version, ok := item["DisplayVersion"].(string); ok {
+			pkg.Version = version
+		}
+		if publisher, ok := item["Publisher"].(string); ok {
+			pkg.Publisher = publisher
+		}
+		if installDate, ok := item["InstallDate"].(string); ok {
+			pkg.InstallDate = installDate
+		}
+		if size, ok := item["EstimatedSize"].(float64); ok {
+			pkg.Size = int64(size) * 1024 // KB to bytes
+		}
+
+		if pkg.Name != "" {
+			inventory.Packages = append(inventory.Packages, pkg)
 		}
 	}
 
@@ -727,17 +798,15 @@ if ($UpdatesArray.Count -gt 0) {
 `
 
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
-	slog.Info("executing PowerShell for Windows updates")
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
 	if err != nil {
-		slog.Error("PowerShell Windows updates failed", "error", err, "output", outputStr)
+		slog.Debug("PowerShell Windows updates failed", "error", err)
 		return &UpdateList{
 			Updates: make([]Update, 0),
 			Source:  "System",
 		}, nil
 	}
-	slog.Info("PowerShell Windows updates completed", "output", outputStr)
 
 	updates := &UpdateList{
 		Updates: make([]Update, 0),
@@ -850,4 +919,178 @@ func parseSizeString(s string) int64 {
 		// Assume bytes if no unit
 		return int64(num)
 	}
+}
+
+// GetWingetUpdates returns available winget package updates on Windows.
+func GetWingetUpdates(ctx context.Context) (*UpdateList, error) {
+	if runtime.GOOS != "windows" {
+		slog.Debug("winget updates scan skipped - not running on Windows")
+		return &UpdateList{Updates: make([]Update, 0), Source: "winget"}, nil
+	}
+	return getWingetUpdates(ctx)
+}
+
+// getWingetUpdates scans for available winget package updates.
+// Only runs if winget is properly detected on the system.
+func getWingetUpdates(ctx context.Context) (*UpdateList, error) {
+	updates := &UpdateList{
+		Updates: make([]Update, 0),
+		Source:  "winget",
+	}
+
+	// Use the winget client for proper detection
+	wingetClient := winget.GetDefault()
+	if !wingetClient.IsAvailable() {
+		slog.Debug("winget not available, skipping update scan")
+		return updates, nil
+	}
+
+	wingetPath := wingetClient.GetBinaryPath()
+	if wingetPath == "" {
+		return updates, nil
+	}
+
+	slog.Info("scanning winget updates", "binary", wingetPath)
+
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, wingetPath, "upgrade", "--accept-source-agreements", "--disable-interactivity")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Debug("winget upgrade command failed", "error", err)
+		return updates, nil
+	}
+
+	// Parse output
+	lines := strings.Split(string(output), "\n")
+	headerFound := false
+	separatorFound := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Skip progress indicators
+		if strings.Contains(line, "█") || strings.Contains(line, "▒") {
+			continue
+		}
+
+		// Handle separator line
+		if strings.HasPrefix(line, "---") {
+			separatorFound = true
+			continue
+		}
+
+		// Detect header line
+		if strings.HasPrefix(line, "Name") && strings.Contains(line, "Id") && strings.Contains(line, "Version") {
+			headerFound = true
+			continue
+		}
+
+		// Skip summary lines
+		if strings.Contains(line, "upgrades available") || strings.Contains(line, "upgrade available") ||
+			strings.Contains(line, "No installed package") || strings.Contains(line, "No applicable") {
+			continue
+		}
+
+		// Parse data lines after header and separator
+		if headerFound && separatorFound {
+			if update := parseWingetLine(line); update != nil {
+				updates.Updates = append(updates.Updates, *update)
+			}
+		}
+	}
+
+	updates.Count = len(updates.Updates)
+	slog.Info("winget scan completed", "updates_found", updates.Count)
+
+	return updates, nil
+}
+
+// parseWingetLine parses a single line of winget upgrade output.
+func parseWingetLine(line string) *Update {
+	// Winget output is tricky because columns are variable width and names can contain spaces
+	// The format is roughly: Name | Id | Version | Available | Source
+	// But columns are space-padded, not tab-separated
+	//
+	// Strategy: work from the right side where values are more predictable
+	// Source is usually "winget" or "msstore"
+	// Version numbers follow patterns like "1.2.3" or "1.2.3.4"
+
+	fields := strings.Fields(line)
+	if len(fields) < 4 {
+		return nil
+	}
+
+	// Last field is usually the source
+	source := fields[len(fields)-1]
+	if source != "winget" && source != "msstore" && !strings.Contains(source, "store") {
+		// Might not have source column, could be version
+		source = "winget"
+		// Adjust fields
+	}
+
+	// Work backwards: source, available version, current version, id, name
+	// This is complex because the Name can contain multiple words
+
+	// Simplified approach: if we have at least 5 fields, try to parse
+	// [name parts...] [id] [current] [available] [source]
+	if len(fields) >= 5 && (fields[len(fields)-1] == "winget" || fields[len(fields)-1] == "msstore") {
+		availableVer := fields[len(fields)-2]
+		currentVer := fields[len(fields)-3]
+		pkgID := fields[len(fields)-4]
+
+		// Name is everything before the ID
+		nameEndIdx := len(fields) - 4
+		name := strings.Join(fields[:nameEndIdx], " ")
+
+		// Validate that versions look like versions (contain digits)
+		if !containsDigit(currentVer) || !containsDigit(availableVer) {
+			return nil
+		}
+
+		return &Update{
+			Name:       name,
+			Version:    availableVer, // Available version is what we want to update to
+			CurrentVer: currentVer,
+			Category:   "standard",
+			Source:     "winget",
+			KB:         pkgID, // Store package ID in KB field for reference
+		}
+	}
+
+	// Fallback: try with 4 fields (no source column)
+	if len(fields) >= 4 {
+		availableVer := fields[len(fields)-1]
+		currentVer := fields[len(fields)-2]
+		pkgID := fields[len(fields)-3]
+		nameEndIdx := len(fields) - 3
+		name := strings.Join(fields[:nameEndIdx], " ")
+
+		if containsDigit(currentVer) && containsDigit(availableVer) && nameEndIdx > 0 {
+			return &Update{
+				Name:       name,
+				Version:    availableVer,
+				CurrentVer: currentVer,
+				Category:   "standard",
+				Source:     "winget",
+				KB:         pkgID,
+			}
+		}
+	}
+
+	return nil
+}
+
+// containsDigit checks if a string contains at least one digit.
+func containsDigit(s string) bool {
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			return true
+		}
+	}
+	return false
 }

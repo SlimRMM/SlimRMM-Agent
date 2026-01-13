@@ -1,12 +1,14 @@
-// +build windows
+//go:build windows
 
 package monitor
 
 import (
 	"bufio"
+	"log/slog"
 	"os/exec"
 	"strings"
 
+	"github.com/slimrmm/slimrmm-agent/internal/winget"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -89,14 +91,26 @@ func getRegistrySoftware(root registry.Key, path string) map[string]SoftwareItem
 func getWingetPackages() map[string]SoftwareItem {
 	software := make(map[string]SoftwareItem)
 
-	cmd := exec.Command("winget", "list", "--disable-interactivity", "--accept-source-agreements")
+	// Check if winget is available using the winget client
+	wingetClient := winget.GetDefault()
+	if !wingetClient.IsAvailable() {
+		slog.Debug("winget not available for software inventory")
+		return software
+	}
+
+	wingetPath := wingetClient.GetBinaryPath()
+	if wingetPath == "" {
+		return software
+	}
+
+	cmd := exec.Command(wingetPath, "list", "--disable-interactivity", "--accept-source-agreements")
 	output, err := cmd.Output()
 	if err != nil {
+		slog.Debug("winget list command failed", "error", err)
 		return software
 	}
 
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	headerSkipped := false
 	separatorFound := false
 
 	for scanner.Scan() {
@@ -110,16 +124,10 @@ func getWingetPackages() map[string]SoftwareItem {
 			continue
 		}
 
-		if !headerSkipped {
-			headerSkipped = true
-			continue
-		}
-
-		// Parse package line: Name Id Version Available Source
+		// Parse package line: Name Id Version Source
 		fields := strings.Fields(line)
 		if len(fields) >= 3 {
 			// Name might contain spaces, so we need to find the version
-			// Version typically looks like x.x.x
 			name := fields[0]
 			version := ""
 
