@@ -61,6 +61,8 @@ func (h *Handler) registerHandlers() {
 	h.handlers["get_available_updates"] = h.handleGetAvailableUpdates
 	h.handlers["execute_patches"] = h.handleExecutePatches
 	h.handlers["uninstall_software"] = h.handleUninstallSoftware
+	h.handlers["install_software"] = h.handleInstallSoftware
+	h.handlers["download_and_install_msi"] = h.handleDownloadAndInstallMSI
 
 	// System control
 	h.handlers["restart"] = h.handleRestart
