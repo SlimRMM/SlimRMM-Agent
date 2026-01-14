@@ -99,6 +99,9 @@ func (h *Handler) registerHandlers() {
 	h.handlers["execute_winget_update"] = h.handleExecuteWingetUpdate
 	h.handlers["execute_winget_updates"] = h.handleExecuteWingetUpdates
 
+	// Software installation handlers (Windows only)
+	h.registerSoftwareHandlers()
+
 	// Proxmox handlers (only active on Proxmox hosts)
 	h.registerProxmoxHandlers()
 
