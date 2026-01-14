@@ -1193,17 +1193,19 @@ func upgradeWingetPackage(providedPath, packageID string) (*Message, []byte) {
 
 	log.Printf("Using winget at: %s", wingetPath)
 
-	// Create context with 5 minute timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// Create context with 15 minute timeout (some packages like Zoom need more time)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	// Run winget upgrade with timeout
+	// --force closes running applications to allow update
 	cmd := exec.CommandContext(ctx, wingetPath, "upgrade",
 		"--id", packageID,
 		"--accept-source-agreements",
 		"--accept-package-agreements",
 		"--disable-interactivity",
 		"--silent",
+		"--force",
 	)
 
 	log.Printf("Starting winget upgrade command for package: %s", packageID)
@@ -1217,7 +1219,7 @@ func upgradeWingetPackage(providedPath, packageID string) (*Message, []byte) {
 		// Check for context timeout
 		if ctx.Err() == context.DeadlineExceeded {
 			result.ExitCode = -2
-			result.Error = "upgrade timed out after 5 minutes"
+			result.Error = "upgrade timed out after 15 minutes"
 			log.Printf("Winget upgrade timed out for package: %s", packageID)
 			payload, _ := json.Marshal(result)
 			return &Message{Type: MsgTypeWingetUpgradeResult, Payload: payload}, nil
