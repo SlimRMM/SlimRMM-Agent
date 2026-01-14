@@ -2793,6 +2793,10 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 					"execution_id", req.ExecutionID,
 					"package_id", req.PackageID,
 				)
+
+				// Trigger a rescan of available updates so the frontend can refresh the list
+				go h.triggerUpdatesRescan(ctx)
+
 				return response, nil
 			}
 
@@ -2986,6 +2990,9 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 		)
 	}
 
+	// Trigger a rescan of available updates so the frontend can refresh the list
+	go h.triggerUpdatesRescan(ctx)
+
 	return response, nil
 }
 
@@ -3167,6 +3174,9 @@ func (h *Handler) handleExecuteWingetUpdates(ctx context.Context, data json.RawM
 		)
 	}
 
+	// Trigger a rescan of available updates so the frontend can refresh the list
+	go h.triggerUpdatesRescan(ctx)
+
 	return response, nil
 }
 
@@ -3265,4 +3275,34 @@ func (h *Handler) executeWingetUpgradeByID(ctx context.Context, wingetPath, pack
 		"package", packageID,
 	)
 	return result
+}
+
+// triggerUpdatesRescan performs a rescan of available updates after winget operations
+// and sends the result to the backend so the UI can be refreshed.
+func (h *Handler) triggerUpdatesRescan(ctx context.Context) {
+	h.logger.Info("triggering updates rescan after winget operation")
+
+	// Use a fresh context with timeout for the rescan
+	rescanCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	result, err := actions.GetAvailableUpdates(rescanCtx)
+	if err != nil {
+		h.logger.Error("updates rescan failed", "error", err)
+		return
+	}
+
+	if result == nil {
+		h.logger.Warn("updates rescan returned nil result")
+		return
+	}
+
+	h.logger.Info("updates rescan completed", "count", result.Count, "source", result.Source)
+
+	// Send the updated list to the backend
+	h.SendRaw(map[string]interface{}{
+		"action":    "run_osquery",
+		"scan_type": "updates",
+		"data":      result,
+	})
 }
