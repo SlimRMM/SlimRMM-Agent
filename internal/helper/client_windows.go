@@ -118,6 +118,7 @@ type WingetUpgradeResult struct {
 	Output    string `json:"output"`
 	Error     string `json:"error,omitempty"`
 	ExitCode  int    `json:"exit_code"`
+	WingetLog string `json:"winget_log,omitempty"`
 }
 
 // Client manages communication with the helper process

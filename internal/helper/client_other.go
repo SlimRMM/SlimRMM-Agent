@@ -67,10 +67,11 @@ type WingetUpgradeRequest struct {
 
 // WingetUpgradeResult contains the winget upgrade result
 type WingetUpgradeResult struct {
-	Success  bool   `json:"success"`
-	Output   string `json:"output"`
-	Error    string `json:"error,omitempty"`
-	ExitCode int    `json:"exit_code"`
+	Success   bool   `json:"success"`
+	Output    string `json:"output"`
+	Error     string `json:"error,omitempty"`
+	ExitCode  int    `json:"exit_code"`
+	WingetLog string `json:"winget_log,omitempty"`
 }
 
 // NewClient creates a new helper client

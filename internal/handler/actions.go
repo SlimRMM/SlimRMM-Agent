@@ -2825,6 +2825,11 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 					"completed_at": time.Now().UTC().Format(time.RFC3339),
 					"duration_ms":  time.Since(startedAt).Milliseconds(),
 				}
+				// Include winget log if available
+				if result.WingetLog != "" {
+					response["winget_log"] = result.WingetLog
+					h.logger.Info("winget log retrieved", "log_length", len(result.WingetLog))
+				}
 				h.SendRaw(response)
 				h.logger.Error("winget update failed in user context",
 					"execution_id", req.ExecutionID,

@@ -19,6 +19,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -176,10 +178,11 @@ type WingetUpgradeRequest struct {
 
 // WingetUpgradeResult contains the winget upgrade result
 type WingetUpgradeResult struct {
-	Success  bool   `json:"success"`
-	Output   string `json:"output"`
-	Error    string `json:"error,omitempty"`
-	ExitCode int    `json:"exit_code"`
+	Success   bool   `json:"success"`
+	Output    string `json:"output"`
+	Error     string `json:"error,omitempty"`
+	ExitCode  int    `json:"exit_code"`
+	WingetLog string `json:"winget_log,omitempty"`
 }
 
 func main() {
@@ -1172,6 +1175,86 @@ func startService(name string) error {
 	return nil
 }
 
+// getRecentWingetLog reads the most recent winget log file for debugging.
+// Winget logs are stored in: %LOCALAPPDATA%\Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\DiagOutputDir
+func getRecentWingetLog() string {
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData == "" {
+		return ""
+	}
+
+	diagDir := filepath.Join(localAppData, "Packages", "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe", "LocalState", "DiagOutputDir")
+
+	// Check if directory exists
+	if _, err := os.Stat(diagDir); os.IsNotExist(err) {
+		log.Printf("Winget DiagOutputDir does not exist: %s", diagDir)
+		return ""
+	}
+
+	// Find all log files
+	entries, err := os.ReadDir(diagDir)
+	if err != nil {
+		log.Printf("Failed to read winget DiagOutputDir: %v", err)
+		return ""
+	}
+
+	// Filter and sort by modification time (most recent first)
+	type logFile struct {
+		name    string
+		modTime time.Time
+	}
+	var logFiles []logFile
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		// Only consider .log files
+		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		logFiles = append(logFiles, logFile{
+			name:    entry.Name(),
+			modTime: info.ModTime(),
+		})
+	}
+
+	if len(logFiles) == 0 {
+		log.Printf("No winget log files found in: %s", diagDir)
+		return ""
+	}
+
+	// Sort by modification time, most recent first
+	sort.Slice(logFiles, func(i, j int) bool {
+		return logFiles[i].modTime.After(logFiles[j].modTime)
+	})
+
+	// Read the most recent log file
+	mostRecent := logFiles[0]
+	logPath := filepath.Join(diagDir, mostRecent.name)
+	log.Printf("Reading most recent winget log: %s (modified: %s)", logPath, mostRecent.modTime.Format(time.RFC3339))
+
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		log.Printf("Failed to read winget log file: %v", err)
+		return ""
+	}
+
+	// Limit log size to 50KB to avoid huge responses
+	const maxLogSize = 50 * 1024
+	if len(content) > maxLogSize {
+		// Take the last 50KB (most relevant for recent errors)
+		content = content[len(content)-maxLogSize:]
+		return "... (truncated) ...\n" + string(content)
+	}
+
+	return string(content)
+}
+
 // upgradeWingetPackage runs winget upgrade for a specific package in user context.
 func upgradeWingetPackage(providedPath, packageID string) (*Message, []byte) {
 	log.Printf("Upgrading winget package in user context: %s", packageID)
@@ -1221,6 +1304,8 @@ func upgradeWingetPackage(providedPath, packageID string) (*Message, []byte) {
 			result.ExitCode = -2
 			result.Error = "upgrade timed out after 15 minutes"
 			log.Printf("Winget upgrade timed out for package: %s", packageID)
+			// Get winget logs for timeout failures
+			result.WingetLog = getRecentWingetLog()
 			payload, _ := json.Marshal(result)
 			return &Message{Type: MsgTypeWingetUpgradeResult, Payload: payload}, nil
 		}
@@ -1247,6 +1332,15 @@ func upgradeWingetPackage(providedPath, packageID string) (*Message, []byte) {
 	} else {
 		result.Success = true
 		result.ExitCode = 0
+	}
+
+	// If upgrade failed (and not just "already up to date"), try to get winget logs
+	if !result.Success {
+		log.Printf("Attempting to retrieve winget log for failed upgrade")
+		result.WingetLog = getRecentWingetLog()
+		if result.WingetLog != "" {
+			log.Printf("Retrieved winget log (%d bytes)", len(result.WingetLog))
+		}
 	}
 
 	log.Printf("Winget upgrade completed: success=%v exitCode=%d error=%s", result.Success, result.ExitCode, result.Error)
