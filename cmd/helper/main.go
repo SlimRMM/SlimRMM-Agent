@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"flag"
@@ -1125,8 +1126,12 @@ func upgradeWingetPackage(providedPath, packageID string) (*Message, []byte) {
 
 	log.Printf("Using winget at: %s", wingetPath)
 
+	// Create context with 5 minute timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
 	// Run winget upgrade with timeout
-	cmd := exec.Command(wingetPath, "upgrade",
+	cmd := exec.CommandContext(ctx, wingetPath, "upgrade",
 		"--id", packageID,
 		"--accept-source-agreements",
 		"--accept-package-agreements",
@@ -1134,18 +1139,37 @@ func upgradeWingetPackage(providedPath, packageID string) (*Message, []byte) {
 		"--silent",
 	)
 
+	log.Printf("Starting winget upgrade command for package: %s", packageID)
+
 	output, err := cmd.CombinedOutput()
 	result.Output = string(output)
 
+	log.Printf("Winget upgrade command finished, output length: %d bytes", len(output))
+
 	if err != nil {
+		// Check for context timeout
+		if ctx.Err() == context.DeadlineExceeded {
+			result.ExitCode = -2
+			result.Error = "upgrade timed out after 5 minutes"
+			log.Printf("Winget upgrade timed out for package: %s", packageID)
+			payload, _ := json.Marshal(result)
+			return &Message{Type: MsgTypeWingetUpgradeResult, Payload: payload}, nil
+		}
+
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()
+			log.Printf("Winget exit code: %d (0x%X)", result.ExitCode, uint32(result.ExitCode))
+
 			// Check for "already up to date" exit code
 			if result.ExitCode == 0x8A150011 || result.ExitCode == -1978335215 {
 				result.Success = true
 				result.Error = "already up to date"
+			} else if result.ExitCode == 0x8a150014 || result.ExitCode == -1978335212 {
+				// Package not found - might be system-level package
+				result.Success = false
+				result.Error = "package not found in user context"
 			} else {
-				result.Error = fmt.Sprintf("upgrade failed with exit code %d", result.ExitCode)
+				result.Error = fmt.Sprintf("upgrade failed with exit code %d (0x%X)", result.ExitCode, uint32(result.ExitCode))
 			}
 		} else {
 			result.ExitCode = -1
@@ -1156,7 +1180,7 @@ func upgradeWingetPackage(providedPath, packageID string) (*Message, []byte) {
 		result.ExitCode = 0
 	}
 
-	log.Printf("Winget upgrade completed: success=%v exitCode=%d", result.Success, result.ExitCode)
+	log.Printf("Winget upgrade completed: success=%v exitCode=%d error=%s", result.Success, result.ExitCode, result.Error)
 
 	payload, _ := json.Marshal(result)
 	return &Message{Type: MsgTypeWingetUpgradeResult, Payload: payload}, nil
