@@ -1110,75 +1110,179 @@ func parseWingetLine(line string) *Update {
 	// The format is roughly: Name | Id | Version | Available | Source
 	// But columns are space-padded, not tab-separated
 	//
-	// Strategy: work from the right side where values are more predictable
-	// Source is usually "winget" or "msstore"
-	// Version numbers follow patterns like "1.2.3" or "1.2.3.4"
+	// Key insight: Package IDs in winget always follow the format "Publisher.Package"
+	// (e.g., "Microsoft.VisualStudioCode", "Zoom.Zoom.EXE")
+	// This makes them distinguishable from version numbers like "6.6.6 (19875)"
 
 	fields := strings.Fields(line)
 	if len(fields) < 4 {
 		return nil
 	}
 
-	// Last field is usually the source
-	source := fields[len(fields)-1]
-	if source != "winget" && source != "msstore" && !strings.Contains(source, "store") {
-		// Might not have source column, could be version
-		source = "winget"
-		// Adjust fields
+	// Find source (last field if it's "winget" or "msstore")
+	hasSourceColumn := false
+	source := "winget"
+	if fields[len(fields)-1] == "winget" || fields[len(fields)-1] == "msstore" {
+		hasSourceColumn = true
+		source = fields[len(fields)-1]
 	}
 
-	// Work backwards: source, available version, current version, id, name
-	// This is complex because the Name can contain multiple words
-
-	// Simplified approach: if we have at least 5 fields, try to parse
-	// [name parts...] [id] [current] [available] [source]
-	if len(fields) >= 5 && (fields[len(fields)-1] == "winget" || fields[len(fields)-1] == "msstore") {
-		availableVer := fields[len(fields)-2]
-		currentVer := fields[len(fields)-3]
-		pkgID := fields[len(fields)-4]
-
-		// Name is everything before the ID
-		nameEndIdx := len(fields) - 4
-		name := strings.Join(fields[:nameEndIdx], " ")
-
-		// Validate that versions look like versions (contain digits)
-		if !containsDigit(currentVer) || !containsDigit(availableVer) {
-			return nil
-		}
-
-		return &Update{
-			Name:       name,
-			Version:    availableVer, // Available version is what we want to update to
-			CurrentVer: currentVer,
-			Category:   "standard",
-			Source:     "winget",
-			KB:         pkgID,    // Store package ID in KB field for reference
-			Context:    "system", // System context packages
+	// Find the package ID by looking for the "Publisher.Package" pattern
+	// Package IDs contain a dot and are usually alphanumeric with dots/underscores
+	pkgIDIdx := -1
+	for i, field := range fields {
+		if isWingetPackageID(field) {
+			pkgIDIdx = i
+			break
 		}
 	}
 
-	// Fallback: try with 4 fields (no source column)
-	if len(fields) >= 4 {
-		availableVer := fields[len(fields)-1]
-		currentVer := fields[len(fields)-2]
-		pkgID := fields[len(fields)-3]
-		nameEndIdx := len(fields) - 3
-		name := strings.Join(fields[:nameEndIdx], " ")
+	if pkgIDIdx < 0 || pkgIDIdx == 0 {
+		return nil // No valid package ID found
+	}
 
-		if containsDigit(currentVer) && containsDigit(availableVer) && nameEndIdx > 0 {
+	// Name is everything before the package ID
+	name := strings.Join(fields[:pkgIDIdx], " ")
+	pkgID := fields[pkgIDIdx]
+
+	// Determine the end index for version fields
+	endIdx := len(fields)
+	if hasSourceColumn {
+		endIdx = len(fields) - 1
+	}
+
+	// Fields after pkgID until source are version fields
+	// Format: [current version parts] [available version parts]
+	versionFields := fields[pkgIDIdx+1 : endIdx]
+
+	if len(versionFields) < 2 {
+		return nil
+	}
+
+	// Split version fields in half - first half is current, second half is available
+	// This handles cases like "6.6.6 (19875) 6.7.2 (26346)"
+	midpoint := len(versionFields) / 2
+	currentVerParts := versionFields[:midpoint]
+	availableVerParts := versionFields[midpoint:]
+
+	// Handle odd number of version fields (more common case)
+	// Try to find where the version split occurs by looking for version-like patterns
+	if len(versionFields) >= 2 {
+		// Find version-looking fields from the end
+		// Available version is typically at the end before source
+		availableVer := findVersionString(versionFields, true)
+		currentVer := findVersionString(versionFields, false)
+
+		if availableVer != "" && currentVer != "" {
 			return &Update{
 				Name:       name,
 				Version:    availableVer,
 				CurrentVer: currentVer,
 				Category:   "standard",
-				Source:     "winget",
+				Source:     source,
 				KB:         pkgID,
-				Context:    "system", // System context packages
+				Context:    "system",
 			}
 		}
 	}
 
-	return nil
+	// Fallback: join version parts
+	currentVer := strings.Join(currentVerParts, " ")
+	availableVer := strings.Join(availableVerParts, " ")
+
+	if !containsDigit(currentVer) || !containsDigit(availableVer) {
+		return nil
+	}
+
+	return &Update{
+		Name:       name,
+		Version:    availableVer,
+		CurrentVer: currentVer,
+		Category:   "standard",
+		Source:     source,
+		KB:         pkgID,
+		Context:    "system",
+	}
+}
+
+// isWingetPackageID checks if a string looks like a winget package ID.
+// Package IDs follow the format "Publisher.Package" (e.g., "Microsoft.VisualStudioCode").
+func isWingetPackageID(s string) bool {
+	// Must contain at least one dot
+	if !strings.Contains(s, ".") {
+		return false
+	}
+
+	// Must not start or end with a dot
+	if strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") {
+		return false
+	}
+
+	// Must not look like a version number (e.g., "1.2.3")
+	// Version numbers typically start with a digit
+	if len(s) > 0 && s[0] >= '0' && s[0] <= '9' {
+		return false
+	}
+
+	// Must not be in parentheses (like "(19875)")
+	if strings.HasPrefix(s, "(") || strings.HasSuffix(s, ")") {
+		return false
+	}
+
+	// Should contain only alphanumeric, dots, underscores, and hyphens
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') {
+			return false
+		}
+	}
+
+	return true
+}
+
+// findVersionString extracts a version string from version fields.
+// If fromEnd is true, it finds the last version-like field; otherwise the first.
+func findVersionString(fields []string, fromEnd bool) string {
+	// Look for fields that start with a digit (version numbers)
+	var versionParts []string
+
+	if fromEnd {
+		// Collect version parts from the end
+		for i := len(fields) - 1; i >= 0; i-- {
+			field := fields[i]
+			// Stop when we find something that doesn't look like a version part
+			if len(field) > 0 && (field[0] >= '0' && field[0] <= '9' || field[0] == '(') {
+				versionParts = append([]string{field}, versionParts...)
+			} else {
+				break
+			}
+		}
+		// Take only the last version (available)
+		// Typical: ["6.6.6", "(19875)", "6.7.2", "(26346)"] -> want "6.7.2 (26346)"
+		if len(versionParts) >= 2 {
+			midpoint := len(versionParts) / 2
+			return strings.Join(versionParts[midpoint:], " ")
+		}
+	} else {
+		// Collect version parts from the start
+		for _, field := range fields {
+			if len(field) > 0 && (field[0] >= '0' && field[0] <= '9' || field[0] == '(') {
+				versionParts = append(versionParts, field)
+			} else {
+				break
+			}
+		}
+		// Take only the first version (current)
+		if len(versionParts) >= 2 {
+			midpoint := len(versionParts) / 2
+			return strings.Join(versionParts[:midpoint], " ")
+		}
+	}
+
+	if len(versionParts) > 0 {
+		return strings.Join(versionParts, " ")
+	}
+	return ""
 }
 
 // containsDigit checks if a string contains at least one digit.

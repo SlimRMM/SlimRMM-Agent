@@ -857,7 +857,9 @@ func parseWingetUpdateLine(line string) *WingetUpdate {
 	}
 
 	// Format: Name [Name...] Id Version Available [Source]
-	// Work backwards from the end
+	// The challenge: version strings can contain spaces like "6.6.6 (19875)"
+	// Solution: Find the package ID by its format (Publisher.Package)
+
 	lastIdx := len(fields) - 1
 	source := "winget"
 
@@ -871,18 +873,49 @@ func parseWingetUpdateLine(line string) *WingetUpdate {
 		return nil
 	}
 
-	available := fields[lastIdx]
-	version := fields[lastIdx-1]
-	id := fields[lastIdx-2]
+	// Find the package ID by scanning for a field that matches winget ID format
+	idIdx := -1
+	for i := 1; i <= lastIdx-2; i++ {
+		if isWingetPackageID(fields[i]) {
+			idIdx = i
+			break
+		}
+	}
 
-	// Validate versions contain digits
-	if !containsDigit(version) || !containsDigit(available) {
+	if idIdx < 0 {
 		return nil
 	}
 
+	id := fields[idIdx]
+
 	// Name is everything before the ID
-	nameEndIdx := lastIdx - 2
-	name := strings.Join(fields[:nameEndIdx], " ")
+	name := strings.Join(fields[:idIdx], " ")
+	if name == "" {
+		return nil
+	}
+
+	// Version fields are after the ID
+	// There should be at least 2 version-like fields (current and available)
+	versionFields := fields[idIdx+1 : lastIdx+1]
+	if len(versionFields) < 2 {
+		return nil
+	}
+
+	// Find version strings (contain digits)
+	var versions []string
+	for _, f := range versionFields {
+		if containsDigit(f) {
+			versions = append(versions, f)
+		}
+	}
+
+	if len(versions) < 2 {
+		return nil
+	}
+
+	// Last two version-like fields are current and available
+	version := versions[len(versions)-2]
+	available := versions[len(versions)-1]
 
 	return &WingetUpdate{
 		Name:      name,
@@ -891,6 +924,40 @@ func parseWingetUpdateLine(line string) *WingetUpdate {
 		Available: available,
 		Source:    source,
 	}
+}
+
+// isWingetPackageID checks if a string looks like a winget package ID.
+// Winget package IDs follow the format "Publisher.Package" (e.g., "Microsoft.VisualStudioCode").
+func isWingetPackageID(s string) bool {
+	// Must contain at least one dot
+	if !strings.Contains(s, ".") {
+		return false
+	}
+
+	// Must not start or end with a dot
+	if strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") {
+		return false
+	}
+
+	// Must not start with a digit (version numbers start with digits)
+	if len(s) > 0 && s[0] >= '0' && s[0] <= '9' {
+		return false
+	}
+
+	// Must not be wrapped in parentheses like "(19875)"
+	if strings.HasPrefix(s, "(") || strings.HasSuffix(s, ")") {
+		return false
+	}
+
+	// Should only contain valid characters (letters, digits, dots, underscores, hyphens)
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') {
+			return false
+		}
+	}
+
+	return true
 }
 
 // containsDigit checks if a string contains at least one digit.
