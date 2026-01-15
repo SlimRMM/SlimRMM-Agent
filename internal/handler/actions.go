@@ -98,6 +98,7 @@ func (h *Handler) registerHandlers() {
 	h.handlers["install_winget"] = h.handleInstallWinget
 	h.handlers["get_winget_status"] = h.handleGetWingetStatus
 	h.handlers["execute_winget_policy"] = h.handleExecuteWingetPolicy
+	h.handlers["execute_winget_install_policy"] = h.handleExecuteWingetInstallPolicy
 	h.handlers["execute_winget_update"] = h.handleExecuteWingetUpdate
 	h.handlers["execute_winget_updates"] = h.handleExecuteWingetUpdates
 
@@ -2640,6 +2641,247 @@ func (h *Handler) handleExecuteWingetPolicy(ctx context.Context, data json.RawMe
 		"status", status,
 		"succeeded", succeeded,
 		"failed", failed,
+	)
+
+	return response, nil
+}
+
+// wingetInstallPolicyRequest represents a winget install policy request.
+type wingetInstallPolicyRequest struct {
+	ExecutionID     string                  `json:"execution_id"`
+	PolicyID        string                  `json:"policy_id"`
+	PolicyName      string                  `json:"policy_name"`
+	Packages        []wingetPackageToInstall `json:"packages"`
+	InstallScope    string                  `json:"install_scope"`
+	Silent          bool                    `json:"silent"`
+	SkipIfInstalled bool                    `json:"skip_if_installed"`
+	Reboot          bool                    `json:"reboot"`
+	TimeoutSeconds  int                     `json:"timeout_seconds"`
+	MaxConcurrent   int                     `json:"max_concurrent"`
+}
+
+type wingetPackageToInstall struct {
+	PackageID   string  `json:"package_id"`
+	PackageName *string `json:"package_name"`
+	Version     *string `json:"version"`
+}
+
+type wingetInstallResult struct {
+	PackageID   string `json:"package_id"`
+	PackageName string `json:"package_name"`
+	Status      string `json:"status"`
+	ExitCode    int    `json:"exit_code"`
+	Output      string `json:"output,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+// handleExecuteWingetInstallPolicy handles installing software via winget policy.
+func (h *Handler) handleExecuteWingetInstallPolicy(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if runtime.GOOS != "windows" {
+		return map[string]interface{}{
+			"status": "failed",
+			"error":  "winget is only available on Windows",
+		}, nil
+	}
+
+	var req wingetInstallPolicyRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	h.logger.Info("executing winget install policy",
+		"execution_id", req.ExecutionID,
+		"policy_id", req.PolicyID,
+		"policy_name", req.PolicyName,
+		"packages_count", len(req.Packages),
+	)
+
+	// Check if winget is available
+	client := winget.GetDefault()
+	if !client.IsAvailable() {
+		response := map[string]interface{}{
+			"action":       "winget_install_policy_result",
+			"execution_id": req.ExecutionID,
+			"policy_id":    req.PolicyID,
+			"status":       "failed",
+			"error":        "winget is not available on this system",
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	if len(req.Packages) == 0 {
+		response := map[string]interface{}{
+			"action":       "winget_install_policy_result",
+			"execution_id": req.ExecutionID,
+			"policy_id":    req.PolicyID,
+			"status":       "completed",
+			"message":      "no packages to install",
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	startedAt := time.Now()
+
+	// Set timeout
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 15 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	wingetPath := client.GetBinaryPath()
+	scope := req.InstallScope
+	if scope == "" {
+		scope = "machine"
+	}
+
+	var results []wingetInstallResult
+	var succeeded, failed, skipped int
+
+	for i, pkg := range req.Packages {
+		packageName := pkg.PackageID
+		if pkg.PackageName != nil && *pkg.PackageName != "" {
+			packageName = *pkg.PackageName
+		}
+
+		// Send progress
+		h.SendRaw(map[string]interface{}{
+			"action":          "winget_install_policy_progress",
+			"execution_id":    req.ExecutionID,
+			"policy_id":       req.PolicyID,
+			"current_package": packageName,
+			"package_id":      pkg.PackageID,
+			"current_index":   i + 1,
+			"total_packages":  len(req.Packages),
+		})
+
+		// Check if already installed (if skip_if_installed is true)
+		if req.SkipIfInstalled {
+			checkCmd := exec.CommandContext(ctx, wingetPath, "list", "--id", pkg.PackageID, "--accept-source-agreements")
+			checkOutput, _ := checkCmd.CombinedOutput()
+			if strings.Contains(string(checkOutput), pkg.PackageID) {
+				h.logger.Info("package already installed, skipping", "package_id", pkg.PackageID)
+				results = append(results, wingetInstallResult{
+					PackageID:   pkg.PackageID,
+					PackageName: packageName,
+					Status:      "skipped",
+					Output:      "already installed",
+				})
+				skipped++
+				continue
+			}
+		}
+
+		// Build install command
+		args := []string{
+			"install",
+			"--id", pkg.PackageID,
+			"--scope", scope,
+			"--accept-source-agreements",
+			"--accept-package-agreements",
+			"--disable-interactivity",
+		}
+
+		if req.Silent {
+			args = append(args, "--silent")
+		}
+
+		if pkg.Version != nil && *pkg.Version != "" {
+			args = append(args, "--version", *pkg.Version)
+		}
+
+		// Execute install
+		cmd := exec.CommandContext(ctx, wingetPath, args...)
+		output, err := cmd.CombinedOutput()
+
+		result := wingetInstallResult{
+			PackageID:   pkg.PackageID,
+			PackageName: packageName,
+			Output:      string(output),
+		}
+
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				result.ExitCode = exitErr.ExitCode()
+			} else {
+				result.ExitCode = -1
+			}
+			result.Status = "failed"
+			result.Error = err.Error()
+			failed++
+			h.logger.Error("package installation failed",
+				"package_id", pkg.PackageID,
+				"exit_code", result.ExitCode,
+				"error", err,
+			)
+		} else {
+			result.Status = "success"
+			result.ExitCode = 0
+			succeeded++
+			h.logger.Info("package installed successfully", "package_id", pkg.PackageID)
+		}
+
+		results = append(results, result)
+
+		// Send progress with result
+		h.SendRaw(map[string]interface{}{
+			"action":          "winget_install_policy_progress",
+			"execution_id":    req.ExecutionID,
+			"policy_id":       req.PolicyID,
+			"current_package": packageName,
+			"package_id":      pkg.PackageID,
+			"current_index":   i + 1,
+			"total_packages":  len(req.Packages),
+			"package_status":  result.Status,
+		})
+	}
+
+	completedAt := time.Now()
+	durationMs := completedAt.Sub(startedAt).Milliseconds()
+
+	// Determine overall status
+	status := "completed"
+	if failed > 0 && succeeded == 0 {
+		status = "failed"
+	} else if failed > 0 {
+		status = "partial"
+	}
+
+	response := map[string]interface{}{
+		"action":         "winget_install_policy_result",
+		"execution_id":   req.ExecutionID,
+		"policy_id":      req.PolicyID,
+		"status":         status,
+		"total_packages": len(req.Packages),
+		"succeeded":      succeeded,
+		"failed":         failed,
+		"skipped":        skipped,
+		"results":        results,
+		"started_at":     startedAt.UTC().Format(time.RFC3339),
+		"completed_at":   completedAt.UTC().Format(time.RFC3339),
+		"duration_ms":    durationMs,
+	}
+
+	// Handle reboot if requested
+	if req.Reboot && succeeded > 0 {
+		response["reboot_scheduled"] = true
+		go func() {
+			time.Sleep(30 * time.Second)
+			h.logger.Info("initiating reboot after winget install policy execution")
+			exec.Command("shutdown", "/r", "/t", "0").Run()
+		}()
+	}
+
+	h.SendRaw(response)
+	h.logger.Info("winget install policy execution completed",
+		"execution_id", req.ExecutionID,
+		"status", status,
+		"succeeded", succeeded,
+		"failed", failed,
+		"skipped", skipped,
 	)
 
 	return response, nil
