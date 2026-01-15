@@ -84,6 +84,7 @@ type Response struct {
 // HeartbeatMessage is the format expected by the backend (Python-compatible).
 type HeartbeatMessage struct {
 	Action       string              `json:"action"`
+	Type         string              `json:"type,omitempty"`
 	AgentVersion string              `json:"agent_version"`
 	Stats        HeartbeatStats      `json:"stats"`
 	ExternalIP   string              `json:"external_ip,omitempty"`
@@ -910,6 +911,7 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 	// Format heartbeat in the structure expected by the backend (Python-compatible)
 	heartbeat := HeartbeatMessage{
 		Action:       "heartbeat",
+		Type:         "full",
 		AgentVersion: version.Version,
 		Stats: HeartbeatStats{
 			CPUPercent:    stats.CPU.UsagePercent,
@@ -954,8 +956,8 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 		// If unchanged, omit Proxmox field entirely to save bandwidth
 	}
 
-	// Add winget info on Windows - delta-based (only send if changed)
-	// Thread-safe access to heartbeatCount and lastWingetHash
+	// Add winget info on Windows - always include on full heartbeats
+	// This ensures the backend can trigger auto-install when the setting is enabled
 	if runtime.GOOS == "windows" {
 		wingetClient := winget.GetDefault()
 		// Periodically refresh winget detection to reduce CPU overhead
@@ -974,12 +976,14 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			SystemLevel:     status.SystemLevel,
 			HelperAvailable: helperAvailable,
 		}
+		// Always include winget data on full heartbeats so backend can trigger auto-install
+		heartbeat.Winget = wingetData
+		// Update hash for tracking changes (used elsewhere)
 		currentHash := hashStruct(wingetData)
 		h.mu.Lock()
 		if currentHash != h.lastWingetHash {
-			heartbeat.Winget = wingetData
 			h.lastWingetHash = currentHash
-			h.logger.Debug("winget status changed, including in heartbeat",
+			h.logger.Debug("winget status changed",
 				"available", status.Available,
 				"version", status.Version,
 				"binary_path", status.BinaryPath,
@@ -987,7 +991,6 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			)
 		}
 		h.mu.Unlock()
-		// If unchanged, omit Winget field entirely to save bandwidth
 	}
 
 	h.SendRaw(heartbeat)

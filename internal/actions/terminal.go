@@ -79,7 +79,7 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 		pty:        ptmx,
 		done:       make(chan struct{}),
 		running:    true,
-		outputChan: make(chan []byte, 256),
+		outputChan: make(chan []byte, 4096), // 4096 * 4KB = 16MB buffer for large file outputs
 		rows:       24,
 		cols:       80,
 	}
