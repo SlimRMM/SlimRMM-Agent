@@ -75,6 +75,7 @@ type HeartbeatMessage struct {
 	AgentVersion string              `json:"agent_version"`
 	Stats        HeartbeatStats      `json:"stats"`
 	ExternalIP   string              `json:"external_ip,omitempty"`
+	SerialNumber string              `json:"serial_number,omitempty"`
 	Proxmox      *HeartbeatProxmox   `json:"proxmox,omitempty"`
 	Winget       *HeartbeatWinget    `json:"winget,omitempty"`
 }
@@ -184,6 +185,10 @@ type Handler struct {
 	// Delta tracking for heartbeat optimization - only send when changed
 	lastProxmoxHash string
 	lastWingetHash  string
+
+	// Cached hardware serial number (doesn't change)
+	cachedSerialNumber     string
+	serialNumberFetched    bool
 
 	// Security modules for multi-layered protection
 	rateLimiter      *ratelimit.ActionLimiter
@@ -782,6 +787,38 @@ func hashStruct(v interface{}) string {
 	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for efficiency
 }
 
+// getSerialNumber retrieves and caches the hardware serial number using osquery.
+// The serial number is fetched once and cached since it doesn't change.
+func (h *Handler) getSerialNumber(ctx context.Context) string {
+	if h.serialNumberFetched {
+		return h.cachedSerialNumber
+	}
+
+	client := osquery.New()
+	if !client.IsAvailable() {
+		h.logger.Debug("osquery not available, cannot fetch serial number")
+		h.serialNumberFetched = true
+		return ""
+	}
+
+	result, err := client.GetSystemInfo(ctx)
+	if err != nil {
+		h.logger.Debug("failed to get system info for serial number", "error", err)
+		h.serialNumberFetched = true
+		return ""
+	}
+
+	if len(result.Rows) > 0 {
+		if serial, ok := result.Rows[0]["hardware_serial"]; ok && serial != "" {
+			h.cachedSerialNumber = serial
+			h.logger.Debug("cached hardware serial number", "serial", serial)
+		}
+	}
+
+	h.serialNumberFetched = true
+	return h.cachedSerialNumber
+}
+
 // sendHeartbeat sends a heartbeat message in the format expected by the backend.
 // Optimized: Only sends Proxmox/winget info when changed (delta-based).
 func (h *Handler) sendHeartbeat(ctx context.Context) {
@@ -833,7 +870,8 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			ProcessCount:  stats.ProcessCount,
 			Timezone:      stats.Timezone,
 		},
-		ExternalIP: stats.ExternalIP,
+		ExternalIP:   stats.ExternalIP,
+		SerialNumber: h.getSerialNumber(ctx),
 	}
 
 	// Add Proxmox info if this is a Proxmox host - delta-based (only send if changed)
