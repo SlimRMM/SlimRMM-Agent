@@ -218,8 +218,13 @@ func installWindowsService(binaryPath string) error {
 					Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
 					$existing.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30)) 2>$null
 				}
-				# Update binary path if service exists
-				Set-Service -Name $serviceName -BinaryPathName $binaryPath -ErrorAction Stop
+				# Update binary path using sc.exe (works on all PowerShell versions)
+				# Note: sc.exe requires a space after 'binPath='
+				$quotedPath = '"' + $binaryPath + '"'
+				$scResult = & sc.exe config $serviceName binPath= $quotedPath 2>&1
+				if ($LASTEXITCODE -ne 0) {
+					throw "Failed to update service binary path: $scResult"
+				}
 			} else {
 				# Create new service
 				New-Service -Name $serviceName -BinaryPathName $binaryPath -DisplayName 'SlimRMM Agent' -StartupType Automatic -Description 'SlimRMM Remote Monitoring and Management Agent' | Out-Null
