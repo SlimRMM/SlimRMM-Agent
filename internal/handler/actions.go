@@ -1494,7 +1494,7 @@ func (h *Handler) handleDockerContainerAction(ctx context.Context, data json.Raw
 	}
 
 	if err := actions.DockerContainerAction(ctx, req.ContainerID, req.Action); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("docker container action %s failed: %w", req.Action, err)
 	}
 
 	return map[string]string{"status": "success", "action": req.Action, "container_id": req.ContainerID}, nil
@@ -1512,7 +1512,7 @@ func (h *Handler) handleDockerRemoveContainer(ctx context.Context, data json.Raw
 	}
 
 	if err := actions.RemoveDockerContainer(ctx, req.ContainerID, req.Force); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("remove docker container failed: %w", err)
 	}
 
 	return map[string]string{"status": "removed", "container_id": req.ContainerID}, nil
@@ -1595,7 +1595,7 @@ func (h *Handler) handleDockerRemoveImage(ctx context.Context, data json.RawMess
 	}
 
 	if err := actions.RemoveDockerImage(ctx, req.ImageID, req.Force); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("remove docker image failed: %w", err)
 	}
 
 	return map[string]string{"status": "removed", "image_id": req.ImageID}, nil
@@ -1612,7 +1612,7 @@ func (h *Handler) handleDockerPullImage(ctx context.Context, data json.RawMessag
 	}
 
 	if err := actions.PullDockerImage(ctx, req.ImageName); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pull docker image failed: %w", err)
 	}
 
 	return map[string]string{"status": "pulled", "image_name": req.ImageName}, nil
@@ -1634,7 +1634,7 @@ func (h *Handler) handleDockerRemoveVolume(ctx context.Context, data json.RawMes
 	}
 
 	if err := actions.RemoveDockerVolume(ctx, req.VolumeName, req.Force); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("remove docker volume failed: %w", err)
 	}
 
 	return map[string]string{"status": "removed", "volume_name": req.VolumeName}, nil
@@ -1656,7 +1656,7 @@ func (h *Handler) handleDockerComposeAction(ctx context.Context, data json.RawMe
 	}
 
 	if err := actions.DockerComposeAction(ctx, req.ProjectPath, req.Action); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("docker compose action %s failed: %w", req.Action, err)
 	}
 
 	return map[string]string{"status": "success", "action": req.Action, "project_path": req.ProjectPath}, nil
