@@ -845,9 +845,11 @@ func (h *Handler) getSerialNumber(ctx context.Context) string {
 	}
 	h.mu.RUnlock()
 
+	h.logger.Info("fetching hardware serial number from osquery")
+
 	client := osquery.New()
 	if !client.IsAvailable() {
-		h.logger.Debug("osquery not available, cannot fetch serial number")
+		h.logger.Warn("osquery not available, cannot fetch serial number")
 		h.mu.Lock()
 		h.serialNumberFetched = true
 		h.mu.Unlock()
@@ -856,7 +858,7 @@ func (h *Handler) getSerialNumber(ctx context.Context) string {
 
 	result, err := client.GetSystemInfo(ctx)
 	if err != nil {
-		h.logger.Debug("failed to get system info for serial number", "error", err)
+		h.logger.Warn("failed to get system info for serial number", "error", err)
 		h.mu.Lock()
 		h.serialNumberFetched = true
 		h.mu.Unlock()
@@ -869,8 +871,12 @@ func (h *Handler) getSerialNumber(ctx context.Context) string {
 	if len(result.Rows) > 0 {
 		if serial, ok := result.Rows[0]["hardware_serial"]; ok && serial != "" {
 			h.cachedSerialNumber = serial
-			h.logger.Debug("cached hardware serial number", "serial", serial)
+			h.logger.Info("hardware serial number detected", "serial_number", serial)
+		} else {
+			h.logger.Warn("hardware_serial field empty or not found in osquery system_info")
 		}
+	} else {
+		h.logger.Warn("osquery system_info returned no rows")
 	}
 
 	h.serialNumberFetched = true
