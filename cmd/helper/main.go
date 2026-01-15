@@ -28,6 +28,7 @@ import (
 
 	"github.com/kbinani/screenshot"
 	"github.com/lxn/win"
+	"github.com/slimrmm/slimrmm-agent/internal/winget"
 	"golang.org/x/sys/windows"
 )
 
@@ -1315,10 +1316,10 @@ func upgradeWingetPackage(providedPath, packageID string) (*Message, []byte) {
 			log.Printf("Winget exit code: %d (0x%X)", result.ExitCode, uint32(result.ExitCode))
 
 			// Check for "already up to date" exit code
-			if result.ExitCode == 0x8A150011 || result.ExitCode == -1978335215 {
+			if winget.IsNoUpdateAvailable(result.ExitCode) {
 				result.Success = true
 				result.Error = "already up to date"
-			} else if result.ExitCode == 0x8a150014 || result.ExitCode == -1978335212 {
+			} else if winget.IsPackageNotFound(result.ExitCode) {
 				// Package not found - might be system-level package
 				result.Success = false
 				result.Error = "package not found in user context"

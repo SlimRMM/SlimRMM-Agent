@@ -33,12 +33,24 @@ import (
 )
 
 const (
+	// WebSocket timing constants
 	writeWait         = 10 * time.Second
 	pongWait          = 60 * time.Second
 	pingPeriod        = (pongWait * 9) / 10
 	heartbeatPeriod   = 30 * time.Second
 	maxMessageSize    = 10 * 1024 * 1024 // 10 MB
-	certCheckInterval = 24 * time.Hour   // Check certificates every 24 hours (like Python)
+	certCheckInterval = 24 * time.Hour   // Check certificates every 24 hours
+
+	// Connection constants
+	connectionTimeout  = 30 * time.Second
+	tcpKeepAlive       = 30 * time.Second
+	handshakeTimeout   = 15 * time.Second
+	wsEndpoint         = "/api/v1/ws/agent"
+	httpClientTimeout  = 30 * time.Second
+
+	// Heartbeat configuration
+	fullHeartbeatInterval = 10 // Full heartbeat every N heartbeats (~5 minutes)
+	configSaveInterval    = 10 // Save config every N heartbeats (~5 minutes)
 )
 
 // actionToResponseAction maps request action names to their response action names.
@@ -82,10 +94,11 @@ type HeartbeatMessage struct {
 
 // HeartbeatWinget contains Windows Package Manager (winget) information.
 type HeartbeatWinget struct {
-	Available   bool   `json:"available"`
-	Version     string `json:"version,omitempty"`
-	BinaryPath  string `json:"binary_path,omitempty"`
-	SystemLevel bool   `json:"system_level"`
+	Available       bool   `json:"available"`
+	Version         string `json:"version,omitempty"`
+	BinaryPath      string `json:"binary_path,omitempty"`
+	SystemLevel     bool   `json:"system_level"`
+	HelperAvailable bool   `json:"helper_available"` // Available via helper in user context
 }
 
 // HeartbeatProxmox contains Proxmox host information.
@@ -185,6 +198,9 @@ type Handler struct {
 	// Delta tracking for heartbeat optimization - only send when changed
 	lastProxmoxHash string
 	lastWingetHash  string
+
+	// Winget helper availability (updated by update scans)
+	wingetHelperAvailable bool
 
 	// Cached hardware serial number (doesn't change)
 	cachedSerialNumber     string
@@ -312,6 +328,32 @@ func (h *Handler) recordConnectionFailure() {
 	}
 }
 
+// SetWingetHelperAvailable sets whether winget is available via helper in user context.
+// This is called when an update scan via helper succeeds.
+func (h *Handler) SetWingetHelperAvailable(available bool) {
+	h.mu.Lock()
+	h.wingetHelperAvailable = available
+	h.mu.Unlock()
+	if available {
+		h.logger.Debug("winget helper availability updated", "available", available)
+	}
+}
+
+// Default delay before scheduling a reboot after policy execution.
+const defaultRebootDelaySeconds = 30
+
+// ScheduleReboot schedules a system reboot after a delay.
+// This consolidates the reboot scheduling logic used across multiple handlers.
+func (h *Handler) ScheduleReboot(reason string) {
+	go func() {
+		time.Sleep(defaultRebootDelaySeconds * time.Second)
+		h.logger.Info("initiating scheduled reboot", "reason", reason)
+		if err := actions.RestartSystem(context.Background(), false, 0); err != nil {
+			h.logger.Error("failed to schedule reboot", "error", err, "reason", reason)
+		}
+	}()
+}
+
 // sendThresholdAlert sends a threshold alert to the backend.
 func (h *Handler) sendThresholdAlert(alert monitor.ThresholdAlert) {
 	h.logger.Warn("threshold alert triggered",
@@ -422,21 +464,21 @@ func (h *Handler) Connect(ctx context.Context) error {
 	case "http":
 		u.Scheme = "ws"
 	}
-	u.Path = "/api/v1/ws/agent"
+	u.Path = wsEndpoint
 	u.RawQuery = "uuid=" + h.cfg.GetUUID()
 
 	// Create custom dialer with TCP keepalive for better connection stability
 	// This helps with NAT timeout issues and dead connection detection
 	netDialer := &net.Dialer{
-		Timeout:   30 * time.Second, // Connection timeout
-		KeepAlive: 30 * time.Second, // TCP keepalive interval
+		Timeout:   connectionTimeout,
+		KeepAlive: tcpKeepAlive,
 	}
 
 	dialer := websocket.Dialer{
 		TLSClientConfig:   h.tlsConfig,
-		HandshakeTimeout:  15 * time.Second,
+		HandshakeTimeout:  handshakeTimeout,
 		NetDialContext:    netDialer.DialContext,
-		EnableCompression: true, // Enable compression for better performance over slow links
+		EnableCompression: true,
 	}
 
 	headers := http.Header{}
@@ -675,16 +717,19 @@ func (h *Handler) sendHeartbeatWithSnapshot(ctx context.Context) *monitor.System
 	// Determine heartbeat type based on activity
 	heartbeatType := h.adaptiveHeartbeat.GetHeartbeatType()
 
-	// Force full heartbeat every 10 heartbeats (~5 minutes) to ensure
-	// Proxmox/winget data is sent periodically, even during normal activity.
-	// Also force full on first heartbeat (counter == 0) after connection.
+	// Force full heartbeat periodically to ensure Proxmox/winget data is sent.
+	// Also force full on first heartbeat (counter == 1) after connection.
+	// Thread-safe access to fullHeartbeatCounter
+	h.mu.Lock()
 	h.fullHeartbeatCounter++
-	if h.fullHeartbeatCounter >= 10 || h.fullHeartbeatCounter == 1 {
+	counterVal := h.fullHeartbeatCounter
+	if counterVal >= fullHeartbeatInterval || counterVal == 1 {
 		heartbeatType = monitor.HeartbeatFull
-		if h.fullHeartbeatCounter >= 10 {
+		if counterVal >= fullHeartbeatInterval {
 			h.fullHeartbeatCounter = 0
 		}
 	}
+	h.mu.Unlock()
 
 	// Send appropriate heartbeat based on type
 	h.sendHeartbeatByType(ctx, stats, heartbeatType)
@@ -709,7 +754,7 @@ func (h *Handler) checkAndRenewCertificates(ctx context.Context) {
 // renewCertificates attempts to renew certificates from the server.
 func (h *Handler) renewCertificates(ctx context.Context) error {
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: httpClientTimeout,
 		Transport: &http.Transport{
 			TLSClientConfig: h.tlsConfig,
 		},
@@ -789,24 +834,36 @@ func hashStruct(v interface{}) string {
 
 // getSerialNumber retrieves and caches the hardware serial number using osquery.
 // The serial number is fetched once and cached since it doesn't change.
+// Thread-safe: uses mutex for cached value access.
 func (h *Handler) getSerialNumber(ctx context.Context) string {
+	h.mu.RLock()
 	if h.serialNumberFetched {
-		return h.cachedSerialNumber
+		serial := h.cachedSerialNumber
+		h.mu.RUnlock()
+		return serial
 	}
+	h.mu.RUnlock()
 
 	client := osquery.New()
 	if !client.IsAvailable() {
 		h.logger.Debug("osquery not available, cannot fetch serial number")
+		h.mu.Lock()
 		h.serialNumberFetched = true
+		h.mu.Unlock()
 		return ""
 	}
 
 	result, err := client.GetSystemInfo(ctx)
 	if err != nil {
 		h.logger.Debug("failed to get system info for serial number", "error", err)
+		h.mu.Lock()
 		h.serialNumberFetched = true
+		h.mu.Unlock()
 		return ""
 	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
 	if len(result.Rows) > 0 {
 		if serial, ok := result.Rows[0]["hardware_serial"]; ok && serial != "" {
@@ -875,6 +932,7 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 	}
 
 	// Add Proxmox info if this is a Proxmox host - delta-based (only send if changed)
+	// Thread-safe access to lastProxmoxHash
 	if proxmoxInfo := GetProxmoxInfo(ctx); proxmoxInfo != nil {
 		proxmoxData := &HeartbeatProxmox{
 			IsProxmox:      proxmoxInfo.IsProxmox,
@@ -886,30 +944,38 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			RepositoryType: proxmoxInfo.RepositoryType,
 		}
 		currentHash := hashStruct(proxmoxData)
+		h.mu.Lock()
 		if currentHash != h.lastProxmoxHash {
 			heartbeat.Proxmox = proxmoxData
 			h.lastProxmoxHash = currentHash
 			h.logger.Debug("proxmox info changed, including in heartbeat")
 		}
+		h.mu.Unlock()
 		// If unchanged, omit Proxmox field entirely to save bandwidth
 	}
 
 	// Add winget info on Windows - delta-based (only send if changed)
+	// Thread-safe access to heartbeatCount and lastWingetHash
 	if runtime.GOOS == "windows" {
 		wingetClient := winget.GetDefault()
-		// Only refresh winget detection every 10 heartbeats (~5 minutes)
-		// to reduce CPU overhead while still detecting changes
-		if h.heartbeatCount%10 == 0 {
+		// Periodically refresh winget detection to reduce CPU overhead
+		h.mu.RLock()
+		shouldRefresh := h.heartbeatCount%fullHeartbeatInterval == 0
+		helperAvailable := h.wingetHelperAvailable
+		h.mu.RUnlock()
+		if shouldRefresh {
 			wingetClient.Refresh()
 		}
 		status := wingetClient.GetStatus()
 		wingetData := &HeartbeatWinget{
-			Available:   status.Available,
-			Version:     status.Version,
-			BinaryPath:  status.BinaryPath,
-			SystemLevel: status.SystemLevel,
+			Available:       status.Available,
+			Version:         status.Version,
+			BinaryPath:      status.BinaryPath,
+			SystemLevel:     status.SystemLevel,
+			HelperAvailable: helperAvailable,
 		}
 		currentHash := hashStruct(wingetData)
+		h.mu.Lock()
 		if currentHash != h.lastWingetHash {
 			heartbeat.Winget = wingetData
 			h.lastWingetHash = currentHash
@@ -920,6 +986,7 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 				"system_level", status.SystemLevel,
 			)
 		}
+		h.mu.Unlock()
 		// If unchanged, omit Winget field entirely to save bandwidth
 	}
 
@@ -932,10 +999,17 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 	// Update last heartbeat time in config
 	h.cfg.SetLastHeartbeat(time.Now().UTC().Format(time.RFC3339))
 
-	// Periodically save config to persist LastHeartbeat (every 10 heartbeats = ~5 minutes)
+	// Periodically save config to persist LastHeartbeat
+	// Thread-safe access to heartbeatCount
+	h.mu.Lock()
 	h.heartbeatCount++
-	if h.heartbeatCount >= 10 {
+	shouldSave := h.heartbeatCount >= configSaveInterval
+	if shouldSave {
 		h.heartbeatCount = 0
+	}
+	h.mu.Unlock()
+
+	if shouldSave {
 		if err := h.cfg.Save(); err != nil {
 			h.logger.Warn("failed to save config with heartbeat", "error", err)
 		}
@@ -984,9 +1058,16 @@ func (h *Handler) sendHeartbeatByType(ctx context.Context, stats *monitor.Stats,
 	h.cfg.SetLastHeartbeat(time.Now().UTC().Format(time.RFC3339))
 
 	// Periodically save config to persist LastHeartbeat
+	// Thread-safe access to heartbeatCount
+	h.mu.Lock()
 	h.heartbeatCount++
-	if h.heartbeatCount >= 10 {
+	shouldSave := h.heartbeatCount >= configSaveInterval
+	if shouldSave {
 		h.heartbeatCount = 0
+	}
+	h.mu.Unlock()
+
+	if shouldSave {
 		if err := h.cfg.Save(); err != nil {
 			h.logger.Warn("failed to save config with heartbeat", "error", err)
 		}

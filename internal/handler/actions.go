@@ -452,6 +452,10 @@ func (h *Handler) handleRunOsquery(ctx context.Context, data json.RawMessage) (i
 		}
 		if result != nil {
 			h.logger.Info("updates scan completed", "count", result.Count, "source", result.Source)
+			// Update winget helper availability based on scan success
+			if result.WingetHelperSuccess {
+				h.SetWingetHelperAvailable(true)
+			}
 		}
 		return result, nil
 	}
@@ -464,8 +468,27 @@ func (h *Handler) handleRunOsquery(ctx context.Context, data json.RawMessage) (i
 
 	client := osquery.New()
 	if !client.IsAvailable() {
-		h.logger.Error("osquery not available for scan", "scan_type", req.ScanType)
-		return nil, fmt.Errorf("osquery not available")
+		// Osquery might be installing - wait for it with retries
+		h.logger.Info("osquery not available, waiting for installation", "scan_type", req.ScanType)
+		const maxRetries = 6
+		const retryDelay = 5 * time.Second
+	waitLoop:
+		for i := 0; i < maxRetries; i++ {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(retryDelay):
+				client = osquery.New()
+				if client.IsAvailable() {
+					h.logger.Info("osquery now available after waiting", "scan_type", req.ScanType, "attempts", i+1)
+					break waitLoop
+				}
+			}
+		}
+		if !client.IsAvailable() {
+			h.logger.Error("osquery not available after waiting", "scan_type", req.ScanType, "waited_seconds", maxRetries*int(retryDelay.Seconds()))
+			return nil, fmt.Errorf("osquery not available")
+		}
 	}
 
 	timeout := time.Duration(req.Timeout) * time.Second
@@ -2627,12 +2650,7 @@ func (h *Handler) handleExecuteWingetPolicy(ctx context.Context, data json.RawMe
 	// Handle reboot if requested
 	if req.Reboot && succeeded > 0 {
 		response["reboot_scheduled"] = true
-		// Schedule reboot after sending response
-		go func() {
-			time.Sleep(30 * time.Second)
-			h.logger.Info("initiating reboot after winget policy execution")
-			exec.Command("shutdown", "/r", "/t", "0").Run()
-		}()
+		h.ScheduleReboot("winget policy execution")
 	}
 
 	h.SendRaw(response)
@@ -2868,11 +2886,7 @@ func (h *Handler) handleExecuteWingetInstallPolicy(ctx context.Context, data jso
 	// Handle reboot if requested
 	if req.Reboot && succeeded > 0 {
 		response["reboot_scheduled"] = true
-		go func() {
-			time.Sleep(30 * time.Second)
-			h.logger.Info("initiating reboot after winget install policy execution")
-			exec.Command("shutdown", "/r", "/t", "0").Run()
-		}()
+		h.ScheduleReboot("winget install policy execution")
 	}
 
 	h.SendRaw(response)
@@ -3028,11 +3042,7 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 
 				if req.Reboot {
 					response["reboot_scheduled"] = true
-					go func() {
-						time.Sleep(30 * time.Second)
-						h.logger.Info("initiating reboot after winget update")
-						exec.Command("shutdown", "/r", "/t", "0").Run()
-					}()
+					h.ScheduleReboot("winget update")
 				}
 
 				h.SendRaw(response)
@@ -3048,8 +3058,7 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 			}
 
 			// Check for "no installed package" error - means we should try system context
-			// Exit code 0x8a150014 = package not found
-			if result.ExitCode == 0x8a150014 || result.ExitCode == -1978335212 ||
+			if winget.IsPackageNotFound(result.ExitCode) ||
 				strings.Contains(strings.ToLower(result.Output), "no installed package") {
 				h.logger.Info("package not found in user context, trying system context", "package_id", req.PackageID)
 				h.SendRaw(map[string]interface{}{
@@ -3217,11 +3226,7 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 	// Handle reboot if requested and successful
 	if req.Reboot && status == "completed" {
 		response["reboot_scheduled"] = true
-		go func() {
-			time.Sleep(30 * time.Second)
-			h.logger.Info("initiating reboot after winget update")
-			exec.Command("shutdown", "/r", "/t", "0").Run()
-		}()
+		h.ScheduleReboot("winget update")
 	}
 
 	h.SendRaw(response)
@@ -3401,11 +3406,7 @@ func (h *Handler) handleExecuteWingetUpdates(ctx context.Context, data json.RawM
 	// Handle reboot if requested and at least one update succeeded
 	if req.Reboot && succeeded > 0 {
 		response["reboot_scheduled"] = true
-		go func() {
-			time.Sleep(30 * time.Second)
-			h.logger.Info("initiating reboot after winget bulk update")
-			exec.Command("shutdown", "/r", "/t", "0").Run()
-		}()
+		h.ScheduleReboot("winget bulk update")
 	}
 
 	h.SendRaw(response)
