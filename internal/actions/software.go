@@ -51,9 +51,10 @@ type SoftwareInventory struct {
 
 // UpdateList contains available updates.
 type UpdateList struct {
-	Updates []Update `json:"updates"`
-	Count   int      `json:"count"`
-	Source  string   `json:"source"`
+	Updates             []Update `json:"updates"`
+	Count               int      `json:"count"`
+	Source              string   `json:"source"`
+	WingetHelperSuccess bool     `json:"-"` // True if winget scan via helper succeeded (not sent to backend)
 }
 
 // GetSoftwareInventory returns the list of installed software.
@@ -104,8 +105,9 @@ func getWindowsUpdatesWithWinget(ctx context.Context) (*UpdateList, error) {
 
 	// Combine both update lists
 	combined := &UpdateList{
-		Updates: make([]Update, 0, len(systemUpdates.Updates)+len(wingetUpdates.Updates)),
-		Source:  "combined",
+		Updates:             make([]Update, 0, len(systemUpdates.Updates)+len(wingetUpdates.Updates)),
+		Source:              "combined",
+		WingetHelperSuccess: wingetUpdates.WingetHelperSuccess,
 	}
 	combined.Updates = append(combined.Updates, systemUpdates.Updates...)
 	combined.Updates = append(combined.Updates, wingetUpdates.Updates...)
@@ -115,6 +117,7 @@ func getWindowsUpdatesWithWinget(ctx context.Context) (*UpdateList, error) {
 		"system_updates", len(systemUpdates.Updates),
 		"winget_updates", len(wingetUpdates.Updates),
 		"total", combined.Count,
+		"winget_helper_success", combined.WingetHelperSuccess,
 	)
 
 	return combined, nil
@@ -944,7 +947,8 @@ func getWingetUpdates(ctx context.Context) (*UpdateList, error) {
 	seenIDs := make(map[string]bool)
 
 	// First try to scan via helper (user context) to catch user-installed packages
-	userUpdates := scanWingetViaHelper()
+	userUpdates, helperSuccess := scanWingetViaHelper()
+	updates.WingetHelperSuccess = helperSuccess
 	for _, u := range userUpdates {
 		if u.KB != "" && !seenIDs[u.KB] {
 			seenIDs[u.KB] = true
@@ -962,13 +966,14 @@ func getWingetUpdates(ctx context.Context) (*UpdateList, error) {
 	}
 
 	updates.Count = len(updates.Updates)
-	slog.Info("winget scan completed", "user_updates", len(userUpdates), "system_updates", len(systemUpdates), "total_unique", updates.Count)
+	slog.Info("winget scan completed", "user_updates", len(userUpdates), "system_updates", len(systemUpdates), "total_unique", updates.Count, "helper_success", helperSuccess)
 
 	return updates, nil
 }
 
 // scanWingetViaHelper scans for winget updates using the helper in user context.
-func scanWingetViaHelper() []Update {
+// Returns the updates found and a bool indicating if the scan was successful.
+func scanWingetViaHelper() ([]Update, bool) {
 	updates := make([]Update, 0)
 
 	// Get winget path from the agent's detection (it knows where winget is)
@@ -978,20 +983,20 @@ func scanWingetViaHelper() []Update {
 		wingetPath = wingetClient.GetBinaryPath()
 	}
 
-	// Start helper client
-	client := helper.NewClient()
-	if err := client.Start(); err != nil {
-		slog.Debug("failed to start helper for winget scan", "error", err)
-		return updates
+	// Acquire helper client via singleton manager
+	client, err := helper.GetManager().Acquire()
+	if err != nil {
+		slog.Debug("failed to acquire helper for winget scan", "error", err)
+		return updates, false
 	}
-	defer client.Stop()
+	defer helper.GetManager().Release()
 
 	slog.Info("scanning winget updates via helper (user context)", "winget_path", wingetPath)
 
 	result, err := client.ScanWingetUpdates(wingetPath)
 	if err != nil {
 		slog.Debug("helper winget scan failed", "error", err)
-		return updates
+		return updates, false
 	}
 
 	// Log raw output for debugging
@@ -1001,7 +1006,7 @@ func scanWingetViaHelper() []Update {
 
 	if result.Error != "" {
 		slog.Debug("helper winget scan returned error", "error", result.Error)
-		return updates
+		return updates, false
 	}
 
 	// Convert helper updates to our Update type
@@ -1018,7 +1023,7 @@ func scanWingetViaHelper() []Update {
 	}
 
 	slog.Info("helper winget scan completed", "updates_found", len(updates))
-	return updates
+	return updates, true // Success - helper was able to run winget
 }
 
 // scanWingetDirect scans for winget updates directly (system context).

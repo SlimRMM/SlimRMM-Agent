@@ -33,21 +33,23 @@ func NewScreenCapture() (*ScreenCapture, error) {
 		log.Printf("Using direct screen capture")
 		sc.useHelper = false
 	} else {
-		// Direct capture failed (likely Session 0), try helper
-		log.Printf("Direct capture failed (%v), starting helper", err)
-		sc.helperClient = helper.NewClient()
-		if err := sc.helperClient.Start(); err != nil {
+		// Direct capture failed (likely Session 0), try helper via singleton manager
+		log.Printf("Direct capture failed (%v), acquiring helper via manager", err)
+		client, err := helper.GetManager().Acquire()
+		if err != nil {
 			return nil, fmt.Errorf("starting helper: %w", err)
 		}
+		sc.helperClient = client
 		sc.useHelper = true
-		log.Printf("Using helper process for screen capture")
+		log.Printf("Using helper process for screen capture (via manager)")
 	}
 
 	sc.updateMonitors()
 
 	if len(sc.monitors) == 0 {
 		if sc.helperClient != nil {
-			sc.helperClient.Stop()
+			helper.GetManager().Release()
+			sc.helperClient = nil
 		}
 		return nil, fmt.Errorf("no displays found")
 	}
@@ -150,11 +152,14 @@ func (sc *ScreenCapture) CaptureFrame(monitorID int) (*image.RGBA, error) {
 func (sc *ScreenCapture) captureViaHelper(monitorID int) (*image.RGBA, error) {
 	data, resp, err := sc.helperClient.CaptureScreen(monitorID, 90, 1.0)
 	if err != nil {
-		// Try to reconnect and retry once
-		log.Printf("Capture failed, reconnecting helper: %v", err)
-		if err := sc.helperClient.Reconnect(); err != nil {
-			return nil, fmt.Errorf("helper reconnect failed: %w", err)
+		// Try to reconnect via manager and retry once
+		log.Printf("Capture failed, reconnecting helper via manager: %v", err)
+		newClient, reconnectErr := helper.GetManager().Reconnect()
+		if reconnectErr != nil {
+			return nil, fmt.Errorf("helper reconnect failed: %w", reconnectErr)
 		}
+		// Update our reference to the new client
+		sc.helperClient = newClient
 		data, resp, err = sc.helperClient.CaptureScreen(monitorID, 90, 1.0)
 		if err != nil {
 			return nil, fmt.Errorf("capture after reconnect: %w", err)
@@ -340,7 +345,8 @@ func ScaleImage(img *image.RGBA, scale float64) *image.RGBA {
 // Close releases resources.
 func (sc *ScreenCapture) Close() {
 	if sc.helperClient != nil {
-		sc.helperClient.Stop()
+		// Release our reference to the shared helper (manager handles actual stopping)
+		helper.GetManager().Release()
 		sc.helperClient = nil
 	}
 }

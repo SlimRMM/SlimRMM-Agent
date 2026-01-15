@@ -113,13 +113,13 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 	}
 
 	// Try user context first via helper if available
-	helperClient := helper.NewClient()
 	var output string
 	var exitCode int
 	var installContext string
 
-	if err := helperClient.Start(); err == nil {
-		defer helperClient.Stop()
+	helperClient, helperErr := helper.GetManager().Acquire()
+	if helperErr == nil {
+		defer helper.GetManager().Release()
 
 		h.logger.Info("trying winget install in user context", "package_id", req.WingetPackageID)
 		h.SendRaw(map[string]interface{}{

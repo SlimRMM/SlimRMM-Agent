@@ -3013,9 +3013,9 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 		"output":       "Trying user context...\n",
 	})
 
-	helperClient := helper.NewClient()
-	if err := helperClient.Start(); err == nil {
-		defer helperClient.Stop()
+	helperClient, helperErr := helper.GetManager().Acquire()
+	if helperErr == nil {
+		defer helper.GetManager().Release()
 
 		result, err := helperClient.UpgradeWingetPackage(wingetPath, req.PackageID)
 		if err == nil && result != nil {
@@ -3096,7 +3096,7 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 			}
 		}
 	} else {
-		h.logger.Debug("helper not available, trying system context directly", "error", err)
+		h.logger.Debug("helper not available, trying system context directly", "error", helperErr)
 	}
 
 	// Fall back to system context (original behavior)
