@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"runtime"
 	"sync"
+	"time"
 )
 
 // Client provides winget detection and management capabilities.
@@ -72,6 +73,41 @@ func (c *Client) Refresh() {
 	c.detect()
 }
 
+// RefreshWithRetry re-detects winget installation status with retries.
+// This is useful after installation as the binary may not be immediately available.
+func (c *Client) RefreshWithRetry(maxAttempts int, initialDelay time.Duration) bool {
+	delay := initialDelay
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		slog.Info("attempting winget detection",
+			"attempt", attempt,
+			"max_attempts", maxAttempts,
+		)
+		c.detect()
+		if c.IsAvailable() {
+			slog.Info("winget detected after retry",
+				"attempt", attempt,
+				"path", c.GetBinaryPath(),
+				"version", c.GetVersion(),
+			)
+			return true
+		}
+		if attempt < maxAttempts {
+			slog.Debug("winget not found, waiting before retry",
+				"delay", delay,
+			)
+			time.Sleep(delay)
+			delay *= 2 // Exponential backoff
+			if delay > 10*time.Second {
+				delay = 10 * time.Second
+			}
+		}
+	}
+	slog.Warn("winget not found after all retry attempts",
+		"attempts", maxAttempts,
+	)
+	return false
+}
+
 // IsAvailable returns true if winget is installed and accessible.
 func (c *Client) IsAvailable() bool {
 	c.mu.RLock()
@@ -136,9 +172,9 @@ func EnsureInstalled(ctx context.Context, logger *slog.Logger) error {
 		return err
 	}
 
-	// Re-detect after installation
-	client.Refresh()
-	if client.IsAvailable() {
+	// Re-detect after installation with retries
+	// After Add-AppxProvisionedPackage, the binary may not be immediately available
+	if client.RefreshWithRetry(5, 2*time.Second) {
 		logger.Info("winget installed successfully",
 			"version", client.GetVersion(),
 			"path", client.GetBinaryPath(),
@@ -146,6 +182,6 @@ func EnsureInstalled(ctx context.Context, logger *slog.Logger) error {
 		return nil
 	}
 
-	logger.Warn("winget installation completed but binary not found")
+	logger.Warn("winget installation completed but binary not found after retries")
 	return ErrInstallFailed
 }

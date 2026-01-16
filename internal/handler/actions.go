@@ -2425,8 +2425,17 @@ func (h *Handler) handleInstallWinget(ctx context.Context, data json.RawMessage)
 		}, nil
 	}
 
-	// Refresh and get new status
-	client.Refresh()
+	// Refresh and get new status with retries
+	// After Add-AppxProvisionedPackage, the binary may not be immediately available
+	if !client.RefreshWithRetry(5, 2*time.Second) {
+		h.logger.Warn("winget installation completed but binary not found after retries")
+		return map[string]interface{}{
+			"status":    "installed_pending",
+			"available": false,
+			"message":   "winget installed but not yet available, may require system restart",
+		}, nil
+	}
+
 	status := client.GetStatus()
 
 	h.logger.Info("winget installation completed",
