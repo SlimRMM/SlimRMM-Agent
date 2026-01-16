@@ -49,8 +49,9 @@ const (
 	httpClientTimeout  = 30 * time.Second
 
 	// Heartbeat configuration
-	fullHeartbeatInterval = 10 // Full heartbeat every N heartbeats (~5 minutes)
-	configSaveInterval    = 10 // Save config every N heartbeats (~5 minutes)
+	fullHeartbeatInterval   = 10  // Full heartbeat every N heartbeats (~5 minutes)
+	configSaveInterval      = 10  // Save config every N heartbeats (~5 minutes)
+	wingetUpdateInterval    = 120 // Winget update check every N heartbeats (~60 minutes)
 )
 
 // actionToResponseAction maps request action names to their response action names.
@@ -993,19 +994,24 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			}()
 		}
 
-		// Periodically clean up per-user winget installations and check for updates
+		// Periodically clean up per-user winget installations (every 5 min)
 		// This ensures users who install winget from Microsoft Store don't end up with duplicate installations
-		// and keeps winget up to date automatically
 		if status.Available && shouldRefresh {
 			go func() {
-				cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
-
-				// First, clean up any per-user installations
 				_ = winget.EnsureSystemOnly(cleanupCtx, h.logger)
+			}()
+		}
 
-				// Then check for and install winget updates
-				updated, err := winget.CheckAndUpdate(cleanupCtx, h.logger)
+		// Check for and install winget updates (every 60 min, tied to agent update interval)
+		shouldCheckWingetUpdate := h.heartbeatCount%wingetUpdateInterval == 0
+		if status.Available && shouldCheckWingetUpdate {
+			go func() {
+				updateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+				h.logger.Info("checking for winget updates (60-minute cycle)")
+				updated, err := winget.CheckAndUpdate(updateCtx, h.logger)
 				if err != nil {
 					h.logger.Warn("winget auto-update check failed", "error", err)
 				} else if updated {
