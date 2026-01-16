@@ -327,26 +327,17 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	}
 	u.logger.Info("extracted new binary", "path", newBinaryPath)
 
-	// On Windows, we must stop the service before replacing the binary because
-	// Windows locks running executables. On Unix (Linux/macOS), we can replace
-	// the binary while it's running - the kernel keeps the old one in memory.
+	// On Windows, we ALWAYS use the helper for updates. This is because:
+	// 1. The service cannot reliably stop itself mid-update (stop signal interrupts)
+	// 2. Windows locks running executables
+	// 3. The helper runs as a detached process that survives after we exit
+	//
+	// On Unix (Linux/macOS), we can replace the binary while it's running
+	// because the kernel keeps the old one in memory.
 	var useHelperForUpdate bool
 	if runtime.GOOS == "windows" {
-		if err := u.stopService(); err != nil {
-			u.logger.Warn("failed to stop service", "error", err)
-		}
-
-		// Wait for service to fully stop and verify binary is unlocked
-		u.waitForServiceStopped(15 * time.Second)
-
-		// Check if binary is still locked by trying to open it exclusively
-		if f, err := os.OpenFile(u.binaryPath, os.O_RDWR, 0); err != nil {
-			u.logger.Info("binary is still locked after service stop, will use helper", "error", err)
-			useHelperForUpdate = true
-		} else {
-			f.Close()
-			u.logger.Info("binary is unlocked, proceeding with direct update")
-		}
+		useHelperForUpdate = true
+		u.logger.Info("Windows detected, will use helper for update")
 	}
 
 	// Copy helper to install directory (Windows only)
