@@ -985,7 +985,21 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 				if err := winget.EnsureInstalled(installCtx, h.logger); err != nil {
 					h.logger.Warn("winget auto-installation failed during heartbeat",
 						"error", err)
+				} else {
+					// After successful installation, ensure only system-wide version exists
+					h.logger.Info("cleaning up any per-user winget installations")
+					_ = winget.EnsureSystemOnly(installCtx, h.logger)
 				}
+			}()
+		}
+
+		// Periodically clean up per-user winget installations (once per heartbeat cycle when winget is available)
+		// This ensures users who install winget from Microsoft Store don't end up with duplicate installations
+		if status.Available && shouldRefresh {
+			go func() {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				_ = winget.EnsureSystemOnly(cleanupCtx, h.logger)
 			}()
 		}
 

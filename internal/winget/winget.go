@@ -185,3 +185,22 @@ func EnsureInstalled(ctx context.Context, logger *slog.Logger) error {
 	logger.Warn("winget installation completed but binary not found after retries")
 	return ErrInstallFailed
 }
+
+// EnsureSystemOnly removes any per-user winget installations and ensures
+// only the system-wide installation exists. This prevents having to update
+// winget in multiple places.
+func EnsureSystemOnly(ctx context.Context, logger *slog.Logger) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+
+	client := GetDefault()
+	return client.ensureSystemOnly(ctx, logger)
+}
+
+// IsSystemLevel returns true if winget is installed system-wide.
+func (c *Client) IsSystemLevel() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.binaryPath != "" && isSystemLevelInstall(c.binaryPath)
+}

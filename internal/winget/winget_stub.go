@@ -3,7 +3,10 @@
 
 package winget
 
-import "context"
+import (
+	"context"
+	"log/slog"
+)
 
 // findWingetBinary returns empty on non-Windows platforms.
 func findWingetBinary() string {
@@ -23,4 +26,9 @@ func isSystemLevelInstall(binaryPath string) bool {
 // install returns an error on non-Windows platforms.
 func (c *Client) install(ctx context.Context) error {
 	return ErrNotWindows
+}
+
+// ensureSystemOnly is a no-op on non-Windows platforms.
+func (c *Client) ensureSystemOnly(ctx context.Context, logger *slog.Logger) error {
+	return nil
 }

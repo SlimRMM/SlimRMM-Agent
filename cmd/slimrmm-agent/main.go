@@ -613,6 +613,10 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 			logger.Warn("winget auto-installation failed",
 				"error", err,
 				"note", "winget features may be unavailable until installed")
+		} else {
+			// After installation, ensure only system-wide version exists
+			// This removes any per-user installations that might exist
+			_ = winget.EnsureSystemOnly(ctx, logger)
 		}
 	}()
 
@@ -790,6 +794,9 @@ func (r *agentRunner) Run(ctx context.Context) error {
 			r.logger.Warn("winget auto-installation failed",
 				"error", err,
 				"note", "winget features may be unavailable until installed")
+		} else {
+			// After installation, ensure only system-wide version exists
+			_ = winget.EnsureSystemOnly(wingetCtx, r.logger)
 		}
 	}()
 

@@ -333,6 +333,38 @@ func installFromGitHub(ctx context.Context) error {
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+Write-Host "Preparing for system-wide winget installation..."
+
+# Step 1: Remove ALL existing winget installations (per-user and provisioned)
+# This ensures only our new system-wide installation will exist
+Write-Host "Removing existing winget installations..."
+
+try {
+    # Remove provisioned package first (if exists)
+    $provisioned = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -eq "Microsoft.DesktopAppInstaller" }
+    if ($provisioned) {
+        Write-Host "Removing provisioned package: $($provisioned.PackageName)"
+        Remove-AppxProvisionedPackage -Online -PackageName $provisioned.PackageName -ErrorAction SilentlyContinue
+    }
+
+    # Remove all per-user installations using -AllUsers flag
+    # This requires admin rights which SYSTEM has
+    $packages = Get-AppxPackage -Name Microsoft.DesktopAppInstaller -AllUsers -ErrorAction SilentlyContinue
+    foreach ($pkg in $packages) {
+        Write-Host "Removing package: $($pkg.PackageFullName)"
+        try {
+            Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers -ErrorAction SilentlyContinue
+        } catch {
+            Write-Host "Could not remove $($pkg.PackageFullName): $_"
+        }
+    }
+
+    Write-Host "Existing installations removed"
+} catch {
+    Write-Host "Warning during cleanup: $_ (continuing with installation)"
+}
+
 Write-Host "Downloading winget and dependencies..."
 
 # Create temp directory
@@ -482,6 +514,77 @@ try {
 }
 `
 	return runPowerShellScript(ctx, script, 3*time.Minute)
+}
+
+// ensureSystemOnly removes per-user winget installations.
+// This ensures only the system-wide installation exists, preventing
+// the need to update winget in multiple places.
+func (c *Client) ensureSystemOnly(ctx context.Context, logger *slog.Logger) error {
+	logger.Info("checking for per-user winget installations to remove")
+
+	script := `
+$ErrorActionPreference = 'SilentlyContinue'
+$removed = 0
+
+# Get all winget installations across all users
+$allPackages = Get-AppxPackage -Name Microsoft.DesktopAppInstaller -AllUsers -ErrorAction SilentlyContinue
+
+# Get the provisioned package (system-wide)
+$provisioned = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
+    Where-Object { $_.DisplayName -eq "Microsoft.DesktopAppInstaller" }
+
+foreach ($pkg in $allPackages) {
+    # Check if this is a per-user installation (not the provisioned one)
+    # Per-user packages have different PackageUserInformation
+    $userInfo = $pkg.PackageUserInformation
+    if ($userInfo) {
+        foreach ($user in $userInfo) {
+            # Skip S-1-5-18 (SYSTEM) as that's our provisioned package
+            if ($user.UserSecurityId -ne 'S-1-5-18') {
+                Write-Host "Found per-user installation for SID: $($user.UserSecurityId)"
+                try {
+                    Remove-AppxPackage -Package $pkg.PackageFullName -User $user.UserSecurityId -ErrorAction Stop
+                    Write-Host "Removed per-user installation: $($pkg.PackageFullName)"
+                    $removed++
+                } catch {
+                    Write-Host "Could not remove for user $($user.UserSecurityId): $_"
+                }
+            }
+        }
+    }
+}
+
+if ($removed -gt 0) {
+    Write-Host "Removed $removed per-user installation(s)"
+} else {
+    Write-Host "No per-user installations found"
+}
+`
+
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-Command", script,
+	)
+
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+
+	logger.Debug("ensureSystemOnly output", "output", outputStr)
+
+	if err != nil {
+		// Don't fail on errors - per-user removal is best-effort
+		logger.Warn("could not remove all per-user installations",
+			"error", err,
+			"output", outputStr,
+		)
+	}
+
+	return nil
 }
 
 // runPowerShellScript executes a PowerShell script with timeout.
