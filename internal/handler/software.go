@@ -182,44 +182,53 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 		scope = "machine"
 	}
 
-	// Try user context first via helper if available
+	// Determine installation context based on scope
+	// - "machine" scope: Install directly in SYSTEM context (no UAC prompt, silent)
+	// - "user" scope: Try user context via helper first (may show UAC if elevation needed)
 	var output string
 	var exitCode int
 	var installContext string
 
-	helperClient, helperErr := helper.GetManager().Acquire()
-	if helperErr == nil {
-		defer helper.GetManager().Release()
+	if scope == "user" {
+		// User scope: try helper (user context) first
+		helperClient, helperErr := helper.GetManager().Acquire()
+		if helperErr == nil {
+			defer helper.GetManager().Release()
 
-		h.logger.Info("trying winget install in user context", "package_id", req.WingetPackageID)
-		h.SendRaw(map[string]interface{}{
-			"action":          "software_install_progress",
-			"installation_id": req.InstallationID,
-			"status":          "installing",
-			"output":          "Trying user context installation...\n",
-		})
+			h.logger.Info("trying winget install in user context", "package_id", req.WingetPackageID, "scope", scope)
+			h.SendRaw(map[string]interface{}{
+				"action":          "software_install_progress",
+				"installation_id": req.InstallationID,
+				"status":          "installing",
+				"output":          "Installing in user context...\n",
+			})
 
-		// Execute via helper (user context) using the proper install function
-		result, err := helperClient.InstallWingetPackage(wingetPath, req.WingetPackageID, req.WingetVersion, scope, req.Silent)
-		if err == nil && result != nil && result.Success {
-			output = result.Output
-			exitCode = result.ExitCode
-			installContext = "user"
-			h.logger.Info("winget install succeeded in user context", "package_id", req.WingetPackageID)
-		} else {
-			// Log the failure reason
-			errMsg := "unknown error"
-			if err != nil {
-				errMsg = err.Error()
-			} else if result != nil {
-				errMsg = result.Error
-				output = result.Output // Keep output for debugging
+			// Execute via helper (user context) using the proper install function
+			result, err := helperClient.InstallWingetPackage(wingetPath, req.WingetPackageID, req.WingetVersion, scope, req.Silent)
+			if err == nil && result != nil && result.Success {
+				output = result.Output
+				exitCode = result.ExitCode
+				installContext = "user"
+				h.logger.Info("winget install succeeded in user context", "package_id", req.WingetPackageID)
+			} else {
+				// Log the failure reason
+				errMsg := "unknown error"
+				if err != nil {
+					errMsg = err.Error()
+				} else if result != nil {
+					errMsg = result.Error
+					output = result.Output // Keep output for debugging
+				}
+				h.logger.Info("user context failed, trying system context", "package_id", req.WingetPackageID, "error", errMsg)
+				installContext = "system"
 			}
-			h.logger.Info("user context failed, trying system context", "package_id", req.WingetPackageID, "error", errMsg)
+		} else {
+			h.logger.Info("helper not available, using system context", "error", helperErr)
 			installContext = "system"
 		}
 	} else {
-		h.logger.Info("helper not available, using system context", "error", helperErr)
+		// Machine scope: go directly to system context (no UAC prompt)
+		h.logger.Info("using system context for machine scope installation", "package_id", req.WingetPackageID)
 		installContext = "system"
 	}
 
