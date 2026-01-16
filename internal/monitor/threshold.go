@@ -2,6 +2,8 @@
 package monitor
 
 import (
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -125,15 +127,12 @@ func (m *ThresholdMonitor) Update(stats *Stats) []ThresholdAlert {
 		alerts = append(alerts, *alert)
 	}
 
-	// Check disk threshold (use highest disk usage)
-	var maxDiskUsage float64
-	for _, d := range stats.Disk {
-		if d.UsedPercent > maxDiskUsage {
-			maxDiskUsage = d.UsedPercent
+	// Check disk threshold (only monitor system drive, not removable media)
+	systemDiskUsage := getSystemDiskUsage(stats.Disk)
+	if systemDiskUsage > 0 {
+		if alert := m.checkMetric(MetricDisk, systemDiskUsage, m.config.DiskWarning, m.config.DiskCritical, now); alert != nil {
+			alerts = append(alerts, *alert)
 		}
-	}
-	if alert := m.checkMetric(MetricDisk, maxDiskUsage, m.config.DiskWarning, m.config.DiskCritical, now); alert != nil {
-		alerts = append(alerts, *alert)
 	}
 
 	// Call callback for each alert
@@ -272,4 +271,46 @@ func (m *ThresholdMonitor) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.states = make(map[MetricType]*metricState)
+}
+
+// getSystemDiskUsage returns the usage percentage of the system drive only.
+// This avoids false alerts from removable media (USB sticks, CDs, etc.).
+// On Windows: returns C: drive usage
+// On Linux/macOS: returns / (root) mount point usage
+func getSystemDiskUsage(disks []DiskStats) float64 {
+	if len(disks) == 0 {
+		return 0
+	}
+
+	// Determine system mount point based on OS
+	var systemMountPoints []string
+	switch runtime.GOOS {
+	case "windows":
+		// Windows: C: drive is the system drive
+		systemMountPoints = []string{"C:", "C:\\"}
+	default:
+		// Linux/macOS: root mount point
+		systemMountPoints = []string{"/"}
+	}
+
+	// Find the system drive
+	for _, d := range disks {
+		mountpoint := strings.TrimSuffix(d.Mountpoint, "\\")
+		for _, sysMountpoint := range systemMountPoints {
+			if strings.EqualFold(mountpoint, sysMountpoint) {
+				return d.UsedPercent
+			}
+		}
+	}
+
+	// Fallback: if no system drive found, use first "real" disk
+	// (one with > 10GB total to exclude small removable media)
+	const minDiskSize = 10 * 1024 * 1024 * 1024 // 10 GB
+	for _, d := range disks {
+		if d.Total > minDiskSize {
+			return d.UsedPercent
+		}
+	}
+
+	return 0
 }
