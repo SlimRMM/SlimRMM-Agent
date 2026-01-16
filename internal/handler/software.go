@@ -13,16 +13,76 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/helper"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
 )
 
+// runningInstallation tracks a running installation process
+type runningInstallation struct {
+	cancel context.CancelFunc
+}
+
+// runningInstallations tracks all running installations by ID
+var runningInstallations = struct {
+	sync.RWMutex
+	m map[string]*runningInstallation
+}{m: make(map[string]*runningInstallation)}
+
 // registerSoftwareHandlers registers software installation handlers.
 func (h *Handler) registerSoftwareHandlers() {
 	h.handlers["install_software"] = h.handleInstallSoftware
 	h.handlers["download_and_install_msi"] = h.handleDownloadAndInstallMSI
+	h.handlers["cancel_software_install"] = h.handleCancelSoftwareInstall
+}
+
+// cancelSoftwareInstallRequest represents a cancel installation request.
+type cancelSoftwareInstallRequest struct {
+	InstallationID string `json:"installation_id"`
+}
+
+// handleCancelSoftwareInstall handles cancellation of a running software installation.
+func (h *Handler) handleCancelSoftwareInstall(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req cancelSoftwareInstallRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	h.logger.Info("received cancel request for installation", "installation_id", req.InstallationID)
+
+	runningInstallations.RLock()
+	installation, exists := runningInstallations.m[req.InstallationID]
+	runningInstallations.RUnlock()
+
+	if !exists {
+		h.logger.Warn("installation not found or already completed", "installation_id", req.InstallationID)
+		return map[string]interface{}{
+			"status":          "not_found",
+			"installation_id": req.InstallationID,
+			"message":         "installation not found or already completed",
+		}, nil
+	}
+
+	// Cancel the installation context
+	installation.cancel()
+
+	h.logger.Info("cancelled installation", "installation_id", req.InstallationID)
+
+	// Send cancellation result
+	response := map[string]interface{}{
+		"action":          "software_install_result",
+		"installation_id": req.InstallationID,
+		"status":          "cancelled",
+		"output":          "Installation cancelled by user request",
+	}
+	h.SendRaw(response)
+
+	return map[string]interface{}{
+		"status":          "cancelled",
+		"installation_id": req.InstallationID,
+	}, nil
 }
 
 // installSoftwareRequest represents a software installation request.
@@ -74,6 +134,16 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	// Track this installation so it can be cancelled
+	runningInstallations.Lock()
+	runningInstallations.m[req.InstallationID] = &runningInstallation{cancel: cancel}
+	runningInstallations.Unlock()
+	defer func() {
+		runningInstallations.Lock()
+		delete(runningInstallations.m, req.InstallationID)
+		runningInstallations.Unlock()
+	}()
 
 	// Send progress update
 	h.SendRaw(map[string]interface{}{
@@ -192,7 +262,10 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 	// Determine success
 	completedAt := time.Now()
 	status := "completed"
-	if exitCode != 0 {
+	if ctx.Err() == context.Canceled {
+		status = "cancelled"
+		output = "Installation cancelled by user request"
+	} else if exitCode != 0 {
 		status = "failed"
 	}
 
@@ -245,6 +318,16 @@ func (h *Handler) handleDownloadAndInstallMSI(ctx context.Context, data json.Raw
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	// Track this installation so it can be cancelled
+	runningInstallations.Lock()
+	runningInstallations.m[req.InstallationID] = &runningInstallation{cancel: cancel}
+	runningInstallations.Unlock()
+	defer func() {
+		runningInstallations.Lock()
+		delete(runningInstallations.m, req.InstallationID)
+		runningInstallations.Unlock()
+	}()
 
 	startedAt := time.Now()
 
@@ -355,7 +438,10 @@ func (h *Handler) handleDownloadAndInstallMSI(ctx context.Context, data json.Raw
 	// Determine success (msiexec returns 0 for success, 3010 for success with reboot required)
 	completedAt := time.Now()
 	status := "completed"
-	if exitCode != 0 && exitCode != 3010 {
+	if ctx.Err() == context.Canceled {
+		status = "cancelled"
+		output = "Installation cancelled by user request"
+	} else if exitCode != 0 && exitCode != 3010 {
 		status = "failed"
 	}
 
