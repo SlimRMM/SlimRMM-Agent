@@ -270,6 +270,7 @@ func getLogDirectory() string {
 }
 
 // findLogFiles returns all log files in the directory, sorted by modification time (newest first).
+// Includes both old format (agent.log) and new daily format (agent-YYYY-MM-DD.log).
 func findLogFiles(logDir string) ([]string, error) {
 	entries, err := os.ReadDir(logDir)
 	if err != nil {
@@ -287,6 +288,11 @@ func findLogFiles(logDir string) ([]string, error) {
 			continue
 		}
 		name := entry.Name()
+		// Include agent logs (old and new format) and json files
+		// Exclude the upload tracking file
+		if name == ".uploaded_logs.json" {
+			continue
+		}
 		if strings.HasSuffix(name, ".log") || strings.HasSuffix(name, ".json") {
 			info, err := entry.Info()
 			if err != nil {

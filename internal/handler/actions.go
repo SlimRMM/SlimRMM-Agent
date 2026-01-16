@@ -15,6 +15,7 @@ import (
 
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
 	"github.com/slimrmm/slimrmm-agent/internal/helper"
+	"github.com/slimrmm/slimrmm-agent/internal/logging"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/security/archive"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
@@ -2362,6 +2363,9 @@ func (h *Handler) handlePullLogs(ctx context.Context, data json.RawMessage) (int
 	}
 
 	h.logger.Info("logs read successfully", "count", len(logs))
+
+	// Mark current log file as uploaded for rotation tracking
+	logging.MarkCurrentLogUploaded()
 
 	return map[string]interface{}{
 		"logs": logs,

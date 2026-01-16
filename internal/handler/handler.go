@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
 	"github.com/slimrmm/slimrmm-agent/internal/config"
+	"github.com/slimrmm/slimrmm-agent/internal/logging"
 	"github.com/slimrmm/slimrmm-agent/internal/monitor"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/security/antireplay"
@@ -395,6 +396,9 @@ func (h *Handler) sendLogsPush(logs []actions.LogEntry) {
 		"timestamp": time.Now().Format(time.RFC3339),
 		"push_type": "threshold",
 	})
+
+	// Mark current log file as uploaded for rotation tracking
+	logging.MarkCurrentLogUploaded()
 }
 
 // sendSoftwareChanges sends software inventory changes to the backend.
