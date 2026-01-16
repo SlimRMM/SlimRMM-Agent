@@ -37,10 +37,12 @@ const (
 	MsgTypePong           = "pong"
 	MsgTypeError          = "error"
 	MsgTypeQuit           = "quit"
-	MsgTypeWingetScan     = "winget_scan"
-	MsgTypeWingetResult   = "winget_result"
-	MsgTypeWingetUpgrade  = "winget_upgrade"
+	MsgTypeWingetScan          = "winget_scan"
+	MsgTypeWingetResult        = "winget_result"
+	MsgTypeWingetUpgrade       = "winget_upgrade"
 	MsgTypeWingetUpgradeResult = "winget_upgrade_result"
+	MsgTypeWingetInstall       = "winget_install"
+	MsgTypeWingetInstallResult = "winget_install_result"
 )
 
 // Message is the IPC message format
@@ -114,6 +116,24 @@ type WingetUpgradeRequest struct {
 
 // WingetUpgradeResult contains the winget upgrade result
 type WingetUpgradeResult struct {
+	Success   bool   `json:"success"`
+	Output    string `json:"output"`
+	Error     string `json:"error,omitempty"`
+	ExitCode  int    `json:"exit_code"`
+	WingetLog string `json:"winget_log,omitempty"`
+}
+
+// WingetInstallRequest contains the winget install parameters
+type WingetInstallRequest struct {
+	WingetPath string `json:"winget_path,omitempty"`
+	PackageID  string `json:"package_id"`
+	Version    string `json:"version,omitempty"`
+	Scope      string `json:"scope,omitempty"` // "machine" or "user"
+	Silent     bool   `json:"silent"`
+}
+
+// WingetInstallResult contains the winget install result
+type WingetInstallResult struct {
 	Success   bool   `json:"success"`
 	Output    string `json:"output"`
 	Error     string `json:"error,omitempty"`
@@ -634,6 +654,48 @@ func (c *Client) UpgradeWingetPackage(wingetPath, packageID string) (*WingetUpgr
 	}
 
 	var result WingetUpgradeResult
+	if err := json.Unmarshal(msg.Payload, &result); err != nil {
+		return nil, err
+	}
+
+	return &result, nil
+}
+
+// InstallWingetPackage requests the helper to install a winget package in the user context
+func (c *Client) InstallWingetPackage(wingetPath, packageID, version, scope string, silent bool) (*WingetInstallResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	req := WingetInstallRequest{
+		WingetPath: wingetPath,
+		PackageID:  packageID,
+		Version:    version,
+		Scope:      scope,
+		Silent:     silent,
+	}
+	payload, _ := json.Marshal(req)
+	if err := c.sendMessage(&Message{Type: MsgTypeWingetInstall, Payload: payload}); err != nil {
+		return nil, err
+	}
+
+	msg, _, err := c.readMessage()
+	if err != nil {
+		return nil, err
+	}
+
+	if msg.Type == MsgTypeError {
+		return nil, fmt.Errorf("helper error: %s", string(msg.Payload))
+	}
+
+	if msg.Type != MsgTypeWingetInstallResult {
+		return nil, fmt.Errorf("unexpected response: %s", msg.Type)
+	}
+
+	var result WingetInstallResult
 	if err := json.Unmarshal(msg.Payload, &result); err != nil {
 		return nil, err
 	}

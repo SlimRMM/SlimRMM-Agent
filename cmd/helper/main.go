@@ -104,6 +104,8 @@ const (
 	MsgTypeWingetResult        = "winget_result"
 	MsgTypeWingetUpgrade       = "winget_upgrade"
 	MsgTypeWingetUpgradeResult = "winget_upgrade_result"
+	MsgTypeWingetInstall       = "winget_install"
+	MsgTypeWingetInstallResult = "winget_install_result"
 )
 
 // Message is the IPC message format
@@ -179,6 +181,24 @@ type WingetUpgradeRequest struct {
 
 // WingetUpgradeResult contains the winget upgrade result
 type WingetUpgradeResult struct {
+	Success   bool   `json:"success"`
+	Output    string `json:"output"`
+	Error     string `json:"error,omitempty"`
+	ExitCode  int    `json:"exit_code"`
+	WingetLog string `json:"winget_log,omitempty"`
+}
+
+// WingetInstallRequest contains the winget install parameters
+type WingetInstallRequest struct {
+	WingetPath string `json:"winget_path,omitempty"`
+	PackageID  string `json:"package_id"`
+	Version    string `json:"version,omitempty"`
+	Scope      string `json:"scope,omitempty"`
+	Silent     bool   `json:"silent"`
+}
+
+// WingetInstallResult contains the winget install result
+type WingetInstallResult struct {
 	Success   bool   `json:"success"`
 	Output    string `json:"output"`
 	Error     string `json:"error,omitempty"`
@@ -410,6 +430,14 @@ func handleMessage(msg *Message) (*Message, []byte) {
 			return &Message{Type: MsgTypeError, Payload: errPayload}, nil
 		}
 		return upgradeWingetPackage(req.WingetPath, req.PackageID)
+
+	case MsgTypeWingetInstall:
+		var req WingetInstallRequest
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			errPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
+			return &Message{Type: MsgTypeError, Payload: errPayload}, nil
+		}
+		return installWingetPackage(req.WingetPath, req.PackageID, req.Version, req.Scope, req.Silent)
 
 	case MsgTypeQuit:
 		return nil, nil
@@ -1348,4 +1376,108 @@ func upgradeWingetPackage(providedPath, packageID string) (*Message, []byte) {
 
 	payload, _ := json.Marshal(result)
 	return &Message{Type: MsgTypeWingetUpgradeResult, Payload: payload}, nil
+}
+
+// installWingetPackage runs winget install for a specific package in user context.
+func installWingetPackage(providedPath, packageID, version, scope string, silent bool) (*Message, []byte) {
+	log.Printf("Installing winget package in user context: %s (version: %s, scope: %s, silent: %v)", packageID, version, scope, silent)
+
+	result := WingetInstallResult{}
+
+	// Use provided path or try to find winget
+	wingetPath := providedPath
+	if wingetPath == "" {
+		var err error
+		wingetPath, err = exec.LookPath("winget")
+		if err != nil {
+			result.Error = "winget not found in PATH"
+			result.ExitCode = -1
+			payload, _ := json.Marshal(result)
+			return &Message{Type: MsgTypeWingetInstallResult, Payload: payload}, nil
+		}
+	}
+
+	log.Printf("Using winget at: %s", wingetPath)
+
+	// Create context with 15 minute timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	// Build winget install command
+	args := []string{
+		"install",
+		"--id", packageID,
+		"--accept-source-agreements",
+		"--accept-package-agreements",
+		"--disable-interactivity",
+	}
+
+	// Add version if specified
+	if version != "" && version != "latest" {
+		args = append(args, "--version", version)
+	}
+
+	// Add scope if specified
+	if scope != "" {
+		args = append(args, "--scope", scope)
+	}
+
+	// Add silent flag if requested
+	if silent {
+		args = append(args, "--silent")
+	}
+
+	cmd := exec.CommandContext(ctx, wingetPath, args...)
+
+	log.Printf("Starting winget install command: %s %v", wingetPath, args)
+
+	output, err := cmd.CombinedOutput()
+	result.Output = string(output)
+
+	log.Printf("Winget install command finished, output length: %d bytes", len(output))
+
+	if err != nil {
+		// Check for context timeout
+		if ctx.Err() == context.DeadlineExceeded {
+			result.ExitCode = -2
+			result.Error = "install timed out after 15 minutes"
+			log.Printf("Winget install timed out for package: %s", packageID)
+			result.WingetLog = getRecentWingetLog()
+			payload, _ := json.Marshal(result)
+			return &Message{Type: MsgTypeWingetInstallResult, Payload: payload}, nil
+		}
+
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+			log.Printf("Winget exit code: %d (0x%X)", result.ExitCode, uint32(result.ExitCode))
+
+			// Check for "already installed" - this is still a success
+			if result.ExitCode == 0x8A150061 { // APPINSTALLER_CLI_ERROR_PACKAGE_ALREADY_INSTALLED
+				result.Success = true
+				result.Error = "package already installed"
+			} else {
+				result.Error = fmt.Sprintf("install failed with exit code %d (0x%X)", result.ExitCode, uint32(result.ExitCode))
+			}
+		} else {
+			result.ExitCode = -1
+			result.Error = err.Error()
+		}
+	} else {
+		result.Success = true
+		result.ExitCode = 0
+	}
+
+	// If install failed, try to get winget logs
+	if !result.Success {
+		log.Printf("Attempting to retrieve winget log for failed install")
+		result.WingetLog = getRecentWingetLog()
+		if result.WingetLog != "" {
+			log.Printf("Retrieved winget log (%d bytes)", len(result.WingetLog))
+		}
+	}
+
+	log.Printf("Winget install completed: success=%v exitCode=%d error=%s", result.Success, result.ExitCode, result.Error)
+
+	payload, _ := json.Marshal(result)
+	return &Message{Type: MsgTypeWingetInstallResult, Payload: payload}, nil
 }

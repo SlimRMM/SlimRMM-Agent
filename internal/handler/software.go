@@ -129,34 +129,27 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 			"output":          "Trying user context installation...\n",
 		})
 
-		// For installation, we need to call winget directly via helper
-		// The helper runs in user context and can install packages
-		installArgs := []string{
-			"install",
-			"--id", req.WingetPackageID,
-			"--scope", scope,
-			"--accept-source-agreements",
-			"--accept-package-agreements",
-		}
-		if req.Silent {
-			installArgs = append(installArgs, "--silent")
-		}
-		if req.WingetVersion != "" && req.WingetVersion != "latest" {
-			installArgs = append(installArgs, "--version", req.WingetVersion)
-		}
-
-		// Execute via helper (user context)
-		result, err := helperClient.UpgradeWingetPackage(wingetPath, req.WingetPackageID)
+		// Execute via helper (user context) using the proper install function
+		result, err := helperClient.InstallWingetPackage(wingetPath, req.WingetPackageID, req.WingetVersion, scope, req.Silent)
 		if err == nil && result != nil && result.Success {
 			output = result.Output
 			exitCode = result.ExitCode
 			installContext = "user"
+			h.logger.Info("winget install succeeded in user context", "package_id", req.WingetPackageID)
 		} else {
-			// Fall back to system context
-			h.logger.Info("user context failed, trying system context", "package_id", req.WingetPackageID)
+			// Log the failure reason
+			errMsg := "unknown error"
+			if err != nil {
+				errMsg = err.Error()
+			} else if result != nil {
+				errMsg = result.Error
+				output = result.Output // Keep output for debugging
+			}
+			h.logger.Info("user context failed, trying system context", "package_id", req.WingetPackageID, "error", errMsg)
 			installContext = "system"
 		}
 	} else {
+		h.logger.Info("helper not available, using system context", "error", helperErr)
 		installContext = "system"
 	}
 
