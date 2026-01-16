@@ -232,31 +232,10 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 			"output":          "Installing in system context...\n",
 		})
 
-		args := []string{
-			"install",
-			"--id", req.WingetPackageID,
-			"--scope", scope,
-			"--accept-source-agreements",
-			"--accept-package-agreements",
-		}
-		if req.Silent {
-			args = append(args, "--silent")
-		}
-		if req.WingetVersion != "" && req.WingetVersion != "latest" {
-			args = append(args, "--version", req.WingetVersion)
-		}
-
-		cmd := exec.CommandContext(ctx, wingetPath, args...)
-		outputBytes, err := cmd.CombinedOutput()
-		output = string(outputBytes)
-
-		if err != nil {
-			if exitError, ok := err.(*exec.ExitError); ok {
-				exitCode = exitError.ExitCode()
-			} else {
-				exitCode = -1
-			}
-		}
+		// Use PowerShell to run winget - this ensures proper environment setup
+		// Direct winget execution from SYSTEM service context often fails with
+		// STATUS_DLL_NOT_FOUND (0xC0000135) due to missing dependencies in PATH
+		output, exitCode = runWingetViaPowerShell(ctx, wingetPath, req.WingetPackageID, req.WingetVersion, scope, req.Silent, h.logger)
 	}
 
 	// Determine success
@@ -558,6 +537,125 @@ func calculateFileHash(path string) (string, error) {
 	}
 
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// runWingetViaPowerShell executes winget install through PowerShell.
+// This is necessary because running winget.exe directly from a SYSTEM service
+// context often fails with STATUS_DLL_NOT_FOUND (0xC0000135) due to missing
+// dependencies in the process environment. PowerShell properly initializes
+// the Windows environment and can run winget successfully.
+func runWingetViaPowerShell(ctx context.Context, wingetPath, packageID, version, scope string, silent bool, logger interface{ Info(msg string, args ...any) }) (string, int) {
+	// Build PowerShell script that runs winget with proper environment
+	versionArg := ""
+	if version != "" && version != "latest" {
+		versionArg = fmt.Sprintf("'--version', '%s',", version)
+	}
+
+	silentArg := ""
+	if silent {
+		silentArg = "'--silent',"
+	}
+
+	// PowerShell script to run winget
+	// Using Start-Process with -Wait to properly capture exit code
+	script := fmt.Sprintf(`
+$ErrorActionPreference = 'Continue'
+$env:WINGET_DISABLE_INTERACTIVITY = '1'
+
+# Try to find winget if path doesn't work directly
+$wingetPath = '%s'
+if (-not (Test-Path $wingetPath)) {
+    # Search in WindowsApps
+    $dirs = Get-ChildItem 'C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*' -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+    foreach ($dir in $dirs) {
+        $path = Join-Path $dir.FullName 'winget.exe'
+        if (Test-Path $path) {
+            $wingetPath = $path
+            break
+        }
+    }
+}
+
+if (-not (Test-Path $wingetPath)) {
+    Write-Host "ERROR: winget.exe not found"
+    exit 1
+}
+
+Write-Host "Using winget at: $wingetPath"
+
+# Build arguments
+$args = @(
+    'install',
+    '--id', '%s',
+    '--scope', '%s',
+    '--accept-source-agreements',
+    '--accept-package-agreements',
+    %s
+    %s
+    '--disable-interactivity'
+)
+
+# Remove empty args
+$args = $args | Where-Object { $_ -ne '' }
+
+Write-Host "Running: winget $($args -join ' ')"
+
+# Run winget and capture output
+$pinfo = New-Object System.Diagnostics.ProcessStartInfo
+$pinfo.FileName = $wingetPath
+$pinfo.Arguments = $args -join ' '
+$pinfo.RedirectStandardOutput = $true
+$pinfo.RedirectStandardError = $true
+$pinfo.UseShellExecute = $false
+$pinfo.CreateNoWindow = $true
+
+$process = New-Object System.Diagnostics.Process
+$process.StartInfo = $pinfo
+
+try {
+    $process.Start() | Out-Null
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+
+    Write-Host $stdout
+    if ($stderr) { Write-Host "STDERR: $stderr" }
+
+    exit $process.ExitCode
+} catch {
+    Write-Host "ERROR: $_"
+    exit 1
+}
+`, wingetPath, packageID, scope, versionArg, silentArg)
+
+	cmd := exec.CommandContext(ctx, "powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-Command", script,
+	)
+
+	outputBytes, err := cmd.CombinedOutput()
+	output := string(outputBytes)
+
+	exitCode := 0
+	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+
+	if logger != nil {
+		logger.Info("winget via PowerShell completed",
+			"package_id", packageID,
+			"exit_code", exitCode,
+			"output_length", len(output),
+		)
+	}
+
+	return output, exitCode
 }
 
 // parseArgs splits a string into arguments (simple implementation).
