@@ -138,7 +138,9 @@ func (c *Client) Query(ctx context.Context, query string) (*QueryResult, error) 
 
 	start := time.Now()
 
-	cmd := exec.CommandContext(ctx, c.binaryPath, "--json", query)
+	// Use "--" to signal end of options, preventing SQL comments (--) from being
+	// interpreted as command-line flags
+	cmd := exec.CommandContext(ctx, c.binaryPath, "--json", "--", query)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

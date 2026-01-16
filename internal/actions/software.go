@@ -836,10 +836,12 @@ if ($UpdatesArray.Count -gt 0) {
 
 	var rawUpdates []map[string]interface{}
 	if err := parseWindowsUpdateJSON(jsonData, &rawUpdates); err != nil {
-		slog.Warn("failed to parse updates JSON as array", "error", err, "json", jsonData)
+		// Try parsing as single object (expected when only one update is available)
 		var singleUpdate map[string]interface{}
 		if err := parseWindowsUpdateJSON(jsonData, &singleUpdate); err == nil {
 			rawUpdates = append(rawUpdates, singleUpdate)
+		} else {
+			slog.Debug("failed to parse updates JSON", "error", err)
 		}
 	}
 

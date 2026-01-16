@@ -264,15 +264,37 @@ func canExecuteAsSystem(path string) bool {
 }
 
 // getWingetVersion extracts the version from winget --version output.
+// Uses PowerShell to run winget because direct execution from SYSTEM context
+// may fail with DLL not found errors.
 func getWingetVersion(binaryPath string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, binaryPath, "--version")
-	cmd.Env = append(os.Environ(), "WINGET_DISABLE_INTERACTIVITY=1")
+	// Use PowerShell to run winget --version
+	// This ensures proper environment setup for SYSTEM service context
+	script := fmt.Sprintf(`
+$env:WINGET_DISABLE_INTERACTIVITY = '1'
+$wingetPath = '%s'
+if (Test-Path $wingetPath) {
+    try {
+        $output = & $wingetPath --version 2>&1
+        Write-Output $output
+    } catch {
+        Write-Output ""
+    }
+}
+`, binaryPath)
+
+	cmd := exec.CommandContext(ctx, "powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-Command", script,
+	)
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		slog.Debug("failed to get winget version", "error", err)
+		slog.Debug("failed to get winget version via PowerShell", "error", err)
 		return ""
 	}
 
