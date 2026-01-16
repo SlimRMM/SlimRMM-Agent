@@ -204,3 +204,23 @@ func (c *Client) IsSystemLevel() bool {
 	defer c.mu.RUnlock()
 	return c.binaryPath != "" && isSystemLevelInstall(c.binaryPath)
 }
+
+// Update checks if winget has an update available and installs it.
+// This updates winget system-wide using the same method as initial installation.
+func (c *Client) Update(ctx context.Context) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	return c.update(ctx)
+}
+
+// CheckAndUpdate checks if winget needs updating and updates it if necessary.
+// Returns true if an update was performed.
+func CheckAndUpdate(ctx context.Context, logger *slog.Logger) (bool, error) {
+	if runtime.GOOS != "windows" {
+		return false, nil
+	}
+
+	client := GetDefault()
+	return client.checkAndUpdate(ctx, logger)
+}

@@ -32,3 +32,13 @@ func (c *Client) install(ctx context.Context) error {
 func (c *Client) ensureSystemOnly(ctx context.Context, logger *slog.Logger) error {
 	return nil
 }
+
+// update is a no-op on non-Windows platforms.
+func (c *Client) update(ctx context.Context) error {
+	return nil
+}
+
+// checkAndUpdate is a no-op on non-Windows platforms.
+func (c *Client) checkAndUpdate(ctx context.Context, logger *slog.Logger) (bool, error) {
+	return false, nil
+}

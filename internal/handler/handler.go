@@ -993,13 +993,24 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			}()
 		}
 
-		// Periodically clean up per-user winget installations (once per heartbeat cycle when winget is available)
+		// Periodically clean up per-user winget installations and check for updates
 		// This ensures users who install winget from Microsoft Store don't end up with duplicate installations
+		// and keeps winget up to date automatically
 		if status.Available && shouldRefresh {
 			go func() {
-				cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 				defer cancel()
+
+				// First, clean up any per-user installations
 				_ = winget.EnsureSystemOnly(cleanupCtx, h.logger)
+
+				// Then check for and install winget updates
+				updated, err := winget.CheckAndUpdate(cleanupCtx, h.logger)
+				if err != nil {
+					h.logger.Warn("winget auto-update check failed", "error", err)
+				} else if updated {
+					h.logger.Info("winget was auto-updated to latest version")
+				}
 			}()
 		}
 

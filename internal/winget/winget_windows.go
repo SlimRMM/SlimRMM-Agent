@@ -516,6 +516,91 @@ try {
 	return runPowerShellScript(ctx, script, 3*time.Minute)
 }
 
+// checkAndUpdate checks if winget has an update and installs it.
+func (c *Client) checkAndUpdate(ctx context.Context, logger *slog.Logger) (bool, error) {
+	logger.Info("checking for winget updates")
+
+	// Use winget to check if App Installer (winget itself) has an update
+	script := `
+$ErrorActionPreference = 'SilentlyContinue'
+
+# Find winget path
+$wingetPath = $null
+$dirs = Get-ChildItem "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+foreach ($dir in $dirs) {
+    $path = Join-Path $dir.FullName "winget.exe"
+    if (Test-Path $path) {
+        $wingetPath = $path
+        break
+    }
+}
+
+if (-not $wingetPath) {
+    Write-Host "WINGET_NOT_FOUND"
+    exit 0
+}
+
+# Check for updates to winget itself
+$env:WINGET_DISABLE_INTERACTIVITY = "1"
+$output = & $wingetPath upgrade --id Microsoft.AppInstaller --source winget 2>&1
+
+if ($output -match "No installed package found" -or $output -match "No applicable update found") {
+    Write-Host "NO_UPDATE"
+    exit 0
+}
+
+if ($output -match "Available" -or $output -match "upgrade") {
+    Write-Host "UPDATE_AVAILABLE"
+    exit 0
+}
+
+Write-Host "NO_UPDATE"
+`
+
+	checkCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(checkCtx, "powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-Command", script,
+	)
+
+	output, err := cmd.CombinedOutput()
+	outputStr := strings.TrimSpace(string(output))
+
+	logger.Debug("winget update check output", "output", outputStr)
+
+	if err != nil {
+		logger.Warn("winget update check failed", "error", err)
+		return false, nil // Don't fail, just skip update
+	}
+
+	if strings.Contains(outputStr, "UPDATE_AVAILABLE") {
+		logger.Info("winget update available, installing")
+		if err := c.update(ctx); err != nil {
+			logger.Error("winget update failed", "error", err)
+			return false, err
+		}
+		// Refresh detection after update
+		c.RefreshWithRetry(3, 2*time.Second)
+		logger.Info("winget updated successfully", "new_version", c.GetVersion())
+		return true, nil
+	}
+
+	logger.Debug("no winget update available")
+	return false, nil
+}
+
+// update performs the actual winget update by reinstalling from GitHub.
+func (c *Client) update(ctx context.Context) error {
+	slog.Info("updating winget to latest version")
+
+	// We use the same installation method - it will remove old and install new
+	return installFromGitHub(ctx)
+}
+
 // ensureSystemOnly removes per-user winget installations.
 // This ensures only the system-wide installation exists, preventing
 // the need to update winget in multiple places.
