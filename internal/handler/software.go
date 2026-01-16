@@ -182,53 +182,52 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 		scope = "machine"
 	}
 
-	// Determine installation context based on scope
-	// - "machine" scope: Install directly in SYSTEM context (no UAC prompt, silent)
-	// - "user" scope: Try user context via helper first (may show UAC if elevation needed)
+	// Always use helper (user context) for winget installations.
+	// The --scope parameter determines WHERE software is installed (machine=all users, user=current user),
+	// but winget.exe must run in user context because:
+	// 1. SYSTEM context lacks DLL dependencies (STATUS_DLL_NOT_FOUND / 0xC0000135)
+	// 2. winget is a Windows Store app that requires user environment
+	// 3. The helper runs silently without UAC prompts
 	var output string
 	var exitCode int
 	var installContext string
 
-	if scope == "user" {
-		// User scope: try helper (user context) first
-		helperClient, helperErr := helper.GetManager().Acquire()
-		if helperErr == nil {
-			defer helper.GetManager().Release()
+	helperClient, helperErr := helper.GetManager().Acquire()
+	if helperErr == nil {
+		defer helper.GetManager().Release()
 
-			h.logger.Info("trying winget install in user context", "package_id", req.WingetPackageID, "scope", scope)
-			h.SendRaw(map[string]interface{}{
-				"action":          "software_install_progress",
-				"installation_id": req.InstallationID,
-				"status":          "installing",
-				"output":          "Installing in user context...\n",
-			})
+		h.logger.Info("installing via helper", "package_id", req.WingetPackageID, "scope", scope)
+		h.SendRaw(map[string]interface{}{
+			"action":          "software_install_progress",
+			"installation_id": req.InstallationID,
+			"status":          "installing",
+			"output":          fmt.Sprintf("Installing %s (scope: %s)...\n", req.WingetPackageID, scope),
+		})
 
-			// Execute via helper (user context) using the proper install function
-			result, err := helperClient.InstallWingetPackage(wingetPath, req.WingetPackageID, req.WingetVersion, scope, req.Silent)
-			if err == nil && result != nil && result.Success {
-				output = result.Output
-				exitCode = result.ExitCode
-				installContext = "user"
-				h.logger.Info("winget install succeeded in user context", "package_id", req.WingetPackageID)
-			} else {
-				// Log the failure reason
-				errMsg := "unknown error"
-				if err != nil {
-					errMsg = err.Error()
-				} else if result != nil {
-					errMsg = result.Error
-					output = result.Output // Keep output for debugging
-				}
-				h.logger.Info("user context failed, trying system context", "package_id", req.WingetPackageID, "error", errMsg)
-				installContext = "system"
-			}
+		// Execute via helper - scope parameter controls machine vs user installation
+		result, err := helperClient.InstallWingetPackage(wingetPath, req.WingetPackageID, req.WingetVersion, scope, req.Silent)
+		if err == nil && result != nil && result.Success {
+			output = result.Output
+			exitCode = result.ExitCode
+			installContext = "helper"
+			h.logger.Info("winget install succeeded via helper", "package_id", req.WingetPackageID, "scope", scope)
 		} else {
-			h.logger.Info("helper not available, using system context", "error", helperErr)
-			installContext = "system"
+			// Log the failure reason
+			errMsg := "unknown error"
+			if err != nil {
+				errMsg = err.Error()
+			} else if result != nil {
+				errMsg = result.Error
+				output = result.Output // Keep output for debugging
+				exitCode = result.ExitCode
+			}
+			h.logger.Warn("helper install failed", "package_id", req.WingetPackageID, "error", errMsg, "exit_code", exitCode)
+			// Don't fall back to system context - it will fail with DLL errors
+			// Just report the failure
+			installContext = "helper"
 		}
 	} else {
-		// Machine scope: go directly to system context (no UAC prompt)
-		h.logger.Info("using system context for machine scope installation", "package_id", req.WingetPackageID)
+		h.logger.Warn("helper not available, trying system context (may fail)", "error", helperErr)
 		installContext = "system"
 	}
 
