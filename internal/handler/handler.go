@@ -963,7 +963,7 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 	}
 
 	// Add winget info on Windows - always include on full heartbeats
-	// This ensures the backend can trigger auto-install when the setting is enabled
+	// Auto-install winget if not available (runs asynchronously)
 	if runtime.GOOS == "windows" {
 		wingetClient := winget.GetDefault()
 		// Periodically refresh winget detection to reduce CPU overhead
@@ -975,6 +975,20 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			wingetClient.Refresh()
 		}
 		status := wingetClient.GetStatus()
+
+		// Auto-install winget if not available (trigger asynchronously every full heartbeat cycle)
+		if !status.Available && shouldRefresh {
+			go func() {
+				installCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+				h.logger.Info("winget not available, attempting auto-installation")
+				if err := winget.EnsureInstalled(installCtx, h.logger); err != nil {
+					h.logger.Warn("winget auto-installation failed during heartbeat",
+						"error", err)
+				}
+			}()
+		}
+
 		wingetData := &HeartbeatWinget{
 			Available:       status.Available,
 			Version:         status.Version,

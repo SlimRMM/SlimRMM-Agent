@@ -603,6 +603,19 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 		}
 	}()
 
+	// Ensure winget is installed system-wide (Windows only)
+	// This runs asynchronously to not block agent startup
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		if err := winget.EnsureInstalled(ctx, logger); err != nil {
+			logger.Warn("winget auto-installation failed",
+				"error", err,
+				"note", "winget features may be unavailable until installed")
+		}
+	}()
+
 	// Load configuration
 	cfg, err := config.Load(paths.ConfigFile)
 	if err != nil {
@@ -765,6 +778,18 @@ func (r *agentRunner) Run(ctx context.Context) error {
 			r.logger.Warn("osquery auto-installation failed",
 				"error", err,
 				"note", "osquery features may be unavailable")
+		}
+	}()
+
+	// Ensure winget is installed system-wide (Windows only)
+	go func() {
+		wingetCtx, wingetCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer wingetCancel()
+
+		if err := winget.EnsureInstalled(wingetCtx, r.logger); err != nil {
+			r.logger.Warn("winget auto-installation failed",
+				"error", err,
+				"note", "winget features may be unavailable until installed")
 		}
 	}()
 
