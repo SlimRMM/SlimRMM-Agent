@@ -311,6 +311,22 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	// Set up log push callback for proactive log forwarding
 	actions.SetGlobalLogPushCallback(h.sendLogsPush)
 
+	// Bootstrap PowerShell 7 and WinGet.Client module on startup (Windows only)
+	// This runs in background to not block agent startup
+	go func() {
+		bootstrapCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		logger.Info("initial WinGet environment bootstrap starting")
+		changed, err := winget.BootstrapWinGetEnvironment(bootstrapCtx, logger)
+		if err != nil {
+			logger.Warn("initial WinGet environment bootstrap failed", "error", err)
+		} else if changed {
+			logger.Info("WinGet environment initialized (PS7 and/or WinGet.Client module installed)")
+		} else {
+			logger.Debug("WinGet environment already up to date")
+		}
+	}()
+
 	return h
 }
 
