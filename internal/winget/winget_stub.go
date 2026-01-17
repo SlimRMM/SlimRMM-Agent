@@ -42,3 +42,8 @@ func (c *Client) update(ctx context.Context) error {
 func (c *Client) checkAndUpdate(ctx context.Context, logger *slog.Logger) (bool, error) {
 	return false, nil
 }
+
+// detectPowerShell7AndModule returns false on non-Windows platforms.
+func detectPowerShell7AndModule() (ps7Available bool, moduleAvailable bool) {
+	return false, false
+}

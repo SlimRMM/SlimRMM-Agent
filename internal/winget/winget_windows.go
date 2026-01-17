@@ -717,3 +717,55 @@ func runPowerShellScript(ctx context.Context, script string, timeout time.Durati
 
 	return nil
 }
+
+// detectPowerShell7AndModule checks if PowerShell 7 and the Microsoft.WinGet.Client module are available.
+// This is the preferred method for WinGet operations as it avoids DLL loading issues.
+func detectPowerShell7AndModule() (ps7Available bool, moduleAvailable bool) {
+	ps7Path := `C:\Program Files\PowerShell\7\pwsh.exe`
+
+	// Check if PowerShell 7 exists
+	if _, err := os.Stat(ps7Path); os.IsNotExist(err) {
+		slog.Debug("PowerShell 7 not found")
+		return false, false
+	}
+
+	slog.Debug("PowerShell 7 found", "path", ps7Path)
+	ps7Available = true
+
+	// Check if Microsoft.WinGet.Client module is installed
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	script := `
+$ErrorActionPreference = 'SilentlyContinue'
+$module = Get-Module -ListAvailable -Name Microsoft.WinGet.Client | Select-Object -First 1
+if ($module) {
+    Write-Output "AVAILABLE"
+} else {
+    Write-Output "NOT_FOUND"
+}
+`
+
+	cmd := exec.CommandContext(ctx, ps7Path,
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-Command", script,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Debug("failed to check WinGet.Client module", "error", err)
+		return ps7Available, false
+	}
+
+	outputStr := strings.TrimSpace(string(output))
+	moduleAvailable = strings.Contains(outputStr, "AVAILABLE")
+
+	slog.Debug("WinGet.Client module check",
+		"ps7_available", ps7Available,
+		"module_available", moduleAvailable,
+	)
+
+	return ps7Available, moduleAvailable
+}

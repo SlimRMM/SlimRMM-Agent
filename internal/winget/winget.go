@@ -18,10 +18,13 @@ type Client struct {
 
 // Status represents the current winget installation status.
 type Status struct {
-	Available   bool   `json:"available"`
-	Version     string `json:"version,omitempty"`
-	BinaryPath  string `json:"binary_path,omitempty"`
-	SystemLevel bool   `json:"system_level"`
+	Available                   bool   `json:"available"`
+	Version                     string `json:"version,omitempty"`
+	BinaryPath                  string `json:"binary_path,omitempty"`
+	SystemLevel                 bool   `json:"system_level"`
+	PowerShell7Available        bool   `json:"powershell7_available"`
+	WinGetClientModuleAvailable bool   `json:"winget_client_module_available"`
+	LastRepair                  string `json:"last_repair,omitempty"`
 }
 
 var (
@@ -133,11 +136,16 @@ func (c *Client) GetBinaryPath() string {
 func (c *Client) GetStatus() Status {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+
+	ps7Available, moduleAvailable := detectPowerShell7AndModule()
+
 	return Status{
-		Available:   c.binaryPath != "",
-		Version:     c.version,
-		BinaryPath:  c.binaryPath,
-		SystemLevel: c.binaryPath != "" && isSystemLevelInstall(c.binaryPath),
+		Available:                   c.binaryPath != "",
+		Version:                     c.version,
+		BinaryPath:                  c.binaryPath,
+		SystemLevel:                 c.binaryPath != "" && isSystemLevelInstall(c.binaryPath),
+		PowerShell7Available:        ps7Available,
+		WinGetClientModuleAvailable: moduleAvailable,
 	}
 }
 
