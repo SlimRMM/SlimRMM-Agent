@@ -321,8 +321,9 @@ try {
     }
 
     # Add Scope for install/upgrade (not applicable for uninstall)
+    # WinGet.Client module uses 'System' instead of 'Machine' for machine-level scope
     if ('%s' -ne 'Uninstall-WinGetPackage') {
-        $params['Scope'] = 'Machine'
+        $params['Scope'] = 'System'
     }
 
     # Add version if specified
