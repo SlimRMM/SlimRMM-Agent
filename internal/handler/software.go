@@ -309,6 +309,7 @@ if ($module) {
 	}
 
 	// Build the PowerShell 7 command
+	// The WinGet.Client cmdlets return objects with Status property we need to check
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 try {
@@ -329,7 +330,32 @@ try {
     # Add version if specified
     %s
 
-    %s @params
+    # Execute and capture result
+    $result = %s @params
+
+    # Output result details for logging
+    Write-Host "Operation completed"
+    if ($result) {
+        Write-Host "Result Status: $($result.Status)"
+        Write-Host "Result Id: $($result.Id)"
+        if ($result.InstallerErrorCode) {
+            Write-Host "Installer Error Code: $($result.InstallerErrorCode)"
+        }
+        if ($result.RebootRequired) {
+            Write-Host "Reboot Required: $($result.RebootRequired)"
+        }
+
+        # Check if installation actually succeeded
+        # Status can be: Ok, NoApplicableInstallers, PackageInUse, InstallError, etc.
+        $successStatuses = @('Ok', 'NoApplicableUpgrade')
+        if ($result.Status -and $successStatuses -notcontains $result.Status.ToString()) {
+            Write-Host "WinGet.Client error: Operation returned status: $($result.Status)"
+            if ($result.ExtendedErrorCode) {
+                Write-Host "Extended Error: $($result.ExtendedErrorCode)"
+            }
+            exit 1
+        }
+    }
 
     exit 0
 }
