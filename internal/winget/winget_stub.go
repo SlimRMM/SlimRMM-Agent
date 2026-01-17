@@ -47,3 +47,18 @@ func (c *Client) checkAndUpdate(ctx context.Context, logger *slog.Logger) (bool,
 func detectPowerShell7AndModule() (ps7Available bool, moduleAvailable bool) {
 	return false, false
 }
+
+// BootstrapWinGetEnvironment is a no-op on non-Windows platforms.
+func BootstrapWinGetEnvironment(ctx context.Context, logger *slog.Logger) (bool, error) {
+	return false, nil
+}
+
+// EnsurePowerShell7 is a no-op on non-Windows platforms.
+func EnsurePowerShell7(ctx context.Context, logger *slog.Logger) (bool, error) {
+	return false, nil
+}
+
+// EnsureWinGetClientModule is a no-op on non-Windows platforms.
+func EnsureWinGetClientModule(ctx context.Context, logger *slog.Logger) (bool, error) {
+	return false, nil
+}

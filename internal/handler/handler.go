@@ -97,11 +97,13 @@ type HeartbeatMessage struct {
 
 // HeartbeatWinget contains Windows Package Manager (winget) information.
 type HeartbeatWinget struct {
-	Available       bool   `json:"available"`
-	Version         string `json:"version,omitempty"`
-	BinaryPath      string `json:"binary_path,omitempty"`
-	SystemLevel     bool   `json:"system_level"`
-	HelperAvailable bool   `json:"helper_available"` // Available via helper in user context
+	Available                   bool   `json:"available"`
+	Version                     string `json:"version,omitempty"`
+	BinaryPath                  string `json:"binary_path,omitempty"`
+	SystemLevel                 bool   `json:"system_level"`
+	HelperAvailable             bool   `json:"helper_available"`                // Available via helper in user context
+	PowerShell7Available        bool   `json:"powershell7_available"`           // PowerShell 7 is installed
+	WinGetClientModuleAvailable bool   `json:"winget_client_module_available"`  // Microsoft.WinGet.Client module is available
 }
 
 // HeartbeatProxmox contains Proxmox host information.
@@ -1024,12 +1026,32 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			}()
 		}
 
+		// Bootstrap PowerShell 7 and WinGet.Client module (every 60 min, alongside winget updates)
+		// This ensures the optimal WinGet execution method is available
+		if shouldCheckWingetUpdate {
+			go func() {
+				bootstrapCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+				defer cancel()
+				h.logger.Info("bootstrapping WinGet environment (PS7 + WinGet.Client module)")
+				changed, err := winget.BootstrapWinGetEnvironment(bootstrapCtx, h.logger)
+				if err != nil {
+					h.logger.Warn("WinGet environment bootstrap failed", "error", err)
+				} else if changed {
+					h.logger.Info("WinGet environment was updated (PS7 or WinGet.Client module installed/updated)")
+					// Refresh winget status after bootstrap
+					wingetClient.Refresh()
+				}
+			}()
+		}
+
 		wingetData := &HeartbeatWinget{
-			Available:       status.Available,
-			Version:         status.Version,
-			BinaryPath:      status.BinaryPath,
-			SystemLevel:     status.SystemLevel,
-			HelperAvailable: helperAvailable,
+			Available:                   status.Available,
+			Version:                     status.Version,
+			BinaryPath:                  status.BinaryPath,
+			SystemLevel:                 status.SystemLevel,
+			HelperAvailable:             helperAvailable,
+			PowerShell7Available:        status.PowerShell7Available,
+			WinGetClientModuleAvailable: status.WinGetClientModuleAvailable,
 		}
 		// Always include winget data on full heartbeats so backend can trigger auto-install
 		heartbeat.Winget = wingetData

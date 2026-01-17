@@ -769,3 +769,282 @@ if ($module) {
 
 	return ps7Available, moduleAvailable
 }
+
+// BootstrapWinGetEnvironment ensures PowerShell 7 and the WinGet.Client module are installed.
+// This should be called during agent startup or periodically.
+// Returns true if any changes were made.
+func BootstrapWinGetEnvironment(ctx context.Context, logger *slog.Logger) (bool, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	changed := false
+
+	// Step 1: Ensure PowerShell 7 is installed and up to date
+	ps7Changed, err := EnsurePowerShell7(ctx, logger)
+	if err != nil {
+		logger.Error("failed to ensure PowerShell 7", "error", err)
+		// Continue anyway - maybe PS7 is already installed
+	}
+	if ps7Changed {
+		changed = true
+	}
+
+	// Step 2: Ensure WinGet.Client module is installed
+	moduleChanged, err := EnsureWinGetClientModule(ctx, logger)
+	if err != nil {
+		logger.Error("failed to ensure WinGet.Client module", "error", err)
+	}
+	if moduleChanged {
+		changed = true
+	}
+
+	return changed, nil
+}
+
+// EnsurePowerShell7 checks if PowerShell 7 is installed and installs/updates it if needed.
+// Returns true if PS7 was installed or updated.
+func EnsurePowerShell7(ctx context.Context, logger *slog.Logger) (bool, error) {
+	ps7Path := `C:\Program Files\PowerShell\7\pwsh.exe`
+
+	// Check if PS7 is already installed
+	currentVersion := ""
+	if _, err := os.Stat(ps7Path); err == nil {
+		// Get current version
+		versionCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		cmd := exec.CommandContext(versionCtx, ps7Path, "--version")
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			currentVersion = strings.TrimSpace(string(output))
+			currentVersion = strings.TrimPrefix(currentVersion, "PowerShell ")
+		}
+		logger.Info("PowerShell 7 already installed", "version", currentVersion)
+	}
+
+	// Check for latest version from GitHub
+	latestVersion, downloadURL, err := getLatestPowerShell7Release(ctx)
+	if err != nil {
+		logger.Warn("failed to check for PS7 updates", "error", err)
+		if currentVersion != "" {
+			// Already have PS7, just continue
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to get PS7 release info: %w", err)
+	}
+
+	// Compare versions
+	if currentVersion != "" && currentVersion == latestVersion {
+		logger.Debug("PowerShell 7 is up to date", "version", currentVersion)
+		return false, nil
+	}
+
+	// Install or update PS7
+	if currentVersion == "" {
+		logger.Info("installing PowerShell 7", "version", latestVersion)
+	} else {
+		logger.Info("updating PowerShell 7", "from", currentVersion, "to", latestVersion)
+	}
+
+	if err := installPowerShell7(ctx, downloadURL, logger); err != nil {
+		return false, fmt.Errorf("failed to install PowerShell 7: %w", err)
+	}
+
+	logger.Info("PowerShell 7 installation completed", "version", latestVersion)
+	return true, nil
+}
+
+// getLatestPowerShell7Release fetches the latest PS7 release info from GitHub.
+func getLatestPowerShell7Release(ctx context.Context) (version string, downloadURL string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	script := `
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+
+try {
+    $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/PowerShell/PowerShell/releases/latest' -TimeoutSec 20
+    $version = $release.tag_name -replace '^v', ''
+    $asset = $release.assets | Where-Object { $_.name -like '*win-x64.msi' } | Select-Object -First 1
+    if ($asset) {
+        Write-Output "$version|$($asset.browser_download_url)"
+    } else {
+        Write-Output "ERROR:No MSI asset found"
+    }
+} catch {
+    Write-Output "ERROR:$($_.Exception.Message)"
+}
+`
+
+	cmd := exec.CommandContext(ctx, "powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-Command", script,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to query GitHub: %w", err)
+	}
+
+	outputStr := strings.TrimSpace(string(output))
+	if strings.HasPrefix(outputStr, "ERROR:") {
+		return "", "", fmt.Errorf("GitHub API error: %s", strings.TrimPrefix(outputStr, "ERROR:"))
+	}
+
+	parts := strings.SplitN(outputStr, "|", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("unexpected output format: %s", outputStr)
+	}
+
+	return parts[0], parts[1], nil
+}
+
+// installPowerShell7 downloads and installs PowerShell 7 from the given URL.
+func installPowerShell7(ctx context.Context, downloadURL string, logger *slog.Logger) error {
+	script := fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+
+$tempDir = Join-Path $env:TEMP "ps7-install"
+New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+
+try {
+    $msiPath = Join-Path $tempDir "PowerShell-7.msi"
+
+    Write-Host "Downloading PowerShell 7..."
+    Invoke-WebRequest -Uri '%s' -OutFile $msiPath -UseBasicParsing -TimeoutSec 300
+
+    Write-Host "Installing PowerShell 7..."
+    $args = @(
+        '/i', $msiPath,
+        '/qn',
+        '/norestart',
+        'REGISTER_MANIFEST=1',
+        'ENABLE_PSREMOTING=0',
+        'ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=0',
+        'ADD_FILE_CONTEXT_MENU_RUNPOWERSHELL=0'
+    )
+
+    $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+
+    if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
+        throw "MSI installation failed with exit code: $($process.ExitCode)"
+    }
+
+    Write-Host "PowerShell 7 installed successfully"
+} finally {
+    Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+`, downloadURL)
+
+	return runPowerShellScript(ctx, script, 10*time.Minute)
+}
+
+// EnsureWinGetClientModule installs or updates the Microsoft.WinGet.Client PowerShell module.
+// Requires PowerShell 7 to be installed.
+// Returns true if the module was installed or updated.
+func EnsureWinGetClientModule(ctx context.Context, logger *slog.Logger) (bool, error) {
+	ps7Path := `C:\Program Files\PowerShell\7\pwsh.exe`
+
+	// Verify PS7 is installed
+	if _, err := os.Stat(ps7Path); os.IsNotExist(err) {
+		return false, fmt.Errorf("PowerShell 7 is not installed")
+	}
+
+	// Install/update the module and repair WinGet
+	script := `
+$ErrorActionPreference = 'Stop'
+
+# Check if module exists and get version
+$existingModule = Get-Module -ListAvailable -Name Microsoft.WinGet.Client |
+    Sort-Object Version -Descending |
+    Select-Object -First 1
+
+$installed = $false
+$updated = $false
+
+if (-not $existingModule) {
+    Write-Host "Installing Microsoft.WinGet.Client module..."
+
+    # Ensure NuGet provider is installed
+    $nuget = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
+    if (-not $nuget) {
+        Write-Host "Installing NuGet provider..."
+        Install-PackageProvider -Name NuGet -Force -Scope AllUsers | Out-Null
+    }
+
+    # Install the module
+    Install-Module -Name Microsoft.WinGet.Client -Force -AllowClobber -Scope AllUsers
+    $installed = $true
+    Write-Host "Module installed successfully"
+} else {
+    Write-Host "Module already installed: $($existingModule.Version)"
+
+    # Check for updates
+    $latest = Find-Module -Name Microsoft.WinGet.Client -ErrorAction SilentlyContinue
+    if ($latest -and $latest.Version -gt $existingModule.Version) {
+        Write-Host "Updating module from $($existingModule.Version) to $($latest.Version)..."
+        Update-Module -Name Microsoft.WinGet.Client -Force -Scope AllUsers
+        $updated = $true
+        Write-Host "Module updated successfully"
+    } else {
+        Write-Host "Module is up to date"
+    }
+}
+
+# Import and repair WinGet
+Write-Host "Importing module and repairing WinGet..."
+Import-Module Microsoft.WinGet.Client -Force
+
+try {
+    Repair-WinGetPackageManager -Latest -Force -ErrorAction Stop
+    Write-Host "WinGet repaired successfully"
+} catch {
+    Write-Host "Warning: Repair-WinGetPackageManager failed: $($_.Exception.Message)"
+    # Don't fail - WinGet might still work
+}
+
+if ($installed) {
+    Write-Output "INSTALLED"
+} elseif ($updated) {
+    Write-Output "UPDATED"
+} else {
+    Write-Output "NO_CHANGE"
+}
+`
+
+	installCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(installCtx, ps7Path,
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-Command", script,
+	)
+
+	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+
+	if err != nil {
+		logger.Error("failed to install WinGet.Client module", "error", err, "output", outputStr)
+		return false, fmt.Errorf("module installation failed: %w", err)
+	}
+
+	logger.Debug("WinGet.Client module script output", "output", outputStr)
+
+	if strings.Contains(outputStr, "INSTALLED") {
+		logger.Info("Microsoft.WinGet.Client module installed")
+		return true, nil
+	} else if strings.Contains(outputStr, "UPDATED") {
+		logger.Info("Microsoft.WinGet.Client module updated")
+		return true, nil
+	}
+
+	logger.Debug("Microsoft.WinGet.Client module already up to date")
+	return false, nil
+}
