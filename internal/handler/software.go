@@ -251,6 +251,45 @@ func tryWinGetClientModule(ctx context.Context, packageID, version, action strin
 		return "", 0, false
 	}
 
+	// First, explicitly check if the module is available (separate from operation)
+	// This avoids false positives from package operation output containing "not"
+	moduleCheckCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	moduleCheckScript := `
+$ErrorActionPreference = 'SilentlyContinue'
+$module = Get-Module -ListAvailable -Name Microsoft.WinGet.Client | Select-Object -First 1
+if ($module) {
+    Write-Output "MODULE_AVAILABLE"
+    exit 0
+} else {
+    Write-Output "MODULE_NOT_FOUND"
+    exit 1
+}
+`
+	moduleCheckCmd := exec.CommandContext(moduleCheckCtx, ps7Path,
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-Command", moduleCheckScript,
+	)
+
+	moduleCheckOutput, moduleCheckErr := moduleCheckCmd.CombinedOutput()
+	moduleCheckStr := strings.TrimSpace(string(moduleCheckOutput))
+
+	if moduleCheckErr != nil || !strings.Contains(moduleCheckStr, "MODULE_AVAILABLE") {
+		if logger != nil {
+			logger.Info("WinGet.Client module not available, skipping to next method",
+				"check_output", moduleCheckStr,
+			)
+		}
+		return "", 0, false
+	}
+
+	if logger != nil {
+		logger.Info("WinGet.Client module confirmed available, proceeding with operation")
+	}
+
 	// Map action to WinGet.Client cmdlet
 	var cmdlet string
 	switch action {
@@ -325,22 +364,15 @@ catch {
 		return outputStr, 0, true
 	}
 
-	// Check if module is not installed
-	if strings.Contains(outputStr, "Microsoft.WinGet.Client") && strings.Contains(outputStr, "not") {
-		if logger != nil {
-			logger.Info("WinGet.Client module not installed, trying next method")
-		}
-		return "", 0, false
-	}
-
-	// Module exists but command failed - this is a real failure
+	// Module exists (we confirmed above) but operation failed - this is a real failure
+	// Return the error with handled=true so we don't needlessly try other methods
 	exitCode := -1
 	if exitError, ok := err.(*exec.ExitError); ok {
 		exitCode = exitError.ExitCode()
 	}
 
 	if logger != nil {
-		logger.Info("WinGet.Client module failed", "error", err, "output", outputStr)
+		logger.Info("WinGet.Client operation failed", "error", err, "output", outputStr, "exit_code", exitCode)
 	}
 
 	return outputStr, exitCode, true
