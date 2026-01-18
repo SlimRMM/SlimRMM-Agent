@@ -1205,10 +1205,19 @@ type downloadAndInstallCaskRequest struct {
 
 // handleDownloadAndInstallCask handles Homebrew cask installation via direct download.
 func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	h.logger.Info("received cask installation request", "raw_data", string(data))
+
 	var req downloadAndInstallCaskRequest
 	if err := json.Unmarshal(data, &req); err != nil {
+		h.logger.Error("failed to unmarshal cask request", "error", err, "data", string(data))
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
+
+	h.logger.Info("cask request parsed",
+		"installation_id", req.InstallationID,
+		"cask_name", req.CaskName,
+		"timeout_seconds", req.TimeoutSeconds,
+	)
 
 	// Platform validation
 	if runtime.GOOS != "darwin" {
