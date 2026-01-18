@@ -1033,13 +1033,24 @@ type downloadAndInstallPKGRequest struct {
 
 // handleDownloadAndInstallPKG handles PKG package download and installation on macOS.
 func (h *Handler) handleDownloadAndInstallPKG(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	h.logger.Info("received PKG installation request")
+
 	var req downloadAndInstallPKGRequest
 	if err := json.Unmarshal(data, &req); err != nil {
+		h.logger.Error("failed to parse PKG request", "error", err, "data", string(data))
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	h.logger.Info("PKG request parsed",
+		"installation_id", req.InstallationID,
+		"filename", req.Filename,
+		"has_download_url", req.DownloadURL != "",
+		"has_expected_hash", req.ExpectedHash != "",
+	)
+
 	// Platform validation
 	if runtime.GOOS != "darwin" {
+		h.logger.Warn("PKG installation attempted on non-macOS platform", "goos", runtime.GOOS)
 		response := map[string]interface{}{
 			"action":          "software_install_result",
 			"installation_id": req.InstallationID,

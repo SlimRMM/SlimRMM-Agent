@@ -1240,6 +1240,12 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		return
 	}
 
+	// Log handler dispatch for software installation actions
+	if msg.Action == "download_and_install_pkg" || msg.Action == "download_and_install_msi" ||
+		msg.Action == "download_and_install_cask" || msg.Action == "install_software" {
+		h.logger.Info("dispatching software installation action", "action", msg.Action)
+	}
+
 	// Determine what data to pass to the handler
 	// Some actions have fields at the root level rather than in a nested "data" object
 	var handlerData json.RawMessage
@@ -1275,6 +1281,12 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		"download_url":   true,
 		// Compliance checks - policy_id, checks at root
 		"run_compliance_check": true,
+		// Software installation actions - all fields at root
+		"install_software":           true,
+		"download_and_install_msi":   true,
+		"download_and_install_pkg":   true,
+		"download_and_install_cask":  true,
+		"cancel_software_install":    true,
 	}
 	if rootLevelActions[msg.Action] {
 		handlerData = msg.Raw
