@@ -33,8 +33,9 @@ if [ -f "${OLD_CONFIG_FILE}" ] && [ ! -f "${CONFIG_FILE}" ]; then
     echo "Migration complete"
 fi
 
-# Remove old symlink if exists (no longer needed)
-rm -f /usr/local/bin/slimrmm-agent 2>/dev/null || true
+# Create symlink for CLI access
+mkdir -p /usr/local/bin
+ln -sf "${BINARY_PATH}" /usr/local/bin/slimrmm-agent
 
 # Check if already configured (upgrade scenario)
 if [ -f "${CONFIG_FILE}" ]; then
@@ -62,10 +63,10 @@ echo "================================================"
 echo "SlimRMM Agent installed successfully!"
 echo ""
 echo "To complete setup, run:"
-echo "  sudo ${BINARY_PATH} install -s https://your-server.com -k TOKEN"
+echo "  sudo slimrmm-agent install -s https://your-server.com -k TOKEN"
 echo ""
 echo "Or check status:"
-echo "  ${BINARY_PATH} status"
+echo "  slimrmm-agent status"
 echo "================================================"
 
 exit 0
