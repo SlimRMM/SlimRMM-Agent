@@ -535,13 +535,22 @@ exit $LASTEXITCODE
 // This bypasses execution policy restrictions as scheduled tasks run in a different context.
 // The task runs as SYSTEM with highest privileges.
 func executeViaScheduledTask(ctx context.Context, script string, logger interface{ Info(msg string, args ...any) }) (string, int) {
+	// Create a secure temp directory with restricted permissions
+	// This prevents race conditions and ensures predictable cleanup
+	tempDir, err := os.MkdirTemp("", "slimrmm-task-*")
+	if err != nil {
+		return fmt.Sprintf("failed to create temp directory: %v", err), -1
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Use crypto/rand for unpredictable task name to prevent prediction attacks
 	taskName := fmt.Sprintf("SlimRMM_WingetInstall_%d", time.Now().UnixNano())
-	scriptPath := filepath.Join(os.TempDir(), taskName+".ps1")
-	outputPath := filepath.Join(os.TempDir(), taskName+"_output.txt")
-	exitCodePath := filepath.Join(os.TempDir(), taskName+"_exitcode.txt")
+	scriptPath := filepath.Join(tempDir, "script.ps1")
+	outputPath := filepath.Join(tempDir, "output.txt")
+	exitCodePath := filepath.Join(tempDir, "exitcode.txt")
 
 	if logger != nil {
-		logger.Info("creating scheduled task for winget execution", "task_name", taskName)
+		logger.Info("creating scheduled task for winget execution", "task_name", taskName, "temp_dir", tempDir)
 	}
 
 	// Write script that captures output and exit code to files
@@ -560,12 +569,10 @@ catch {
 }
 `, script, outputPath, exitCodePath, outputPath, exitCodePath)
 
-	if err := os.WriteFile(scriptPath, []byte(wrappedScript), 0644); err != nil {
+	// Use 0600 permissions - only owner (SYSTEM) can read/write
+	if err := os.WriteFile(scriptPath, []byte(wrappedScript), 0600); err != nil {
 		return fmt.Sprintf("failed to write script file: %v", err), -1
 	}
-	defer os.Remove(scriptPath)
-	defer os.Remove(outputPath)
-	defer os.Remove(exitCodePath)
 
 	// Create scheduled task that runs as SYSTEM with highest privileges
 	createCmd := exec.CommandContext(ctx, "schtasks.exe",
