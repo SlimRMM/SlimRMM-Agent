@@ -725,7 +725,20 @@ func (h *Handler) handleDownloadAndInstallMSI(ctx context.Context, data json.Raw
 			return response, nil
 		}
 
-		if calculatedHash != req.ExpectedHash {
+		// Normalize hash format for comparison
+		// Backend sends "sha256:{hash}", we calculate just "{hash}"
+		expectedHash := req.ExpectedHash
+		if strings.HasPrefix(expectedHash, "sha256:") {
+			expectedHash = strings.TrimPrefix(expectedHash, "sha256:")
+		}
+
+		h.logger.Info("verifying MSI hash",
+			"installation_id", req.InstallationID,
+			"expected", expectedHash,
+			"calculated", calculatedHash,
+		)
+
+		if calculatedHash != expectedHash {
 			response := map[string]interface{}{
 				"action":          "software_install_result",
 				"installation_id": req.InstallationID,
@@ -817,8 +830,15 @@ func (h *Handler) handleDownloadAndInstallMSI(ctx context.Context, data json.Raw
 
 // downloadFile downloads a file from URL to the specified path.
 func (h *Handler) downloadFile(ctx context.Context, url, token, destPath, installationID string) error {
+	h.logger.Info("starting file download",
+		"installation_id", installationID,
+		"url", url,
+		"dest", destPath,
+	)
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		h.logger.Info("failed to create download request", "error", err)
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -832,9 +852,16 @@ func (h *Handler) downloadFile(ctx context.Context, url, token, destPath, instal
 
 	resp, err := client.Do(req)
 	if err != nil {
+		h.logger.Info("download request failed", "error", err)
 		return fmt.Errorf("failed to download: %w", err)
 	}
 	defer resp.Body.Close()
+
+	h.logger.Info("download response received",
+		"installation_id", installationID,
+		"status_code", resp.StatusCode,
+		"content_length", resp.ContentLength,
+	)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download failed with status: %d", resp.StatusCode)
@@ -883,6 +910,11 @@ func (h *Handler) downloadFile(ctx context.Context, url, token, destPath, instal
 			return fmt.Errorf("failed to read response: %w", err)
 		}
 	}
+
+	h.logger.Info("download completed",
+		"installation_id", installationID,
+		"bytes_downloaded", downloaded,
+	)
 
 	return nil
 }
