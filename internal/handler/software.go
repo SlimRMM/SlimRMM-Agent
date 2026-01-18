@@ -87,13 +87,12 @@ func (h *Handler) handleCancelSoftwareInstall(ctx context.Context, data json.Raw
 
 // installSoftwareRequest represents a software installation request.
 type installSoftwareRequest struct {
-	InstallationID     string `json:"installation_id"`
-	InstallationType   string `json:"installation_type"` // "winget" or "msi"
-	WingetPackageID    string `json:"winget_package_id,omitempty"`
-	WingetPackageName  string `json:"winget_package_name,omitempty"`
-	WingetVersion      string `json:"winget_version,omitempty"`
-	Silent             bool   `json:"silent"`
-	TimeoutSeconds     int    `json:"timeout_seconds,omitempty"`
+	InstallationID    string `json:"installation_id"`
+	InstallationType  string `json:"installation_type"` // "winget" or "msi"
+	WingetPackageID   string `json:"winget_package_id,omitempty"`
+	WingetPackageName string `json:"winget_package_name,omitempty"`
+	Silent            bool   `json:"silent"`
+	TimeoutSeconds    int    `json:"timeout_seconds,omitempty"`
 }
 
 // downloadAndInstallMSIRequest represents an MSI download and install request.
@@ -178,7 +177,7 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 
 	// Execute via direct path method with fallbacks for hardened systems
 	// NO HELPER NEEDED - runs directly in SYSTEM context with proper DLL loading
-	output, exitCode := runWingetDirectPath(ctx, req.WingetPackageID, req.WingetVersion, req.Silent, "install", h.logger)
+	output, exitCode := runWingetOperation(ctx, req.WingetPackageID, req.Silent, "install", h.logger)
 
 	// Determine success
 	completedAt := time.Now()
@@ -214,33 +213,29 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 }
 
 // runWingetOperation executes winget with an optimized fallback strategy.
-// Based on NinjaRMM/Level.io analysis:
 //
 // Priority 1: Microsoft.WinGet.Client module (PowerShell 7) - most reliable, no DLL issues
 // Priority 2: Direct path invocation (& $wingetExe) - NOT cd + .\winget.exe
 // Priority 3: Scheduled Task fallback - for hardened systems
-//
-// Key insight: Windows DLL resolution uses the executable's directory FIRST,
-// so `& $fullPath` works without needing to `cd` into the directory.
-func runWingetOperation(ctx context.Context, packageID, version string, silent bool, action string, logger interface{ Info(msg string, args ...any) }) (string, int) {
+func runWingetOperation(ctx context.Context, packageID string, silent bool, action string, logger interface{ Info(msg string, args ...any) }) (string, int) {
 	// PRIORITY 1: Try PowerShell 7 + Microsoft.WinGet.Client module
-	if output, exitCode, ok := tryWinGetClientModule(ctx, packageID, version, action, logger); ok {
+	if output, exitCode, ok := tryWinGetClientModule(ctx, packageID, action, logger); ok {
 		return output, exitCode
 	}
 
 	// PRIORITY 2: Direct path invocation (& $wingetExe - NOT cd + .\winget.exe)
-	if output, exitCode, ok := tryDirectPathInvocation(ctx, packageID, version, silent, action, logger); ok {
+	if output, exitCode, ok := tryDirectPathInvocation(ctx, packageID, silent, action, logger); ok {
 		return output, exitCode
 	}
 
 	// PRIORITY 3: Scheduled Task fallback for hardened systems
-	return tryScheduledTaskFallback(ctx, packageID, version, silent, action, logger)
+	return tryScheduledTaskFallback(ctx, packageID, silent, action, logger)
 }
 
 // tryWinGetClientModule attempts to use the Microsoft.WinGet.Client PowerShell module.
 // This is the most reliable method as it avoids all DLL loading issues.
 // Requires PowerShell 7 and the module to be installed.
-func tryWinGetClientModule(ctx context.Context, packageID, version, action string, logger interface{ Info(msg string, args ...any) }) (string, int, bool) {
+func tryWinGetClientModule(ctx context.Context, packageID, action string, logger interface{ Info(msg string, args ...any) }) (string, int, bool) {
 	ps7Path := `C:\Program Files\PowerShell\7\pwsh.exe`
 
 	// Check if PowerShell 7 exists
@@ -251,8 +246,7 @@ func tryWinGetClientModule(ctx context.Context, packageID, version, action strin
 		return "", 0, false
 	}
 
-	// First, explicitly check if the module is available (separate from operation)
-	// This avoids false positives from package operation output containing "not"
+	// Check if the module is available
 	moduleCheckCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
@@ -303,13 +297,7 @@ if ($module) {
 		cmdlet = "Install-WinGetPackage"
 	}
 
-	versionParam := ""
-	if version != "" && version != "latest" {
-		versionParam = fmt.Sprintf("-Version '%s'", version)
-	}
-
-	// Build the PowerShell 7 command
-	// The WinGet.Client cmdlets return objects with Status property we need to check
+	// Build the PowerShell 7 command - always install latest version
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 try {
@@ -322,18 +310,12 @@ try {
     }
 
     # Add Scope for install/upgrade (not applicable for uninstall)
-    # WinGet.Client module uses 'System' instead of 'Machine' for machine-level scope
     if ('%s' -ne 'Uninstall-WinGetPackage') {
         $params['Scope'] = 'System'
     }
 
-    # Add version if specified
-    %s
-
-    # Execute and capture result
     $result = %s @params
 
-    # Output result details for logging
     Write-Host "Operation completed"
     if ($result) {
         Write-Host "Result Status: $($result.Status)"
@@ -345,8 +327,7 @@ try {
             Write-Host "Reboot Required: $($result.RebootRequired)"
         }
 
-        # Check if installation actually succeeded
-        # Status can be: Ok, NoApplicableInstallers, PackageInUse, InstallError, etc.
+        # Check if installation succeeded
         $successStatuses = @('Ok', 'NoApplicableUpgrade')
         if ($result.Status -and $successStatuses -notcontains $result.Status.ToString()) {
             Write-Host "WinGet.Client error: Operation returned status: $($result.Status)"
@@ -363,12 +344,7 @@ catch {
     Write-Host "WinGet.Client error: $($_.Exception.Message)"
     exit 1
 }
-`, packageID, cmdlet, func() string {
-		if versionParam != "" {
-			return fmt.Sprintf("$params['Version'] = '%s'", version)
-		}
-		return ""
-	}(), cmdlet)
+`, packageID, cmdlet, cmdlet)
 
 	if logger != nil {
 		logger.Info("trying WinGet.Client module via PowerShell 7", "action", action, "package", packageID)
@@ -391,8 +367,6 @@ catch {
 		return outputStr, 0, true
 	}
 
-	// Module exists (we confirmed above) but operation failed - this is a real failure
-	// Return the error with handled=true so we don't needlessly try other methods
 	exitCode := -1
 	if exitError, ok := err.(*exec.ExitError); ok {
 		exitCode = exitError.ExitCode()
@@ -406,21 +380,14 @@ catch {
 }
 
 // tryDirectPathInvocation attempts to run winget.exe directly using & $fullPath.
-// This is the NinjaRMM/Level.io technique: use the call operator with full path.
-// Windows DLL resolution uses the executable's directory first, so no cd needed!
-func tryDirectPathInvocation(ctx context.Context, packageID, version string, silent bool, action string, logger interface{ Info(msg string, args ...any) }) (string, int, bool) {
-	versionArg := ""
-	if version != "" && version != "latest" {
-		versionArg = fmt.Sprintf("$extraArgs += '--version', '%s'", version)
-	}
-
+// Windows DLL resolution uses the executable's directory first, so no cd needed.
+func tryDirectPathInvocation(ctx context.Context, packageID string, silent bool, action string, logger interface{ Info(msg string, args ...any) }) (string, int, bool) {
 	silentArg := ""
 	if silent {
-		silentArg = "$extraArgs += '--silent'"
+		silentArg = "$wingetArgs += '--silent'"
 	}
 
 	// PowerShell script using direct path invocation (& $wingetExe)
-	// CRITICAL: Do NOT use cd + .\winget.exe - use & with full path instead!
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Continue'
 
@@ -434,7 +401,6 @@ $wingetExe = $null
 foreach ($pattern in $wingetPatterns) {
     $resolved = Resolve-Path $pattern -ErrorAction SilentlyContinue
     if ($resolved) {
-        # Take the latest version (last in sorted list)
         $wingetExe = ($resolved | Sort-Object -Descending)[0].Path
         break
     }
@@ -447,7 +413,6 @@ if (-not $wingetExe) {
 
 Write-Host "Found winget at: $wingetExe"
 
-# Build arguments - ALWAYS machine scope
 $wingetArgs = @(
     '%s',
     '--exact',
@@ -458,19 +423,14 @@ $wingetArgs = @(
     '--disable-interactivity'
 )
 
-# Add optional arguments
-$extraArgs = @()
 %s
-%s
-$wingetArgs += $extraArgs
 
 Write-Host "Executing: & $wingetExe $($wingetArgs -join ' ')"
 
-# Use & (call operator) with full path - Windows resolves DLLs from exe directory
 & $wingetExe @wingetArgs
 
 exit $LASTEXITCODE
-`, action, packageID, versionArg, silentArg)
+`, action, packageID, silentArg)
 
 	if logger != nil {
 		logger.Info("trying direct path invocation", "action", action, "package", packageID)
@@ -520,26 +480,19 @@ exit $LASTEXITCODE
 
 // tryScheduledTaskFallback creates a scheduled task to run the winget command.
 // This bypasses execution policy restrictions as scheduled tasks run differently.
-func tryScheduledTaskFallback(ctx context.Context, packageID, version string, silent bool, action string, logger interface{ Info(msg string, args ...any) }) (string, int) {
+func tryScheduledTaskFallback(ctx context.Context, packageID string, silent bool, action string, logger interface{ Info(msg string, args ...any) }) (string, int) {
 	if logger != nil {
 		logger.Info("using scheduled task fallback", "action", action, "package", packageID)
 	}
 
-	versionArg := ""
-	if version != "" && version != "latest" {
-		versionArg = fmt.Sprintf("$extraArgs += '--version', '%s'", version)
-	}
-
 	silentArg := ""
 	if silent {
-		silentArg = "$extraArgs += '--silent'"
+		silentArg = "$wingetArgs += '--silent'"
 	}
 
-	// Script to run inside scheduled task
 	script := fmt.Sprintf(`
 $ErrorActionPreference = 'Continue'
 
-# Resolve and navigate to winget directory (required for scheduled task context)
 $Path_WingetAll = Resolve-Path "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe" -ErrorAction SilentlyContinue
 if (-not $Path_WingetAll) {
     $Path_WingetAll = Resolve-Path "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_*__8wekyb3d8bbwe" -ErrorAction SilentlyContinue
@@ -553,7 +506,6 @@ if (-not $Path_WingetAll) {
 $Path_Winget = $Path_WingetAll[-1].Path
 cd $Path_Winget
 
-# Build arguments
 $wingetArgs = @(
     '%s',
     '--exact',
@@ -564,24 +516,16 @@ $wingetArgs = @(
     '--disable-interactivity'
 )
 
-$extraArgs = @()
 %s
-%s
-$wingetArgs += $extraArgs
 
 Write-Host "Executing: .\winget.exe $($wingetArgs -join ' ')"
 
 .\winget.exe @wingetArgs
 
 exit $LASTEXITCODE
-`, action, packageID, versionArg, silentArg)
+`, action, packageID, silentArg)
 
 	return executeViaScheduledTask(ctx, script, logger)
-}
-
-// Legacy function name for compatibility - redirects to new implementation
-func runWingetDirectPath(ctx context.Context, packageID, version string, silent bool, action string, logger interface{ Info(msg string, args ...any) }) (string, int) {
-	return runWingetOperation(ctx, packageID, version, silent, action, logger)
 }
 
 // executeViaScheduledTask creates a temporary scheduled task to run the script.
