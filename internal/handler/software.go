@@ -686,7 +686,15 @@ func (h *Handler) handleDownloadAndInstallMSI(ctx context.Context, data json.Raw
 		h.SendRaw(response)
 		return response, nil
 	}
-	defer os.RemoveAll(tempDir)
+	// Track if installation succeeded - only cleanup on success
+	installSuccess := false
+	defer func() {
+		if installSuccess {
+			os.RemoveAll(tempDir)
+		} else {
+			h.logger.Info("keeping temp directory for debugging", "path", tempDir)
+		}
+	}()
 
 	msiPath := filepath.Join(tempDir, req.Filename)
 
@@ -771,17 +779,33 @@ func (h *Handler) handleDownloadAndInstallMSI(ctx context.Context, data json.Raw
 	args = append(args, parseArgs(silentArgs)...)
 	args = append(args, "/log", logPath)
 
+	h.logger.Info("starting msiexec",
+		"installation_id", req.InstallationID,
+		"command", "msiexec",
+		"args", strings.Join(args, " "),
+		"log_path", logPath,
+	)
+
 	cmd := exec.CommandContext(ctx, "msiexec", args...)
 	outputBytes, err := cmd.CombinedOutput()
 	output := string(outputBytes)
 
+	h.logger.Info("msiexec finished",
+		"installation_id", req.InstallationID,
+		"error", err,
+		"output_len", len(output),
+	)
+
 	// Read log file if it exists
 	var logContent string
-	if logBytes, err := os.ReadFile(logPath); err == nil {
+	if logBytes, readErr := os.ReadFile(logPath); readErr == nil {
 		logContent = string(logBytes)
+		h.logger.Info("MSI log file read", "installation_id", req.InstallationID, "log_size", len(logContent))
+	} else {
+		h.logger.Info("MSI log file not found or unreadable", "installation_id", req.InstallationID, "error", readErr)
 	}
 
-	// Determine exit code
+	// Determine exit code and status
 	var exitCode int
 	if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
@@ -794,11 +818,17 @@ func (h *Handler) handleDownloadAndInstallMSI(ctx context.Context, data json.Raw
 	// Determine success (msiexec returns 0 for success, 3010 for success with reboot required)
 	completedAt := time.Now()
 	status := "completed"
-	if ctx.Err() == context.Canceled {
+	if ctx.Err() == context.DeadlineExceeded {
+		status = "failed"
+		output = fmt.Sprintf("Installation timed out after %d seconds. Check %s for details.", req.TimeoutSeconds, tempDir)
+		h.logger.Info("MSI installation timed out", "installation_id", req.InstallationID, "temp_dir", tempDir)
+	} else if ctx.Err() == context.Canceled {
 		status = "cancelled"
 		output = "Installation cancelled by user request"
 	} else if exitCode != 0 && exitCode != 3010 {
 		status = "failed"
+	} else {
+		installSuccess = true
 	}
 
 	response := map[string]interface{}{
