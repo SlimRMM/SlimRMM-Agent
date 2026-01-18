@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/slimrmm/slimrmm-agent/internal/homebrew"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
 )
 
@@ -35,6 +36,9 @@ var runningInstallations = struct {
 func (h *Handler) registerSoftwareHandlers() {
 	h.handlers["install_software"] = h.handleInstallSoftware
 	h.handlers["download_and_install_msi"] = h.handleDownloadAndInstallMSI
+	h.handlers["download_and_install_pkg"] = h.handleDownloadAndInstallPKG
+	h.handlers["download_and_install_cask"] = h.handleDownloadAndInstallCask
+	h.handlers["install_homebrew_formula"] = h.handleInstallHomebrewFormula
 	h.handlers["cancel_software_install"] = h.handleCancelSoftwareInstall
 }
 
@@ -1009,4 +1013,449 @@ func sanitizeMsiArgs(args string) string {
 		filtered = append(filtered, arg)
 	}
 	return strings.Join(filtered, " ")
+}
+
+// downloadAndInstallPKGRequest represents a PKG package download and install request.
+type downloadAndInstallPKGRequest struct {
+	InstallationID string `json:"installation_id"`
+	DownloadURL    string `json:"download_url"`
+	DownloadToken  string `json:"download_token,omitempty"`
+	ExpectedHash   string `json:"expected_hash,omitempty"`
+	Filename       string `json:"filename"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
+// handleDownloadAndInstallPKG handles PKG package download and installation on macOS.
+func (h *Handler) handleDownloadAndInstallPKG(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req downloadAndInstallPKGRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Platform validation
+	if runtime.GOOS != "darwin" {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           "PKG installation is only available on macOS",
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	h.logger.Info("starting PKG installation",
+		"installation_id", req.InstallationID,
+		"filename", req.Filename,
+	)
+
+	// Set timeout
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 15 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Track installation for cancellation
+	runningInstallations.Lock()
+	runningInstallations.m[req.InstallationID] = &runningInstallation{cancel: cancel}
+	runningInstallations.Unlock()
+	defer func() {
+		runningInstallations.Lock()
+		delete(runningInstallations.m, req.InstallationID)
+		runningInstallations.Unlock()
+	}()
+
+	startedAt := time.Now()
+
+	// Create temp directory
+	tempDir, err := os.MkdirTemp("", "slimrmm-pkg-*")
+	if err != nil {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           fmt.Sprintf("create temp dir: %v", err),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+	defer os.RemoveAll(tempDir)
+
+	pkgPath := filepath.Join(tempDir, req.Filename)
+
+	// Send progress: downloading
+	h.SendRaw(map[string]interface{}{
+		"action":           "software_install_progress",
+		"installation_id":  req.InstallationID,
+		"status":           "downloading",
+		"progress_percent": 0,
+	})
+
+	// Download the PKG
+	if err := h.downloadFile(ctx, req.DownloadURL, req.DownloadToken, pkgPath, req.InstallationID); err != nil {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           fmt.Sprintf("download failed: %v", err),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	// Verify hash if provided
+	if req.ExpectedHash != "" {
+		calculatedHash, err := calculateFileHash(pkgPath)
+		if err != nil {
+			response := map[string]interface{}{
+				"action":          "software_install_result",
+				"installation_id": req.InstallationID,
+				"status":          "failed",
+				"error":           fmt.Sprintf("hash calculation failed: %v", err),
+			}
+			h.SendRaw(response)
+			return response, nil
+		}
+
+		expectedHash := req.ExpectedHash
+		if strings.HasPrefix(expectedHash, "sha256:") {
+			expectedHash = strings.TrimPrefix(expectedHash, "sha256:")
+		}
+
+		if calculatedHash != expectedHash {
+			response := map[string]interface{}{
+				"action":          "software_install_result",
+				"installation_id": req.InstallationID,
+				"status":          "failed",
+				"error":           fmt.Sprintf("hash mismatch: expected %s, got %s", expectedHash, calculatedHash),
+			}
+			h.SendRaw(response)
+			return response, nil
+		}
+	}
+
+	// Send progress: installing
+	h.SendRaw(map[string]interface{}{
+		"action":          "software_install_progress",
+		"installation_id": req.InstallationID,
+		"status":          "installing",
+	})
+
+	// Execute macOS installer
+	cmd := exec.CommandContext(ctx, "installer", "-pkg", pkgPath, "-target", "/", "-verboseR")
+	output, cmdErr := cmd.CombinedOutput()
+
+	exitCode := 0
+	if cmdErr != nil {
+		if exitError, ok := cmdErr.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+
+	completedAt := time.Now()
+	status := "completed"
+	if ctx.Err() == context.Canceled {
+		status = "cancelled"
+	} else if exitCode != 0 {
+		status = "failed"
+	}
+
+	response := map[string]interface{}{
+		"action":          "software_install_result",
+		"installation_id": req.InstallationID,
+		"status":          status,
+		"exit_code":       exitCode,
+		"output":          string(output),
+		"started_at":      startedAt.UTC().Format(time.RFC3339),
+		"completed_at":    completedAt.UTC().Format(time.RFC3339),
+		"duration_ms":     completedAt.Sub(startedAt).Milliseconds(),
+	}
+
+	h.SendRaw(response)
+	return response, nil
+}
+
+// downloadAndInstallCaskRequest represents a Homebrew cask installation request.
+type downloadAndInstallCaskRequest struct {
+	InstallationID string `json:"installation_id"`
+	CaskName       string `json:"cask_name"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
+// handleDownloadAndInstallCask handles Homebrew cask installation via direct download.
+func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req downloadAndInstallCaskRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Platform validation
+	if runtime.GOOS != "darwin" {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           "Homebrew cask installation is only available on macOS",
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	h.logger.Info("starting cask installation",
+		"installation_id", req.InstallationID,
+		"cask_name", req.CaskName,
+	)
+
+	// Set timeout
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 15 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Track installation for cancellation
+	runningInstallations.Lock()
+	runningInstallations.m[req.InstallationID] = &runningInstallation{cancel: cancel}
+	runningInstallations.Unlock()
+	defer func() {
+		runningInstallations.Lock()
+		delete(runningInstallations.m, req.InstallationID)
+		runningInstallations.Unlock()
+	}()
+
+	startedAt := time.Now()
+
+	// Fetch cask info from Homebrew API
+	h.SendRaw(map[string]interface{}{
+		"action":          "software_install_progress",
+		"installation_id": req.InstallationID,
+		"status":          "fetching_metadata",
+	})
+
+	caskInfo, err := homebrew.FetchCaskInfo(ctx, req.CaskName)
+	if err != nil {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           fmt.Sprintf("fetch cask info: %v", err),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	// Create temp directory
+	tempDir, err := os.MkdirTemp("", "slimrmm-cask-*")
+	if err != nil {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           fmt.Sprintf("create temp dir: %v", err),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Determine file extension from URL
+	downloadPath := filepath.Join(tempDir, filepath.Base(caskInfo.URL))
+
+	// Send progress: downloading
+	h.SendRaw(map[string]interface{}{
+		"action":           "software_install_progress",
+		"installation_id":  req.InstallationID,
+		"status":           "downloading",
+		"progress_percent": 0,
+	})
+
+	// Download the file
+	if err := h.downloadFile(ctx, caskInfo.URL, "", downloadPath, req.InstallationID); err != nil {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           fmt.Sprintf("download: %v", err),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	// Verify SHA256 hash
+	if caskInfo.SHA256 != "" && caskInfo.SHA256 != "no_check" {
+		calculatedHash, err := calculateFileHash(downloadPath)
+		if err != nil {
+			response := map[string]interface{}{
+				"action":          "software_install_result",
+				"installation_id": req.InstallationID,
+				"status":          "failed",
+				"error":           fmt.Sprintf("hash calculation: %v", err),
+			}
+			h.SendRaw(response)
+			return response, nil
+		}
+
+		if calculatedHash != caskInfo.SHA256 {
+			response := map[string]interface{}{
+				"action":          "software_install_result",
+				"installation_id": req.InstallationID,
+				"status":          "failed",
+				"error":           fmt.Sprintf("hash mismatch: expected %s, got %s", caskInfo.SHA256, calculatedHash),
+			}
+			h.SendRaw(response)
+			return response, nil
+		}
+	}
+
+	// Send progress: extracting/installing
+	h.SendRaw(map[string]interface{}{
+		"action":          "software_install_progress",
+		"installation_id": req.InstallationID,
+		"status":          "extracting",
+	})
+
+	// Use unified artifact extraction
+	artifact, err := homebrew.ExtractAndFindArtifact(ctx, downloadPath, tempDir)
+	if err != nil {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           fmt.Sprintf("extract artifact: %v", err),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+	defer homebrew.CleanupArtifact(ctx, artifact)
+
+	// Send progress: installing
+	h.SendRaw(map[string]interface{}{
+		"action":          "software_install_progress",
+		"installation_id": req.InstallationID,
+		"status":          "installing",
+		"artifact_type":   string(artifact.Type),
+	})
+
+	// Install the extracted artifact
+	output, exitCode, _ := homebrew.InstallArtifact(ctx, artifact)
+
+	completedAt := time.Now()
+	status := "completed"
+	if ctx.Err() == context.Canceled {
+		status = "cancelled"
+		output = "Installation cancelled"
+	} else if exitCode != 0 {
+		status = "failed"
+	}
+
+	response := map[string]interface{}{
+		"action":          "software_install_result",
+		"installation_id": req.InstallationID,
+		"status":          status,
+		"exit_code":       exitCode,
+		"output":          output,
+		"cask_name":       req.CaskName,
+		"version":         caskInfo.Version,
+		"started_at":      startedAt.UTC().Format(time.RFC3339),
+		"completed_at":    completedAt.UTC().Format(time.RFC3339),
+		"duration_ms":     completedAt.Sub(startedAt).Milliseconds(),
+	}
+
+	h.SendRaw(response)
+	return response, nil
+}
+
+// installHomebrewFormulaRequest represents a Homebrew formula installation request.
+type installHomebrewFormulaRequest struct {
+	InstallationID string `json:"installation_id"`
+	FormulaName    string `json:"formula_name"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
+// handleInstallHomebrewFormula handles Homebrew formula installation.
+func (h *Handler) handleInstallHomebrewFormula(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req installHomebrewFormulaRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Platform validation
+	if runtime.GOOS != "darwin" {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           "Homebrew formula installation is only available on macOS",
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	h.logger.Info("starting formula installation",
+		"installation_id", req.InstallationID,
+		"formula_name", req.FormulaName,
+	)
+
+	// Set timeout (formulas may need compilation)
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 30 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Track installation
+	runningInstallations.Lock()
+	runningInstallations.m[req.InstallationID] = &runningInstallation{cancel: cancel}
+	runningInstallations.Unlock()
+	defer func() {
+		runningInstallations.Lock()
+		delete(runningInstallations.m, req.InstallationID)
+		runningInstallations.Unlock()
+	}()
+
+	startedAt := time.Now()
+
+	// Send progress
+	h.SendRaw(map[string]interface{}{
+		"action":          "software_install_progress",
+		"installation_id": req.InstallationID,
+		"status":          "installing",
+		"output":          "Installing via Homebrew...",
+	})
+
+	// Install formula
+	output, exitCode, err := homebrew.InstallFormula(ctx, req.FormulaName)
+
+	completedAt := time.Now()
+	status := "completed"
+	if ctx.Err() == context.Canceled {
+		status = "cancelled"
+		output = "Installation cancelled"
+	} else if exitCode != 0 || err != nil {
+		status = "failed"
+		if err != nil {
+			output = fmt.Sprintf("%s\nError: %v", output, err)
+		}
+	}
+
+	response := map[string]interface{}{
+		"action":          "software_install_result",
+		"installation_id": req.InstallationID,
+		"status":          status,
+		"exit_code":       exitCode,
+		"output":          output,
+		"formula_name":    req.FormulaName,
+		"started_at":      startedAt.UTC().Format(time.RFC3339),
+		"completed_at":    completedAt.UTC().Format(time.RFC3339),
+		"duration_ms":     completedAt.Sub(startedAt).Milliseconds(),
+	}
+
+	h.SendRaw(response)
+	return response, nil
 }
