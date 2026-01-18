@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,24 +54,34 @@ func DetectArtifactType(filePath string) ArtifactType {
 // This function recursively extracts nested containers until it finds .app or .pkg.
 func ExtractAndFindArtifact(ctx context.Context, downloadPath, tempDir string) (*ExtractedArtifact, error) {
 	artifactType := DetectArtifactType(downloadPath)
+	slog.Info("[HOMEBREW] ExtractAndFindArtifact called",
+		"download_path", downloadPath,
+		"temp_dir", tempDir,
+		"detected_type", string(artifactType),
+	)
 
 	switch artifactType {
 	case ArtifactZip:
+		slog.Info("[HOMEBREW] Processing ZIP artifact")
 		return extractZipAndFind(ctx, downloadPath, tempDir)
 	case ArtifactDmg:
+		slog.Info("[HOMEBREW] Processing DMG artifact")
 		return extractDmgAndFind(ctx, downloadPath, tempDir)
 	case ArtifactPkg:
+		slog.Info("[HOMEBREW] Direct PKG artifact")
 		return &ExtractedArtifact{
 			Type: ArtifactPkg,
 			Path: downloadPath,
 		}, nil
 	case ArtifactApp:
+		slog.Info("[HOMEBREW] Direct APP artifact")
 		return &ExtractedArtifact{
 			Type:    ArtifactApp,
 			Path:    downloadPath,
 			AppName: filepath.Base(downloadPath),
 		}, nil
 	default:
+		slog.Error("[HOMEBREW] Unknown artifact type", "path", downloadPath)
 		return nil, fmt.Errorf("unknown artifact type for: %s", downloadPath)
 	}
 }
@@ -99,18 +110,24 @@ func extractZipAndFind(ctx context.Context, zipPath, tempDir string) (*Extracted
 
 // extractDmgAndFind mounts a DMG and finds the installable artifact inside.
 func extractDmgAndFind(ctx context.Context, dmgPath, tempDir string) (*ExtractedArtifact, error) {
+	slog.Info("[HOMEBREW] extractDmgAndFind called", "dmg_path", dmgPath)
+
 	// Mount DMG
 	mountPoint, err := MountDMG(ctx, dmgPath)
 	if err != nil {
+		slog.Error("[HOMEBREW] Failed to mount DMG", "error", err)
 		return nil, fmt.Errorf("mount dmg: %w", err)
 	}
+	slog.Info("[HOMEBREW] DMG mounted", "mount_point", mountPoint)
 
 	// Find artifact in mounted DMG
 	artifact, err := findArtifactInDir(ctx, mountPoint, tempDir)
 	if err != nil {
+		slog.Error("[HOMEBREW] Failed to find artifact in DMG", "error", err, "mount_point", mountPoint)
 		UnmountDMG(ctx, mountPoint)
 		return nil, err
 	}
+	slog.Info("[HOMEBREW] Found artifact in DMG", "type", string(artifact.Type), "path", artifact.Path)
 
 	// If we found a nested DMG or ZIP, we need to copy it out before unmounting
 	if artifact.Type == ArtifactDmg || artifact.Type == ArtifactZip {
@@ -127,11 +144,14 @@ func extractDmgAndFind(ctx context.Context, dmgPath, tempDir string) (*Extracted
 
 	// For .app, copy it out before unmounting
 	if artifact.Type == ArtifactApp {
+		slog.Info("[HOMEBREW] Copying .app from DMG", "src", artifact.Path)
 		copyPath := filepath.Join(tempDir, filepath.Base(artifact.Path))
 		if err := copyDir(artifact.Path, copyPath); err != nil {
+			slog.Error("[HOMEBREW] Failed to copy app from DMG", "error", err)
 			UnmountDMG(ctx, mountPoint)
 			return nil, fmt.Errorf("copy app from dmg: %w", err)
 		}
+		slog.Info("[HOMEBREW] App copied from DMG", "dest", copyPath)
 		UnmountDMG(ctx, mountPoint)
 		artifact.Path = copyPath
 		return artifact, nil
@@ -274,6 +294,11 @@ func CleanupArtifact(ctx context.Context, artifact *ExtractedArtifact) {
 
 // InstallArtifact installs the extracted artifact.
 func InstallArtifact(ctx context.Context, artifact *ExtractedArtifact) (string, int, error) {
+	slog.Info("[HOMEBREW] InstallArtifact called",
+		"type", string(artifact.Type),
+		"path", artifact.Path,
+	)
+
 	switch artifact.Type {
 	case ArtifactApp:
 		return installApp(ctx, artifact.Path)
@@ -288,22 +313,34 @@ func InstallArtifact(ctx context.Context, artifact *ExtractedArtifact) (string, 
 func installApp(ctx context.Context, appPath string) (string, int, error) {
 	appName := filepath.Base(appPath)
 	destPath := filepath.Join("/Applications", appName)
+	slog.Info("[HOMEBREW] installApp called",
+		"app_name", appName,
+		"src_path", appPath,
+		"dest_path", destPath,
+	)
 
 	// Remove existing app if present
 	if _, err := os.Stat(destPath); err == nil {
+		slog.Info("[HOMEBREW] Removing existing app", "path", destPath)
 		if err := os.RemoveAll(destPath); err != nil {
+			slog.Error("[HOMEBREW] Failed to remove existing app", "error", err)
 			return fmt.Sprintf("Failed to remove existing app: %v", err), 1, err
 		}
 	}
 
 	// Copy app bundle
+	slog.Info("[HOMEBREW] Copying app bundle to /Applications")
 	if err := copyDir(appPath, destPath); err != nil {
+		slog.Error("[HOMEBREW] Failed to copy app", "error", err)
 		return fmt.Sprintf("Failed to copy app: %v", err), 1, err
 	}
+	slog.Info("[HOMEBREW] App bundle copied successfully")
 
 	// Remove quarantine flag
+	slog.Info("[HOMEBREW] Removing quarantine flag")
 	exec.CommandContext(ctx, "xattr", "-rd", "com.apple.quarantine", destPath).Run()
 
+	slog.Info("[HOMEBREW] App installation completed", "app_name", appName)
 	return fmt.Sprintf("Successfully installed %s to /Applications", appName), 0, nil
 }
 

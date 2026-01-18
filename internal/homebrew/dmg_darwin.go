@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 
 // MountDMG mounts a DMG file and returns the mount point.
 func MountDMG(ctx context.Context, dmgPath string) (string, error) {
+	slog.Info("[HOMEBREW] MountDMG called", "dmg_path", dmgPath)
+
 	// hdiutil attach with -nobrowse to avoid Finder opening
 	cmd := exec.CommandContext(ctx, "hdiutil", "attach",
 		"-nobrowse",           // Don't show in Finder
@@ -25,10 +28,13 @@ func MountDMG(ctx context.Context, dmgPath string) (string, error) {
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
+			slog.Error("[HOMEBREW] hdiutil attach failed", "stderr", string(exitErr.Stderr))
 			return "", fmt.Errorf("hdiutil attach failed: %s", string(exitErr.Stderr))
 		}
+		slog.Error("[HOMEBREW] hdiutil attach error", "error", err)
 		return "", fmt.Errorf("hdiutil attach: %w", err)
 	}
+	slog.Info("[HOMEBREW] hdiutil output", "output", string(output))
 
 	// Parse output to find mount point - it's the last field in the output
 	lines := strings.Split(string(output), "\n")
@@ -38,11 +44,13 @@ func MountDMG(ctx context.Context, dmgPath string) (string, error) {
 			// Last field is the mount point
 			mountPoint := fields[len(fields)-1]
 			if strings.HasPrefix(mountPoint, "/tmp/") || strings.HasPrefix(mountPoint, "/Volumes/") {
+				slog.Info("[HOMEBREW] DMG mount point found", "mount_point", mountPoint)
 				return mountPoint, nil
 			}
 		}
 	}
 
+	slog.Error("[HOMEBREW] No mount point found in hdiutil output")
 	return "", fmt.Errorf("no mount point found in hdiutil output")
 }
 

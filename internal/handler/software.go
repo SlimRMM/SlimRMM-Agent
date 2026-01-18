@@ -1312,6 +1312,12 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 		return response, nil
 	}
 
+	h.logger.Info("download completed, starting hash verification",
+		"installation_id", req.InstallationID,
+		"download_path", downloadPath,
+		"expected_hash", caskInfo.SHA256,
+	)
+
 	// Verify SHA256 hash
 	if caskInfo.SHA256 != "" && caskInfo.SHA256 != "no_check" {
 		calculatedHash, err := calculateFileHash(downloadPath)
@@ -1327,6 +1333,11 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 		}
 
 		if calculatedHash != caskInfo.SHA256 {
+			h.logger.Error("hash mismatch",
+				"installation_id", req.InstallationID,
+				"expected", caskInfo.SHA256,
+				"got", calculatedHash,
+			)
 			response := map[string]interface{}{
 				"action":          "software_install_result",
 				"installation_id": req.InstallationID,
@@ -1336,7 +1347,14 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 			h.SendRaw(response)
 			return response, nil
 		}
+		h.logger.Info("hash verification passed", "installation_id", req.InstallationID)
 	}
+
+	h.logger.Info("starting extraction",
+		"installation_id", req.InstallationID,
+		"download_path", downloadPath,
+		"temp_dir", tempDir,
+	)
 
 	// Send progress: extracting/installing
 	h.SendRaw(map[string]interface{}{
@@ -1348,6 +1366,10 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 	// Use unified artifact extraction
 	artifact, err := homebrew.ExtractAndFindArtifact(ctx, downloadPath, tempDir)
 	if err != nil {
+		h.logger.Error("failed to extract artifact",
+			"installation_id", req.InstallationID,
+			"error", err,
+		)
 		response := map[string]interface{}{
 			"action":          "software_install_result",
 			"installation_id": req.InstallationID,
@@ -1359,6 +1381,13 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 	}
 	defer homebrew.CleanupArtifact(ctx, artifact)
 
+	h.logger.Info("artifact extracted successfully",
+		"installation_id", req.InstallationID,
+		"artifact_type", string(artifact.Type),
+		"artifact_path", artifact.Path,
+		"app_name", artifact.AppName,
+	)
+
 	// Send progress: installing
 	h.SendRaw(map[string]interface{}{
 		"action":          "software_install_progress",
@@ -1367,8 +1396,21 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 		"artifact_type":   string(artifact.Type),
 	})
 
+	h.logger.Info("starting artifact installation",
+		"installation_id", req.InstallationID,
+		"artifact_type", string(artifact.Type),
+		"artifact_path", artifact.Path,
+	)
+
 	// Install the extracted artifact
-	output, exitCode, _ := homebrew.InstallArtifact(ctx, artifact)
+	output, exitCode, installErr := homebrew.InstallArtifact(ctx, artifact)
+
+	h.logger.Info("artifact installation completed",
+		"installation_id", req.InstallationID,
+		"exit_code", exitCode,
+		"error", installErr,
+		"output_length", len(output),
+	)
 
 	completedAt := time.Now()
 	status := "completed"
