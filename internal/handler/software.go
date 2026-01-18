@@ -775,6 +775,9 @@ func (h *Handler) handleDownloadAndInstallMSI(ctx context.Context, data json.Raw
 		silentArgs = "/quiet /norestart"
 	}
 
+	// Sanitize silentArgs - remove /i flag if present (we add it ourselves)
+	silentArgs = sanitizeMsiArgs(silentArgs)
+
 	args := []string{"/i", msiPath}
 	args = append(args, parseArgs(silentArgs)...)
 	args = append(args, "/log", logPath)
@@ -989,4 +992,21 @@ func parseArgs(args string) []string {
 	}
 
 	return result
+}
+
+// sanitizeMsiArgs removes /i flag from MSI arguments since we add it ourselves.
+// This prevents duplicate /i flags when the backend sends "/i /qn /norestart".
+func sanitizeMsiArgs(args string) string {
+	// Parse args, filter out /i, rejoin
+	parsed := parseArgs(args)
+	var filtered []string
+	for _, arg := range parsed {
+		// Skip /i or -i (case insensitive)
+		lower := strings.ToLower(arg)
+		if lower == "/i" || lower == "-i" {
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	return strings.Join(filtered, " ")
 }
