@@ -37,13 +37,16 @@ func MountDMG(ctx context.Context, dmgPath string) (string, error) {
 	slog.Info("[HOMEBREW] hdiutil output", "output", string(output))
 
 	// Parse output to find mount point - it's the last field in the output
+	// On macOS, /tmp is a symlink to /private/tmp, so we need to check both
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) >= 3 {
 			// Last field is the mount point
 			mountPoint := fields[len(fields)-1]
-			if strings.HasPrefix(mountPoint, "/tmp/") || strings.HasPrefix(mountPoint, "/Volumes/") {
+			if strings.HasPrefix(mountPoint, "/tmp/") ||
+				strings.HasPrefix(mountPoint, "/private/tmp/") ||
+				strings.HasPrefix(mountPoint, "/Volumes/") {
 				slog.Info("[HOMEBREW] DMG mount point found", "mount_point", mountPoint)
 				return mountPoint, nil
 			}
