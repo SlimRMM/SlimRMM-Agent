@@ -38,7 +38,6 @@ func (h *Handler) registerSoftwareHandlers() {
 	h.handlers["download_and_install_msi"] = h.handleDownloadAndInstallMSI
 	h.handlers["download_and_install_pkg"] = h.handleDownloadAndInstallPKG
 	h.handlers["download_and_install_cask"] = h.handleDownloadAndInstallCask
-	h.handlers["install_homebrew_formula"] = h.handleInstallHomebrewFormula
 	h.handlers["cancel_software_install"] = h.handleCancelSoftwareInstall
 }
 
@@ -1361,96 +1360,6 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 		"output":          output,
 		"cask_name":       req.CaskName,
 		"version":         caskInfo.Version,
-		"started_at":      startedAt.UTC().Format(time.RFC3339),
-		"completed_at":    completedAt.UTC().Format(time.RFC3339),
-		"duration_ms":     completedAt.Sub(startedAt).Milliseconds(),
-	}
-
-	h.SendRaw(response)
-	return response, nil
-}
-
-// installHomebrewFormulaRequest represents a Homebrew formula installation request.
-type installHomebrewFormulaRequest struct {
-	InstallationID string `json:"installation_id"`
-	FormulaName    string `json:"formula_name"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
-}
-
-// handleInstallHomebrewFormula handles Homebrew formula installation.
-func (h *Handler) handleInstallHomebrewFormula(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	var req installHomebrewFormulaRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
-	}
-
-	// Platform validation
-	if runtime.GOOS != "darwin" {
-		response := map[string]interface{}{
-			"action":          "software_install_result",
-			"installation_id": req.InstallationID,
-			"status":          "failed",
-			"error":           "Homebrew formula installation is only available on macOS",
-		}
-		h.SendRaw(response)
-		return response, nil
-	}
-
-	h.logger.Info("starting formula installation",
-		"installation_id", req.InstallationID,
-		"formula_name", req.FormulaName,
-	)
-
-	// Set timeout (formulas may need compilation)
-	timeout := time.Duration(req.TimeoutSeconds) * time.Second
-	if timeout == 0 {
-		timeout = 30 * time.Minute
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	// Track installation
-	runningInstallations.Lock()
-	runningInstallations.m[req.InstallationID] = &runningInstallation{cancel: cancel}
-	runningInstallations.Unlock()
-	defer func() {
-		runningInstallations.Lock()
-		delete(runningInstallations.m, req.InstallationID)
-		runningInstallations.Unlock()
-	}()
-
-	startedAt := time.Now()
-
-	// Send progress
-	h.SendRaw(map[string]interface{}{
-		"action":          "software_install_progress",
-		"installation_id": req.InstallationID,
-		"status":          "installing",
-		"output":          "Installing via Homebrew...",
-	})
-
-	// Install formula
-	output, exitCode, err := homebrew.InstallFormula(ctx, req.FormulaName)
-
-	completedAt := time.Now()
-	status := "completed"
-	if ctx.Err() == context.Canceled {
-		status = "cancelled"
-		output = "Installation cancelled"
-	} else if exitCode != 0 || err != nil {
-		status = "failed"
-		if err != nil {
-			output = fmt.Sprintf("%s\nError: %v", output, err)
-		}
-	}
-
-	response := map[string]interface{}{
-		"action":          "software_install_result",
-		"installation_id": req.InstallationID,
-		"status":          status,
-		"exit_code":       exitCode,
-		"output":          output,
-		"formula_name":    req.FormulaName,
 		"started_at":      startedAt.UTC().Format(time.RFC3339),
 		"completed_at":    completedAt.UTC().Format(time.RFC3339),
 		"duration_ms":     completedAt.Sub(startedAt).Milliseconds(),
