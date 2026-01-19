@@ -1087,6 +1087,9 @@ func (h *Handler) handleDownloadAndInstallPKG(ctx context.Context, data json.Raw
 	}()
 
 	startedAt := time.Now()
+	var logBuffer strings.Builder
+	logBuffer.WriteString(fmt.Sprintf("[%s] Starting PKG installation: %s\n", startedAt.Format(time.RFC3339), req.Filename))
+	logBuffer.WriteString(fmt.Sprintf("[%s] Platform: macOS (%s)\n", time.Now().Format(time.RFC3339), runtime.GOARCH))
 
 	// Create temp directory
 	tempDir, err := os.MkdirTemp("", "slimrmm-pkg-*")
@@ -1101,6 +1104,7 @@ func (h *Handler) handleDownloadAndInstallPKG(ctx context.Context, data json.Raw
 		return response, nil
 	}
 	defer os.RemoveAll(tempDir)
+	logBuffer.WriteString(fmt.Sprintf("[%s] Created temp directory: %s\n", time.Now().Format(time.RFC3339), tempDir))
 
 	pkgPath := filepath.Join(tempDir, req.Filename)
 
@@ -1112,27 +1116,40 @@ func (h *Handler) handleDownloadAndInstallPKG(ctx context.Context, data json.Raw
 		"progress_percent": 0,
 	})
 
+	logBuffer.WriteString(fmt.Sprintf("[%s] Downloading package from: %s\n", time.Now().Format(time.RFC3339), req.DownloadURL))
+
 	// Download the PKG
 	if err := h.downloadFile(ctx, req.DownloadURL, req.DownloadToken, pkgPath, req.InstallationID); err != nil {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Download failed: %v\n", time.Now().Format(time.RFC3339), err))
 		response := map[string]interface{}{
 			"action":          "software_install_result",
 			"installation_id": req.InstallationID,
 			"status":          "failed",
 			"error":           fmt.Sprintf("download failed: %v", err),
+			"output":          logBuffer.String(),
 		}
 		h.SendRaw(response)
 		return response, nil
 	}
+	logBuffer.WriteString(fmt.Sprintf("[%s] Download completed: %s\n", time.Now().Format(time.RFC3339), pkgPath))
+
+	// Get file size for logging
+	if fileInfo, err := os.Stat(pkgPath); err == nil {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Package size: %d bytes\n", time.Now().Format(time.RFC3339), fileInfo.Size()))
+	}
 
 	// Verify hash if provided
 	if req.ExpectedHash != "" {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Verifying package hash...\n", time.Now().Format(time.RFC3339)))
 		calculatedHash, err := calculateFileHash(pkgPath)
 		if err != nil {
+			logBuffer.WriteString(fmt.Sprintf("[%s] Hash calculation failed: %v\n", time.Now().Format(time.RFC3339), err))
 			response := map[string]interface{}{
 				"action":          "software_install_result",
 				"installation_id": req.InstallationID,
 				"status":          "failed",
 				"error":           fmt.Sprintf("hash calculation failed: %v", err),
+				"output":          logBuffer.String(),
 			}
 			h.SendRaw(response)
 			return response, nil
@@ -1144,15 +1161,18 @@ func (h *Handler) handleDownloadAndInstallPKG(ctx context.Context, data json.Raw
 		}
 
 		if calculatedHash != expectedHash {
+			logBuffer.WriteString(fmt.Sprintf("[%s] Hash verification FAILED: expected %s, got %s\n", time.Now().Format(time.RFC3339), expectedHash, calculatedHash))
 			response := map[string]interface{}{
 				"action":          "software_install_result",
 				"installation_id": req.InstallationID,
 				"status":          "failed",
 				"error":           fmt.Sprintf("hash mismatch: expected %s, got %s", expectedHash, calculatedHash),
+				"output":          logBuffer.String(),
 			}
 			h.SendRaw(response)
 			return response, nil
 		}
+		logBuffer.WriteString(fmt.Sprintf("[%s] Hash verification passed: %s\n", time.Now().Format(time.RFC3339), calculatedHash))
 	}
 
 	// Send progress: installing
@@ -1163,8 +1183,10 @@ func (h *Handler) handleDownloadAndInstallPKG(ctx context.Context, data json.Raw
 	})
 
 	// Execute macOS installer
+	logBuffer.WriteString(fmt.Sprintf("[%s] Executing: installer -pkg %s -target / -verboseR\n", time.Now().Format(time.RFC3339), pkgPath))
 	cmd := exec.CommandContext(ctx, "installer", "-pkg", pkgPath, "-target", "/", "-verboseR")
 	output, cmdErr := cmd.CombinedOutput()
+	logBuffer.WriteString(fmt.Sprintf("[%s] Installer output:\n%s\n", time.Now().Format(time.RFC3339), string(output)))
 
 	exitCode := 0
 	if cmdErr != nil {
@@ -1173,22 +1195,31 @@ func (h *Handler) handleDownloadAndInstallPKG(ctx context.Context, data json.Raw
 		} else {
 			exitCode = -1
 		}
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installer failed with exit code: %d\n", time.Now().Format(time.RFC3339), exitCode))
+	} else {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installer completed successfully\n", time.Now().Format(time.RFC3339)))
 	}
 
 	completedAt := time.Now()
 	status := "completed"
 	if ctx.Err() == context.Canceled {
 		status = "cancelled"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installation was cancelled\n", completedAt.Format(time.RFC3339)))
 	} else if exitCode != 0 {
 		status = "failed"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installation failed with exit code: %d\n", completedAt.Format(time.RFC3339), exitCode))
+	} else {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installation completed successfully\n", completedAt.Format(time.RFC3339)))
 	}
+
+	logBuffer.WriteString(fmt.Sprintf("[%s] Duration: %dms\n", completedAt.Format(time.RFC3339), completedAt.Sub(startedAt).Milliseconds()))
 
 	response := map[string]interface{}{
 		"action":          "software_install_result",
 		"installation_id": req.InstallationID,
 		"status":          status,
 		"exit_code":       exitCode,
-		"output":          string(output),
+		"output":          logBuffer.String(),
 		"started_at":      startedAt.UTC().Format(time.RFC3339),
 		"completed_at":    completedAt.UTC().Format(time.RFC3339),
 		"duration_ms":     completedAt.Sub(startedAt).Milliseconds(),
@@ -1257,6 +1288,9 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 	}()
 
 	startedAt := time.Now()
+	var logBuffer strings.Builder
+	logBuffer.WriteString(fmt.Sprintf("[%s] Starting Homebrew Cask installation: %s\n", startedAt.Format(time.RFC3339), req.CaskName))
+	logBuffer.WriteString(fmt.Sprintf("[%s] Platform: macOS (%s)\n", time.Now().Format(time.RFC3339), runtime.GOARCH))
 
 	// Fetch cask info from Homebrew API
 	h.SendRaw(map[string]interface{}{
@@ -1265,31 +1299,43 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 		"status":          "fetching_metadata",
 	})
 
+	logBuffer.WriteString(fmt.Sprintf("[%s] Fetching cask metadata from Homebrew API...\n", time.Now().Format(time.RFC3339)))
+
 	caskInfo, err := homebrew.FetchCaskInfo(ctx, req.CaskName)
 	if err != nil {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Failed to fetch cask info: %v\n", time.Now().Format(time.RFC3339), err))
 		response := map[string]interface{}{
 			"action":          "software_install_result",
 			"installation_id": req.InstallationID,
 			"status":          "failed",
 			"error":           fmt.Sprintf("fetch cask info: %v", err),
+			"output":          logBuffer.String(),
 		}
 		h.SendRaw(response)
 		return response, nil
 	}
 
+	logBuffer.WriteString(fmt.Sprintf("[%s] Cask info retrieved successfully\n", time.Now().Format(time.RFC3339)))
+	logBuffer.WriteString(fmt.Sprintf("[%s] Version: %s\n", time.Now().Format(time.RFC3339), caskInfo.Version))
+	logBuffer.WriteString(fmt.Sprintf("[%s] Download URL: %s\n", time.Now().Format(time.RFC3339), caskInfo.URL))
+	logBuffer.WriteString(fmt.Sprintf("[%s] Expected SHA256: %s\n", time.Now().Format(time.RFC3339), caskInfo.SHA256))
+
 	// Create temp directory
 	tempDir, err := os.MkdirTemp("", "slimrmm-cask-*")
 	if err != nil {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Failed to create temp directory: %v\n", time.Now().Format(time.RFC3339), err))
 		response := map[string]interface{}{
 			"action":          "software_install_result",
 			"installation_id": req.InstallationID,
 			"status":          "failed",
 			"error":           fmt.Sprintf("create temp dir: %v", err),
+			"output":          logBuffer.String(),
 		}
 		h.SendRaw(response)
 		return response, nil
 	}
 	defer os.RemoveAll(tempDir)
+	logBuffer.WriteString(fmt.Sprintf("[%s] Created temp directory: %s\n", time.Now().Format(time.RFC3339), tempDir))
 
 	// Determine file extension from URL
 	downloadPath := filepath.Join(tempDir, filepath.Base(caskInfo.URL))
@@ -1302,16 +1348,27 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 		"progress_percent": 0,
 	})
 
+	logBuffer.WriteString(fmt.Sprintf("[%s] Downloading package...\n", time.Now().Format(time.RFC3339)))
+
 	// Download the file
 	if err := h.downloadFile(ctx, caskInfo.URL, "", downloadPath, req.InstallationID); err != nil {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Download failed: %v\n", time.Now().Format(time.RFC3339), err))
 		response := map[string]interface{}{
 			"action":          "software_install_result",
 			"installation_id": req.InstallationID,
 			"status":          "failed",
 			"error":           fmt.Sprintf("download: %v", err),
+			"output":          logBuffer.String(),
 		}
 		h.SendRaw(response)
 		return response, nil
+	}
+
+	logBuffer.WriteString(fmt.Sprintf("[%s] Download completed: %s\n", time.Now().Format(time.RFC3339), downloadPath))
+
+	// Get file size for logging
+	if fileInfo, err := os.Stat(downloadPath); err == nil {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Downloaded file size: %d bytes\n", time.Now().Format(time.RFC3339), fileInfo.Size()))
 	}
 
 	h.logger.Info("download completed, starting hash verification",
@@ -1322,13 +1379,16 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 
 	// Verify SHA256 hash
 	if caskInfo.SHA256 != "" && caskInfo.SHA256 != "no_check" {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Verifying SHA256 hash...\n", time.Now().Format(time.RFC3339)))
 		calculatedHash, err := calculateFileHash(downloadPath)
 		if err != nil {
+			logBuffer.WriteString(fmt.Sprintf("[%s] Hash calculation failed: %v\n", time.Now().Format(time.RFC3339), err))
 			response := map[string]interface{}{
 				"action":          "software_install_result",
 				"installation_id": req.InstallationID,
 				"status":          "failed",
 				"error":           fmt.Sprintf("hash calculation: %v", err),
+				"output":          logBuffer.String(),
 			}
 			h.SendRaw(response)
 			return response, nil
@@ -1340,16 +1400,21 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 				"expected", caskInfo.SHA256,
 				"got", calculatedHash,
 			)
+			logBuffer.WriteString(fmt.Sprintf("[%s] Hash verification FAILED: expected %s, got %s\n", time.Now().Format(time.RFC3339), caskInfo.SHA256, calculatedHash))
 			response := map[string]interface{}{
 				"action":          "software_install_result",
 				"installation_id": req.InstallationID,
 				"status":          "failed",
 				"error":           fmt.Sprintf("hash mismatch: expected %s, got %s", caskInfo.SHA256, calculatedHash),
+				"output":          logBuffer.String(),
 			}
 			h.SendRaw(response)
 			return response, nil
 		}
+		logBuffer.WriteString(fmt.Sprintf("[%s] Hash verification passed: %s\n", time.Now().Format(time.RFC3339), calculatedHash))
 		h.logger.Info("hash verification passed", "installation_id", req.InstallationID)
+	} else {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Hash verification skipped (no_check or empty)\n", time.Now().Format(time.RFC3339)))
 	}
 
 	h.logger.Info("starting extraction",
@@ -1365,6 +1430,8 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 		"status":          "extracting",
 	})
 
+	logBuffer.WriteString(fmt.Sprintf("[%s] Extracting artifact from downloaded file...\n", time.Now().Format(time.RFC3339)))
+
 	// Use unified artifact extraction
 	artifact, err := homebrew.ExtractAndFindArtifact(ctx, downloadPath, tempDir)
 	if err != nil {
@@ -1372,16 +1439,25 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 			"installation_id", req.InstallationID,
 			"error", err,
 		)
+		logBuffer.WriteString(fmt.Sprintf("[%s] Extraction failed: %v\n", time.Now().Format(time.RFC3339), err))
 		response := map[string]interface{}{
 			"action":          "software_install_result",
 			"installation_id": req.InstallationID,
 			"status":          "failed",
 			"error":           fmt.Sprintf("extract artifact: %v", err),
+			"output":          logBuffer.String(),
 		}
 		h.SendRaw(response)
 		return response, nil
 	}
 	defer homebrew.CleanupArtifact(ctx, artifact)
+
+	logBuffer.WriteString(fmt.Sprintf("[%s] Artifact extracted successfully\n", time.Now().Format(time.RFC3339)))
+	logBuffer.WriteString(fmt.Sprintf("[%s] Artifact type: %s\n", time.Now().Format(time.RFC3339), string(artifact.Type)))
+	logBuffer.WriteString(fmt.Sprintf("[%s] Artifact path: %s\n", time.Now().Format(time.RFC3339), artifact.Path))
+	if artifact.AppName != "" {
+		logBuffer.WriteString(fmt.Sprintf("[%s] App name: %s\n", time.Now().Format(time.RFC3339), artifact.AppName))
+	}
 
 	h.logger.Info("artifact extracted successfully",
 		"installation_id", req.InstallationID,
@@ -1398,6 +1474,8 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 		"artifact_type":   string(artifact.Type),
 	})
 
+	logBuffer.WriteString(fmt.Sprintf("[%s] Installing artifact...\n", time.Now().Format(time.RFC3339)))
+
 	h.logger.Info("starting artifact installation",
 		"installation_id", req.InstallationID,
 		"artifact_type", string(artifact.Type),
@@ -1406,6 +1484,7 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 
 	// Install the extracted artifact
 	output, exitCode, installErr := homebrew.InstallArtifact(ctx, artifact)
+	logBuffer.WriteString(fmt.Sprintf("[%s] Installation output:\n%s\n", time.Now().Format(time.RFC3339), output))
 
 	h.logger.Info("artifact installation completed",
 		"installation_id", req.InstallationID,
@@ -1418,17 +1497,22 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 	status := "completed"
 	if ctx.Err() == context.Canceled {
 		status = "cancelled"
-		output = "Installation cancelled"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installation was cancelled\n", completedAt.Format(time.RFC3339)))
 	} else if exitCode != 0 {
 		status = "failed"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installation failed with exit code: %d\n", completedAt.Format(time.RFC3339), exitCode))
+	} else {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installation completed successfully\n", completedAt.Format(time.RFC3339)))
 	}
+
+	logBuffer.WriteString(fmt.Sprintf("[%s] Duration: %dms\n", completedAt.Format(time.RFC3339), completedAt.Sub(startedAt).Milliseconds()))
 
 	response := map[string]interface{}{
 		"action":          "software_install_result",
 		"installation_id": req.InstallationID,
 		"status":          status,
 		"exit_code":       exitCode,
-		"output":          output,
+		"output":          logBuffer.String(),
 		"cask_name":       req.CaskName,
 		"version":         caskInfo.Version,
 		"started_at":      startedAt.UTC().Format(time.RFC3339),
@@ -1480,7 +1564,7 @@ func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.Raw
 		return response, nil
 	}
 
-	// Check if dpkg is available
+	// Check if dpkg is available (required for DEB)
 	if _, err := exec.LookPath("dpkg"); err != nil {
 		h.logger.Warn("dpkg not found on system", "error", err)
 		response := map[string]interface{}{
@@ -1493,9 +1577,19 @@ func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.Raw
 		return response, nil
 	}
 
+	// Check for apt-get (preferred for dependency resolution)
+	hasApt := false
+	if _, err := exec.LookPath("apt-get"); err == nil {
+		hasApt = true
+		h.logger.Info("apt-get available for dependency resolution")
+	} else {
+		h.logger.Warn("apt-get not found - will use dpkg only (no automatic dependency resolution)")
+	}
+
 	h.logger.Info("starting DEB installation",
 		"installation_id", req.InstallationID,
 		"filename", req.Filename,
+		"has_apt", hasApt,
 	)
 
 	// Set timeout
@@ -1517,6 +1611,8 @@ func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.Raw
 	}()
 
 	startedAt := time.Now()
+	var logBuffer strings.Builder
+	logBuffer.WriteString(fmt.Sprintf("[%s] Starting DEB installation: %s\n", startedAt.Format(time.RFC3339), req.Filename))
 
 	// Create temp directory
 	tempDir, err := os.MkdirTemp("", "slimrmm-deb-*")
@@ -1531,6 +1627,7 @@ func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.Raw
 		return response, nil
 	}
 	defer os.RemoveAll(tempDir)
+	logBuffer.WriteString(fmt.Sprintf("[%s] Created temp directory: %s\n", time.Now().Format(time.RFC3339), tempDir))
 
 	debPath := filepath.Join(tempDir, req.Filename)
 
@@ -1542,6 +1639,8 @@ func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.Raw
 		"progress_percent": 0,
 	})
 
+	logBuffer.WriteString(fmt.Sprintf("[%s] Downloading package from: %s\n", time.Now().Format(time.RFC3339), req.DownloadURL))
+
 	// Download the DEB
 	if err := h.downloadFile(ctx, req.DownloadURL, req.DownloadToken, debPath, req.InstallationID); err != nil {
 		response := map[string]interface{}{
@@ -1549,13 +1648,21 @@ func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.Raw
 			"installation_id": req.InstallationID,
 			"status":          "failed",
 			"error":           fmt.Sprintf("download failed: %v", err),
+			"output":          logBuffer.String(),
 		}
 		h.SendRaw(response)
 		return response, nil
 	}
+	logBuffer.WriteString(fmt.Sprintf("[%s] Download completed: %s\n", time.Now().Format(time.RFC3339), debPath))
+
+	// Get file size for logging
+	if fileInfo, err := os.Stat(debPath); err == nil {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Package size: %d bytes\n", time.Now().Format(time.RFC3339), fileInfo.Size()))
+	}
 
 	// Verify hash if provided
 	if req.ExpectedHash != "" {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Verifying package hash...\n", time.Now().Format(time.RFC3339)))
 		calculatedHash, err := calculateFileHash(debPath)
 		if err != nil {
 			response := map[string]interface{}{
@@ -1563,6 +1670,7 @@ func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.Raw
 				"installation_id": req.InstallationID,
 				"status":          "failed",
 				"error":           fmt.Sprintf("hash calculation failed: %v", err),
+				"output":          logBuffer.String(),
 			}
 			h.SendRaw(response)
 			return response, nil
@@ -1574,15 +1682,18 @@ func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.Raw
 		}
 
 		if calculatedHash != expectedHash {
+			logBuffer.WriteString(fmt.Sprintf("[%s] Hash verification FAILED: expected %s, got %s\n", time.Now().Format(time.RFC3339), expectedHash, calculatedHash))
 			response := map[string]interface{}{
 				"action":          "software_install_result",
 				"installation_id": req.InstallationID,
 				"status":          "failed",
 				"error":           fmt.Sprintf("hash mismatch: expected %s, got %s", expectedHash, calculatedHash),
+				"output":          logBuffer.String(),
 			}
 			h.SendRaw(response)
 			return response, nil
 		}
+		logBuffer.WriteString(fmt.Sprintf("[%s] Hash verification passed: %s\n", time.Now().Format(time.RFC3339), calculatedHash))
 	}
 
 	// Send progress: installing
@@ -1592,42 +1703,74 @@ func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.Raw
 		"status":          "installing",
 	})
 
-	// Execute dpkg -i (prefer dpkg directly for clean installation)
-	// Use --force-confnew to auto-accept new config files
-	cmd := exec.CommandContext(ctx, "dpkg", "-i", "--force-confnew", debPath)
-	output, cmdErr := cmd.CombinedOutput()
+	var exitCode int
+	var pkgManager string
 
-	exitCode := 0
-	if cmdErr != nil {
-		if exitError, ok := cmdErr.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
+	// Strategy: Use apt-get install first if available (handles dependencies automatically)
+	// Fall back to dpkg -i + apt-get -f install if apt-get install fails
+	if hasApt {
+		// PREFERRED: Use apt-get install which handles dependencies automatically
+		pkgManager = "apt-get"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Using apt-get install for automatic dependency resolution\n", time.Now().Format(time.RFC3339)))
+		logBuffer.WriteString(fmt.Sprintf("[%s] Executing: apt-get install -y --allow-downgrades %s\n", time.Now().Format(time.RFC3339), debPath))
+
+		cmd := exec.CommandContext(ctx, "apt-get", "install", "-y", "--allow-downgrades", debPath)
+		output, cmdErr := cmd.CombinedOutput()
+		logBuffer.WriteString(fmt.Sprintf("[%s] apt-get install output:\n%s\n", time.Now().Format(time.RFC3339), string(output)))
+
+		if cmdErr != nil {
+			if exitError, ok := cmdErr.(*exec.ExitError); ok {
+				exitCode = exitError.ExitCode()
+			} else {
+				exitCode = -1
+			}
+			logBuffer.WriteString(fmt.Sprintf("[%s] apt-get install failed with exit code: %d\n", time.Now().Format(time.RFC3339), exitCode))
+
+			// Fallback: try dpkg -i first, then apt-get -f install to fix dependencies
+			logBuffer.WriteString(fmt.Sprintf("[%s] Trying fallback: dpkg -i followed by apt-get -f install\n", time.Now().Format(time.RFC3339)))
+
+			dpkgCmd := exec.CommandContext(ctx, "dpkg", "-i", "--force-confnew", debPath)
+			dpkgOutput, _ := dpkgCmd.CombinedOutput()
+			logBuffer.WriteString(fmt.Sprintf("[%s] dpkg -i output:\n%s\n", time.Now().Format(time.RFC3339), string(dpkgOutput)))
+
+			// Fix dependencies
+			logBuffer.WriteString(fmt.Sprintf("[%s] Running apt-get -f install to resolve dependencies\n", time.Now().Format(time.RFC3339)))
+			fixCmd := exec.CommandContext(ctx, "apt-get", "-f", "install", "-y")
+			fixOutput, fixErr := fixCmd.CombinedOutput()
+			logBuffer.WriteString(fmt.Sprintf("[%s] apt-get -f install output:\n%s\n", time.Now().Format(time.RFC3339), string(fixOutput)))
+
+			if fixErr == nil {
+				exitCode = 0
+				logBuffer.WriteString(fmt.Sprintf("[%s] Dependencies resolved successfully\n", time.Now().Format(time.RFC3339)))
+			} else if exitError, ok := fixErr.(*exec.ExitError); ok {
+				exitCode = exitError.ExitCode()
+				logBuffer.WriteString(fmt.Sprintf("[%s] apt-get -f install failed with exit code: %d\n", time.Now().Format(time.RFC3339), exitCode))
+			}
 		} else {
-			exitCode = -1
-		}
-	}
-
-	// If dpkg failed due to dependencies, try to fix them with apt-get
-	if exitCode != 0 && strings.Contains(string(output), "dependency problems") {
-		h.logger.Info("DEB has dependency issues, attempting apt-get -f install",
-			"installation_id", req.InstallationID,
-		)
-
-		h.SendRaw(map[string]interface{}{
-			"action":          "software_install_progress",
-			"installation_id": req.InstallationID,
-			"status":          "installing",
-			"output":          "Resolving dependencies...",
-		})
-
-		fixCmd := exec.CommandContext(ctx, "apt-get", "-f", "install", "-y")
-		fixOutput, fixErr := fixCmd.CombinedOutput()
-		output = append(output, '\n')
-		output = append(output, fixOutput...)
-
-		if fixErr == nil {
 			exitCode = 0
-		} else if exitError, ok := fixErr.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
+			logBuffer.WriteString(fmt.Sprintf("[%s] apt-get install completed successfully\n", time.Now().Format(time.RFC3339)))
+		}
+	} else {
+		// No apt-get available, use dpkg directly
+		pkgManager = "dpkg"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Using dpkg -i (no apt-get available for dependency resolution)\n", time.Now().Format(time.RFC3339)))
+		logBuffer.WriteString(fmt.Sprintf("[%s] Executing: dpkg -i --force-confnew %s\n", time.Now().Format(time.RFC3339), debPath))
+
+		cmd := exec.CommandContext(ctx, "dpkg", "-i", "--force-confnew", debPath)
+		output, cmdErr := cmd.CombinedOutput()
+		logBuffer.WriteString(fmt.Sprintf("[%s] dpkg -i output:\n%s\n", time.Now().Format(time.RFC3339), string(output)))
+
+		if cmdErr != nil {
+			if exitError, ok := cmdErr.(*exec.ExitError); ok {
+				exitCode = exitError.ExitCode()
+			} else {
+				exitCode = -1
+			}
+			logBuffer.WriteString(fmt.Sprintf("[%s] dpkg -i failed with exit code: %d\n", time.Now().Format(time.RFC3339), exitCode))
+			logBuffer.WriteString(fmt.Sprintf("[%s] WARNING: Dependencies may not be resolved (apt-get not available)\n", time.Now().Format(time.RFC3339)))
+		} else {
+			exitCode = 0
+			logBuffer.WriteString(fmt.Sprintf("[%s] dpkg -i completed successfully\n", time.Now().Format(time.RFC3339)))
 		}
 	}
 
@@ -1635,16 +1778,23 @@ func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.Raw
 	status := "completed"
 	if ctx.Err() == context.Canceled {
 		status = "cancelled"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installation was cancelled\n", completedAt.Format(time.RFC3339)))
 	} else if exitCode != 0 {
 		status = "failed"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installation failed with exit code: %d\n", completedAt.Format(time.RFC3339), exitCode))
+	} else {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installation completed successfully\n", completedAt.Format(time.RFC3339)))
 	}
+
+	logBuffer.WriteString(fmt.Sprintf("[%s] Duration: %dms\n", completedAt.Format(time.RFC3339), completedAt.Sub(startedAt).Milliseconds()))
 
 	response := map[string]interface{}{
 		"action":          "software_install_result",
 		"installation_id": req.InstallationID,
 		"status":          status,
 		"exit_code":       exitCode,
-		"output":          string(output),
+		"output":          logBuffer.String(),
+		"package_manager": pkgManager,
 		"started_at":      startedAt.UTC().Format(time.RFC3339),
 		"completed_at":    completedAt.UTC().Format(time.RFC3339),
 		"duration_ms":     completedAt.Sub(startedAt).Milliseconds(),
@@ -1664,7 +1814,7 @@ type downloadAndInstallRPMRequest struct {
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
-// handleDownloadAndInstallRPM handles RPM package download and installation on RHEL/CentOS/Fedora.
+// handleDownloadAndInstallRPM handles RPM package download and installation on RHEL/CentOS/Fedora/SUSE.
 func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	h.logger.Info("received RPM installation request")
 
@@ -1694,7 +1844,7 @@ func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.Raw
 		return response, nil
 	}
 
-	// Check if rpm is available
+	// Check if rpm is available (required for RPM)
 	if _, err := exec.LookPath("rpm"); err != nil {
 		h.logger.Warn("rpm not found on system", "error", err)
 		response := map[string]interface{}{
@@ -1707,9 +1857,30 @@ func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.Raw
 		return response, nil
 	}
 
+	// Detect available package managers for dependency resolution
+	hasDnf := false
+	hasYum := false
+	hasZypper := false
+
+	if _, err := exec.LookPath("dnf"); err == nil {
+		hasDnf = true
+		h.logger.Info("dnf available for dependency resolution (Fedora/RHEL 8+)")
+	}
+	if _, err := exec.LookPath("yum"); err == nil {
+		hasYum = true
+		h.logger.Info("yum available for dependency resolution (RHEL/CentOS)")
+	}
+	if _, err := exec.LookPath("zypper"); err == nil {
+		hasZypper = true
+		h.logger.Info("zypper available for dependency resolution (SUSE/openSUSE)")
+	}
+
 	h.logger.Info("starting RPM installation",
 		"installation_id", req.InstallationID,
 		"filename", req.Filename,
+		"has_dnf", hasDnf,
+		"has_yum", hasYum,
+		"has_zypper", hasZypper,
 	)
 
 	// Set timeout
@@ -1731,6 +1902,9 @@ func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.Raw
 	}()
 
 	startedAt := time.Now()
+	var logBuffer strings.Builder
+	logBuffer.WriteString(fmt.Sprintf("[%s] Starting RPM installation: %s\n", startedAt.Format(time.RFC3339), req.Filename))
+	logBuffer.WriteString(fmt.Sprintf("[%s] Available package managers: dnf=%v, yum=%v, zypper=%v\n", time.Now().Format(time.RFC3339), hasDnf, hasYum, hasZypper))
 
 	// Create temp directory
 	tempDir, err := os.MkdirTemp("", "slimrmm-rpm-*")
@@ -1745,6 +1919,7 @@ func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.Raw
 		return response, nil
 	}
 	defer os.RemoveAll(tempDir)
+	logBuffer.WriteString(fmt.Sprintf("[%s] Created temp directory: %s\n", time.Now().Format(time.RFC3339), tempDir))
 
 	rpmPath := filepath.Join(tempDir, req.Filename)
 
@@ -1756,6 +1931,8 @@ func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.Raw
 		"progress_percent": 0,
 	})
 
+	logBuffer.WriteString(fmt.Sprintf("[%s] Downloading package from: %s\n", time.Now().Format(time.RFC3339), req.DownloadURL))
+
 	// Download the RPM
 	if err := h.downloadFile(ctx, req.DownloadURL, req.DownloadToken, rpmPath, req.InstallationID); err != nil {
 		response := map[string]interface{}{
@@ -1763,13 +1940,21 @@ func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.Raw
 			"installation_id": req.InstallationID,
 			"status":          "failed",
 			"error":           fmt.Sprintf("download failed: %v", err),
+			"output":          logBuffer.String(),
 		}
 		h.SendRaw(response)
 		return response, nil
 	}
+	logBuffer.WriteString(fmt.Sprintf("[%s] Download completed: %s\n", time.Now().Format(time.RFC3339), rpmPath))
+
+	// Get file size for logging
+	if fileInfo, err := os.Stat(rpmPath); err == nil {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Package size: %d bytes\n", time.Now().Format(time.RFC3339), fileInfo.Size()))
+	}
 
 	// Verify hash if provided
 	if req.ExpectedHash != "" {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Verifying package hash...\n", time.Now().Format(time.RFC3339)))
 		calculatedHash, err := calculateFileHash(rpmPath)
 		if err != nil {
 			response := map[string]interface{}{
@@ -1777,6 +1962,7 @@ func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.Raw
 				"installation_id": req.InstallationID,
 				"status":          "failed",
 				"error":           fmt.Sprintf("hash calculation failed: %v", err),
+				"output":          logBuffer.String(),
 			}
 			h.SendRaw(response)
 			return response, nil
@@ -1788,15 +1974,18 @@ func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.Raw
 		}
 
 		if calculatedHash != expectedHash {
+			logBuffer.WriteString(fmt.Sprintf("[%s] Hash verification FAILED: expected %s, got %s\n", time.Now().Format(time.RFC3339), expectedHash, calculatedHash))
 			response := map[string]interface{}{
 				"action":          "software_install_result",
 				"installation_id": req.InstallationID,
 				"status":          "failed",
 				"error":           fmt.Sprintf("hash mismatch: expected %s, got %s", expectedHash, calculatedHash),
+				"output":          logBuffer.String(),
 			}
 			h.SendRaw(response)
 			return response, nil
 		}
+		logBuffer.WriteString(fmt.Sprintf("[%s] Hash verification passed: %s\n", time.Now().Format(time.RFC3339), calculatedHash))
 	}
 
 	// Send progress: installing
@@ -1807,21 +1996,34 @@ func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.Raw
 	})
 
 	// Determine best package manager to use
-	// Prefer dnf (Fedora/RHEL 8+), fallback to yum, then rpm
+	// Priority: dnf (Fedora/RHEL 8+) > zypper (SUSE) > yum (RHEL/CentOS) > rpm (fallback)
 	var cmd *exec.Cmd
 	var pkgManager string
 
-	if _, err := exec.LookPath("dnf"); err == nil {
+	if hasDnf {
 		// Use dnf install (handles dependencies automatically)
 		pkgManager = "dnf"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Using dnf for installation (automatic dependency resolution)\n", time.Now().Format(time.RFC3339)))
+		logBuffer.WriteString(fmt.Sprintf("[%s] Executing: dnf install -y %s\n", time.Now().Format(time.RFC3339), rpmPath))
 		cmd = exec.CommandContext(ctx, "dnf", "install", "-y", rpmPath)
-	} else if _, err := exec.LookPath("yum"); err == nil {
+	} else if hasZypper {
+		// Use zypper install (SUSE/openSUSE - handles dependencies automatically)
+		pkgManager = "zypper"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Using zypper for installation (SUSE/openSUSE - automatic dependency resolution)\n", time.Now().Format(time.RFC3339)))
+		logBuffer.WriteString(fmt.Sprintf("[%s] Executing: zypper --non-interactive install --allow-unsigned-rpm %s\n", time.Now().Format(time.RFC3339), rpmPath))
+		cmd = exec.CommandContext(ctx, "zypper", "--non-interactive", "install", "--allow-unsigned-rpm", rpmPath)
+	} else if hasYum {
 		// Use yum install (handles dependencies automatically)
 		pkgManager = "yum"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Using yum for installation (automatic dependency resolution)\n", time.Now().Format(time.RFC3339)))
+		logBuffer.WriteString(fmt.Sprintf("[%s] Executing: yum install -y %s\n", time.Now().Format(time.RFC3339), rpmPath))
 		cmd = exec.CommandContext(ctx, "yum", "install", "-y", rpmPath)
 	} else {
 		// Fallback to direct rpm -i (no dependency resolution)
 		pkgManager = "rpm"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Using rpm -ivh (fallback - no automatic dependency resolution)\n", time.Now().Format(time.RFC3339)))
+		logBuffer.WriteString(fmt.Sprintf("[%s] Executing: rpm -ivh --force %s\n", time.Now().Format(time.RFC3339), rpmPath))
+		logBuffer.WriteString(fmt.Sprintf("[%s] WARNING: Dependencies will NOT be automatically resolved\n", time.Now().Format(time.RFC3339)))
 		cmd = exec.CommandContext(ctx, "rpm", "-ivh", "--force", rpmPath)
 	}
 
@@ -1831,6 +2033,7 @@ func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.Raw
 	)
 
 	output, cmdErr := cmd.CombinedOutput()
+	logBuffer.WriteString(fmt.Sprintf("[%s] %s output:\n%s\n", time.Now().Format(time.RFC3339), pkgManager, string(output)))
 
 	exitCode := 0
 	if cmdErr != nil {
@@ -1839,22 +2042,31 @@ func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.Raw
 		} else {
 			exitCode = -1
 		}
+		logBuffer.WriteString(fmt.Sprintf("[%s] %s failed with exit code: %d\n", time.Now().Format(time.RFC3339), pkgManager, exitCode))
+	} else {
+		logBuffer.WriteString(fmt.Sprintf("[%s] %s completed successfully\n", time.Now().Format(time.RFC3339), pkgManager))
 	}
 
 	completedAt := time.Now()
 	status := "completed"
 	if ctx.Err() == context.Canceled {
 		status = "cancelled"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installation was cancelled\n", completedAt.Format(time.RFC3339)))
 	} else if exitCode != 0 {
 		status = "failed"
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installation failed with exit code: %d\n", completedAt.Format(time.RFC3339), exitCode))
+	} else {
+		logBuffer.WriteString(fmt.Sprintf("[%s] Installation completed successfully\n", completedAt.Format(time.RFC3339)))
 	}
+
+	logBuffer.WriteString(fmt.Sprintf("[%s] Duration: %dms\n", completedAt.Format(time.RFC3339), completedAt.Sub(startedAt).Milliseconds()))
 
 	response := map[string]interface{}{
 		"action":          "software_install_result",
 		"installation_id": req.InstallationID,
 		"status":          status,
 		"exit_code":       exitCode,
-		"output":          string(output),
+		"output":          logBuffer.String(),
 		"package_manager": pkgManager,
 		"started_at":      startedAt.UTC().Format(time.RFC3339),
 		"completed_at":    completedAt.UTC().Format(time.RFC3339),
