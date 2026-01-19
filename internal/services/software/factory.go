@@ -30,8 +30,15 @@ func NewServices(logger *slog.Logger) *Services {
 	// Create installation service
 	installationService := NewInstallationService(logger, installers...)
 
-	// Create platform-specific uninstallers (to be implemented)
-	uninstallers := []PlatformUninstaller{}
+	// Create platform-specific uninstallers
+	uninstallers := []PlatformUninstaller{
+		NewWingetUninstaller(logger),
+		NewMSIUninstaller(logger),
+		NewPKGUninstaller(logger),
+		NewCaskUninstaller(logger),
+		NewDEBUninstaller(logger),
+		NewRPMUninstaller(logger),
+	}
 
 	// Create uninstallation service
 	// Note: SnapshotService is nil for now, can be implemented later
