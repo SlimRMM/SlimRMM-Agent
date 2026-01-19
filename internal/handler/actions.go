@@ -800,19 +800,6 @@ func (h *Handler) handleExecutePatches(ctx context.Context, data json.RawMessage
 	return response, nil
 }
 
-type uninstallSoftwareRequest struct {
-	PackageName string `json:"package_name"`
-}
-
-func (h *Handler) handleUninstallSoftware(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	var req uninstallSoftwareRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
-	}
-
-	return actions.UninstallSoftware(ctx, req.PackageName)
-}
-
 // Terminal handlers
 
 type startTerminalRequest struct {

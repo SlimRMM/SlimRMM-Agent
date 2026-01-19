@@ -974,7 +974,7 @@ func (h *Handler) handleUninstallCask(ctx context.Context, data json.RawMessage)
 
 	// Get cask info if not provided
 	if req.CleanupInfo == nil && req.CleanupMode == "complete" {
-		info, err := homebrew.FetchCaskInfo(req.CaskName)
+		info, err := homebrew.FetchCaskInfo(ctx, req.CaskName)
 		if err == nil && info != nil {
 			// We'll need to fetch full info with zap stanza
 			fullInfo, _ := homebrew.FetchCaskInfoFull(req.CaskName)
@@ -1792,6 +1792,8 @@ func (h *Handler) cleanupWindowsThorough(appName string, publisherName string, l
 		filepath.Join(os.Getenv("PROGRAMDATA"), appName),
 		filepath.Join(os.Getenv("LOCALAPPDATA"), normalizedName),
 		filepath.Join(os.Getenv("APPDATA"), normalizedName),
+		filepath.Join(os.Getenv("LOCALAPPDATA"), normalizedPublisher),
+		filepath.Join(os.Getenv("APPDATA"), normalizedPublisher),
 	}
 
 	for _, path := range pathPatterns {
