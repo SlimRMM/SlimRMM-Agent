@@ -56,6 +56,15 @@ type FileLockResolutionResult struct {
 	Scheduled  bool     `json:"scheduled,omitempty"` // For schedule strategy
 }
 
+// ProcessInfo represents information about a running process.
+type ProcessInfo struct {
+	Name string `json:"name"`
+	PID  int    `json:"pid"`
+	User string `json:"user,omitempty"`
+	CPU  string `json:"cpu,omitempty"`
+	Mem  string `json:"mem,omitempty"`
+}
+
 // handleDetectFileLocks handles file lock detection requests.
 func (h *Handler) handleDetectFileLocks(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req FileLockDetectionRequest

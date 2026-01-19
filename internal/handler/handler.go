@@ -29,6 +29,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/security/ratelimit"
 	"github.com/slimrmm/slimrmm-agent/internal/services/models"
 	"github.com/slimrmm/slimrmm-agent/internal/services/software"
+	"github.com/slimrmm/slimrmm-agent/internal/services/validation"
 	"github.com/slimrmm/slimrmm-agent/internal/tamper"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
@@ -223,6 +224,9 @@ type Handler struct {
 
 	// Software services for installation/uninstallation operations
 	softwareServices *software.Services
+
+	// Validation service for pre-uninstall validation
+	validationService *validation.DefaultValidationService
 }
 
 // SelfHealingWatchdog is the interface for the self-healing watchdog.
@@ -270,6 +274,9 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	// Initialize software services for installation/uninstallation
 	softwareServices := software.NewServices(logger)
 
+	// Initialize validation service for pre-uninstall validation
+	validationService := validation.NewServices(logger)
+
 	h := &Handler{
 		cfg:               cfg,
 		paths:             paths,
@@ -290,6 +297,7 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		antiReplay:        antiReplay,
 		auditLogger:       auditLogger,
 		softwareServices:  softwareServices,
+		validationService: validationService,
 	}
 
 	h.registerHandlers()
