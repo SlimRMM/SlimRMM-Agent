@@ -38,6 +38,8 @@ func (h *Handler) registerSoftwareHandlers() {
 	h.handlers["download_and_install_msi"] = h.handleDownloadAndInstallMSI
 	h.handlers["download_and_install_pkg"] = h.handleDownloadAndInstallPKG
 	h.handlers["download_and_install_cask"] = h.handleDownloadAndInstallCask
+	h.handlers["download_and_install_deb"] = h.handleDownloadAndInstallDEB
+	h.handlers["download_and_install_rpm"] = h.handleDownloadAndInstallRPM
 	h.handlers["cancel_software_install"] = h.handleCancelSoftwareInstall
 }
 
@@ -1429,6 +1431,431 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 		"output":          output,
 		"cask_name":       req.CaskName,
 		"version":         caskInfo.Version,
+		"started_at":      startedAt.UTC().Format(time.RFC3339),
+		"completed_at":    completedAt.UTC().Format(time.RFC3339),
+		"duration_ms":     completedAt.Sub(startedAt).Milliseconds(),
+	}
+
+	h.SendRaw(response)
+	return response, nil
+}
+
+// downloadAndInstallDEBRequest represents a DEB package download and install request.
+type downloadAndInstallDEBRequest struct {
+	InstallationID string `json:"installation_id"`
+	DownloadURL    string `json:"download_url"`
+	DownloadToken  string `json:"download_token,omitempty"`
+	ExpectedHash   string `json:"expected_hash,omitempty"`
+	Filename       string `json:"filename"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
+// handleDownloadAndInstallDEB handles DEB package download and installation on Debian/Ubuntu.
+func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	h.logger.Info("received DEB installation request")
+
+	var req downloadAndInstallDEBRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		h.logger.Error("failed to parse DEB request", "error", err, "data", string(data))
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	h.logger.Info("DEB request parsed",
+		"installation_id", req.InstallationID,
+		"filename", req.Filename,
+		"has_download_url", req.DownloadURL != "",
+		"has_expected_hash", req.ExpectedHash != "",
+	)
+
+	// Platform validation
+	if runtime.GOOS != "linux" {
+		h.logger.Warn("DEB installation attempted on non-Linux platform", "goos", runtime.GOOS)
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           "DEB installation is only available on Linux",
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	// Check if dpkg is available
+	if _, err := exec.LookPath("dpkg"); err != nil {
+		h.logger.Warn("dpkg not found on system", "error", err)
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           "dpkg not found - this system may not support DEB packages",
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	h.logger.Info("starting DEB installation",
+		"installation_id", req.InstallationID,
+		"filename", req.Filename,
+	)
+
+	// Set timeout
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 15 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Track installation for cancellation
+	runningInstallations.Lock()
+	runningInstallations.m[req.InstallationID] = &runningInstallation{cancel: cancel}
+	runningInstallations.Unlock()
+	defer func() {
+		runningInstallations.Lock()
+		delete(runningInstallations.m, req.InstallationID)
+		runningInstallations.Unlock()
+	}()
+
+	startedAt := time.Now()
+
+	// Create temp directory
+	tempDir, err := os.MkdirTemp("", "slimrmm-deb-*")
+	if err != nil {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           fmt.Sprintf("create temp dir: %v", err),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+	defer os.RemoveAll(tempDir)
+
+	debPath := filepath.Join(tempDir, req.Filename)
+
+	// Send progress: downloading
+	h.SendRaw(map[string]interface{}{
+		"action":           "software_install_progress",
+		"installation_id":  req.InstallationID,
+		"status":           "downloading",
+		"progress_percent": 0,
+	})
+
+	// Download the DEB
+	if err := h.downloadFile(ctx, req.DownloadURL, req.DownloadToken, debPath, req.InstallationID); err != nil {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           fmt.Sprintf("download failed: %v", err),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	// Verify hash if provided
+	if req.ExpectedHash != "" {
+		calculatedHash, err := calculateFileHash(debPath)
+		if err != nil {
+			response := map[string]interface{}{
+				"action":          "software_install_result",
+				"installation_id": req.InstallationID,
+				"status":          "failed",
+				"error":           fmt.Sprintf("hash calculation failed: %v", err),
+			}
+			h.SendRaw(response)
+			return response, nil
+		}
+
+		expectedHash := req.ExpectedHash
+		if strings.HasPrefix(expectedHash, "sha256:") {
+			expectedHash = strings.TrimPrefix(expectedHash, "sha256:")
+		}
+
+		if calculatedHash != expectedHash {
+			response := map[string]interface{}{
+				"action":          "software_install_result",
+				"installation_id": req.InstallationID,
+				"status":          "failed",
+				"error":           fmt.Sprintf("hash mismatch: expected %s, got %s", expectedHash, calculatedHash),
+			}
+			h.SendRaw(response)
+			return response, nil
+		}
+	}
+
+	// Send progress: installing
+	h.SendRaw(map[string]interface{}{
+		"action":          "software_install_progress",
+		"installation_id": req.InstallationID,
+		"status":          "installing",
+	})
+
+	// Execute dpkg -i (prefer dpkg directly for clean installation)
+	// Use --force-confnew to auto-accept new config files
+	cmd := exec.CommandContext(ctx, "dpkg", "-i", "--force-confnew", debPath)
+	output, cmdErr := cmd.CombinedOutput()
+
+	exitCode := 0
+	if cmdErr != nil {
+		if exitError, ok := cmdErr.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+
+	// If dpkg failed due to dependencies, try to fix them with apt-get
+	if exitCode != 0 && strings.Contains(string(output), "dependency problems") {
+		h.logger.Info("DEB has dependency issues, attempting apt-get -f install",
+			"installation_id", req.InstallationID,
+		)
+
+		h.SendRaw(map[string]interface{}{
+			"action":          "software_install_progress",
+			"installation_id": req.InstallationID,
+			"status":          "installing",
+			"output":          "Resolving dependencies...",
+		})
+
+		fixCmd := exec.CommandContext(ctx, "apt-get", "-f", "install", "-y")
+		fixOutput, fixErr := fixCmd.CombinedOutput()
+		output = append(output, '\n')
+		output = append(output, fixOutput...)
+
+		if fixErr == nil {
+			exitCode = 0
+		} else if exitError, ok := fixErr.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		}
+	}
+
+	completedAt := time.Now()
+	status := "completed"
+	if ctx.Err() == context.Canceled {
+		status = "cancelled"
+	} else if exitCode != 0 {
+		status = "failed"
+	}
+
+	response := map[string]interface{}{
+		"action":          "software_install_result",
+		"installation_id": req.InstallationID,
+		"status":          status,
+		"exit_code":       exitCode,
+		"output":          string(output),
+		"started_at":      startedAt.UTC().Format(time.RFC3339),
+		"completed_at":    completedAt.UTC().Format(time.RFC3339),
+		"duration_ms":     completedAt.Sub(startedAt).Milliseconds(),
+	}
+
+	h.SendRaw(response)
+	return response, nil
+}
+
+// downloadAndInstallRPMRequest represents an RPM package download and install request.
+type downloadAndInstallRPMRequest struct {
+	InstallationID string `json:"installation_id"`
+	DownloadURL    string `json:"download_url"`
+	DownloadToken  string `json:"download_token,omitempty"`
+	ExpectedHash   string `json:"expected_hash,omitempty"`
+	Filename       string `json:"filename"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
+// handleDownloadAndInstallRPM handles RPM package download and installation on RHEL/CentOS/Fedora.
+func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	h.logger.Info("received RPM installation request")
+
+	var req downloadAndInstallRPMRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		h.logger.Error("failed to parse RPM request", "error", err, "data", string(data))
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	h.logger.Info("RPM request parsed",
+		"installation_id", req.InstallationID,
+		"filename", req.Filename,
+		"has_download_url", req.DownloadURL != "",
+		"has_expected_hash", req.ExpectedHash != "",
+	)
+
+	// Platform validation
+	if runtime.GOOS != "linux" {
+		h.logger.Warn("RPM installation attempted on non-Linux platform", "goos", runtime.GOOS)
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           "RPM installation is only available on Linux",
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	// Check if rpm is available
+	if _, err := exec.LookPath("rpm"); err != nil {
+		h.logger.Warn("rpm not found on system", "error", err)
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           "rpm not found - this system may not support RPM packages",
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	h.logger.Info("starting RPM installation",
+		"installation_id", req.InstallationID,
+		"filename", req.Filename,
+	)
+
+	// Set timeout
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
+	if timeout == 0 {
+		timeout = 15 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Track installation for cancellation
+	runningInstallations.Lock()
+	runningInstallations.m[req.InstallationID] = &runningInstallation{cancel: cancel}
+	runningInstallations.Unlock()
+	defer func() {
+		runningInstallations.Lock()
+		delete(runningInstallations.m, req.InstallationID)
+		runningInstallations.Unlock()
+	}()
+
+	startedAt := time.Now()
+
+	// Create temp directory
+	tempDir, err := os.MkdirTemp("", "slimrmm-rpm-*")
+	if err != nil {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           fmt.Sprintf("create temp dir: %v", err),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+	defer os.RemoveAll(tempDir)
+
+	rpmPath := filepath.Join(tempDir, req.Filename)
+
+	// Send progress: downloading
+	h.SendRaw(map[string]interface{}{
+		"action":           "software_install_progress",
+		"installation_id":  req.InstallationID,
+		"status":           "downloading",
+		"progress_percent": 0,
+	})
+
+	// Download the RPM
+	if err := h.downloadFile(ctx, req.DownloadURL, req.DownloadToken, rpmPath, req.InstallationID); err != nil {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           fmt.Sprintf("download failed: %v", err),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
+	// Verify hash if provided
+	if req.ExpectedHash != "" {
+		calculatedHash, err := calculateFileHash(rpmPath)
+		if err != nil {
+			response := map[string]interface{}{
+				"action":          "software_install_result",
+				"installation_id": req.InstallationID,
+				"status":          "failed",
+				"error":           fmt.Sprintf("hash calculation failed: %v", err),
+			}
+			h.SendRaw(response)
+			return response, nil
+		}
+
+		expectedHash := req.ExpectedHash
+		if strings.HasPrefix(expectedHash, "sha256:") {
+			expectedHash = strings.TrimPrefix(expectedHash, "sha256:")
+		}
+
+		if calculatedHash != expectedHash {
+			response := map[string]interface{}{
+				"action":          "software_install_result",
+				"installation_id": req.InstallationID,
+				"status":          "failed",
+				"error":           fmt.Sprintf("hash mismatch: expected %s, got %s", expectedHash, calculatedHash),
+			}
+			h.SendRaw(response)
+			return response, nil
+		}
+	}
+
+	// Send progress: installing
+	h.SendRaw(map[string]interface{}{
+		"action":          "software_install_progress",
+		"installation_id": req.InstallationID,
+		"status":          "installing",
+	})
+
+	// Determine best package manager to use
+	// Prefer dnf (Fedora/RHEL 8+), fallback to yum, then rpm
+	var cmd *exec.Cmd
+	var pkgManager string
+
+	if _, err := exec.LookPath("dnf"); err == nil {
+		// Use dnf install (handles dependencies automatically)
+		pkgManager = "dnf"
+		cmd = exec.CommandContext(ctx, "dnf", "install", "-y", rpmPath)
+	} else if _, err := exec.LookPath("yum"); err == nil {
+		// Use yum install (handles dependencies automatically)
+		pkgManager = "yum"
+		cmd = exec.CommandContext(ctx, "yum", "install", "-y", rpmPath)
+	} else {
+		// Fallback to direct rpm -i (no dependency resolution)
+		pkgManager = "rpm"
+		cmd = exec.CommandContext(ctx, "rpm", "-ivh", "--force", rpmPath)
+	}
+
+	h.logger.Info("executing RPM installation",
+		"installation_id", req.InstallationID,
+		"package_manager", pkgManager,
+	)
+
+	output, cmdErr := cmd.CombinedOutput()
+
+	exitCode := 0
+	if cmdErr != nil {
+		if exitError, ok := cmdErr.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+
+	completedAt := time.Now()
+	status := "completed"
+	if ctx.Err() == context.Canceled {
+		status = "cancelled"
+	} else if exitCode != 0 {
+		status = "failed"
+	}
+
+	response := map[string]interface{}{
+		"action":          "software_install_result",
+		"installation_id": req.InstallationID,
+		"status":          status,
+		"exit_code":       exitCode,
+		"output":          string(output),
+		"package_manager": pkgManager,
 		"started_at":      startedAt.UTC().Format(time.RFC3339),
 		"completed_at":    completedAt.UTC().Format(time.RFC3339),
 		"duration_ms":     completedAt.Sub(startedAt).Milliseconds(),
