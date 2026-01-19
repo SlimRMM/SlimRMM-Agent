@@ -126,6 +126,18 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	// Validate Winget package ID
+	if !winget.IsValidPackageID(req.WingetPackageID) {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           fmt.Sprintf("invalid winget package ID: %s", req.WingetPackageID),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
+
 	h.logger.Info("starting software installation",
 		"installation_id", req.InstallationID,
 		"installation_type", req.InstallationType,
@@ -1251,6 +1263,18 @@ func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.Ra
 		"cask_name", req.CaskName,
 		"timeout_seconds", req.TimeoutSeconds,
 	)
+
+	// Validate cask name
+	if !homebrew.IsValidCaskName(req.CaskName) {
+		response := map[string]interface{}{
+			"action":          "software_install_result",
+			"installation_id": req.InstallationID,
+			"status":          "failed",
+			"error":           fmt.Sprintf("invalid cask name: %s", req.CaskName),
+		}
+		h.SendRaw(response)
+		return response, nil
+	}
 
 	// Platform validation
 	if runtime.GOOS != "darwin" {

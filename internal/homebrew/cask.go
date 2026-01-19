@@ -6,8 +6,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"time"
 )
+
+// caskNamePattern validates Homebrew cask names (lowercase alphanumeric with hyphens).
+var caskNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$`)
+
+// IsValidCaskName checks if a cask name is valid.
+func IsValidCaskName(name string) bool {
+	if len(name) == 0 || len(name) > 128 {
+		return false
+	}
+	return caskNamePattern.MatchString(name)
+}
 
 const (
 	// HomebrewAPIBase is the base URL for Homebrew API.
@@ -68,6 +80,11 @@ func (c *CaskInfo) GetAppName() string {
 
 // FetchCaskInfo retrieves cask metadata from Homebrew API.
 func FetchCaskInfo(ctx context.Context, caskName string) (*CaskInfo, error) {
+	// Validate cask name to prevent injection attacks
+	if !IsValidCaskName(caskName) {
+		return nil, fmt.Errorf("invalid cask name: %s", caskName)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
 

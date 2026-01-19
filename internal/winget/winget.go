@@ -4,10 +4,22 @@ package winget
 import (
 	"context"
 	"log/slog"
+	"regexp"
 	"runtime"
 	"sync"
 	"time"
 )
+
+// packageIDPattern validates Winget package IDs (alphanumeric with dots, hyphens, underscores).
+var packageIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// IsValidPackageID checks if a Winget package ID is valid.
+func IsValidPackageID(id string) bool {
+	if len(id) == 0 || len(id) > 256 {
+		return false
+	}
+	return packageIDPattern.MatchString(id)
+}
 
 // Client provides winget detection and management capabilities.
 type Client struct {
