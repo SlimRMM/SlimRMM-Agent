@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/homebrew"
-	"github.com/slimrmm/slimrmm-agent/internal/winget"
+	"github.com/slimrmm/slimrmm-agent/internal/services/models"
 )
 
 // runningInstallation tracks a running installation process
@@ -112,7 +112,7 @@ type downloadAndInstallMSIRequest struct {
 }
 
 // handleInstallSoftware handles software installation via winget.
-// Always uses machine scope and runs in SYSTEM context with direct path execution.
+// Delegates to the service layer for proper MVC separation.
 func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
@@ -126,52 +126,6 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	// Validate Winget package ID
-	if !winget.IsValidPackageID(req.WingetPackageID) {
-		response := map[string]interface{}{
-			"action":          "software_install_result",
-			"installation_id": req.InstallationID,
-			"status":          "failed",
-			"error":           fmt.Sprintf("invalid winget package ID: %s", req.WingetPackageID),
-		}
-		h.SendRaw(response)
-		return response, nil
-	}
-
-	h.logger.Info("starting software installation",
-		"installation_id", req.InstallationID,
-		"installation_type", req.InstallationType,
-		"package_id", req.WingetPackageID,
-	)
-
-	// Set timeout
-	timeout := time.Duration(req.TimeoutSeconds) * time.Second
-	if timeout == 0 {
-		timeout = 10 * time.Minute
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	// Track this installation so it can be cancelled
-	runningInstallations.Lock()
-	runningInstallations.m[req.InstallationID] = &runningInstallation{cancel: cancel}
-	runningInstallations.Unlock()
-	defer func() {
-		runningInstallations.Lock()
-		delete(runningInstallations.m, req.InstallationID)
-		runningInstallations.Unlock()
-	}()
-
-	startedAt := time.Now()
-
-	// Send progress update - always machine scope
-	h.SendRaw(map[string]interface{}{
-		"action":          "software_install_progress",
-		"installation_id": req.InstallationID,
-		"status":          "installing",
-		"output":          fmt.Sprintf("Installing %s (machine scope)...\n", req.WingetPackageID),
-	})
-
 	if req.InstallationType != "winget" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -179,51 +133,54 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 		}, nil
 	}
 
-	// Check if winget is available
-	wingetClient := winget.GetDefault()
-	if !wingetClient.IsAvailable() {
+	h.logger.Info("starting software installation via service layer",
+		"installation_id", req.InstallationID,
+		"installation_type", req.InstallationType,
+		"package_id", req.WingetPackageID,
+	)
+
+	// Convert to service request
+	serviceReq := &models.InstallRequest{
+		InstallationID:   req.InstallationID,
+		InstallationType: models.InstallationTypeWinget,
+		PackageID:        req.WingetPackageID,
+		PackageName:      req.WingetPackageName,
+		Silent:           req.Silent,
+		TimeoutSeconds:   req.TimeoutSeconds,
+	}
+
+	// Delegate to service layer
+	result, err := h.softwareServices.Installation.Install(ctx, serviceReq)
+	if err != nil {
 		response := map[string]interface{}{
 			"action":          "software_install_result",
 			"installation_id": req.InstallationID,
 			"status":          "failed",
-			"error":           "winget is not available on this system",
+			"error":           err.Error(),
 		}
 		h.SendRaw(response)
 		return response, nil
 	}
 
-	// Execute via direct path method with fallbacks for hardened systems
-	// NO HELPER NEEDED - runs directly in SYSTEM context with proper DLL loading
-	output, exitCode := runWingetOperation(ctx, req.WingetPackageID, req.Silent, "install", h.logger)
-
-	// Determine success
-	completedAt := time.Now()
-	status := "completed"
-	if ctx.Err() == context.Canceled {
-		status = "cancelled"
-		output = "Installation cancelled by user request"
-	} else if exitCode != 0 {
-		status = "failed"
-	}
-
+	// Build response from service result
 	response := map[string]interface{}{
 		"action":          "software_install_result",
-		"installation_id": req.InstallationID,
-		"status":          status,
-		"exit_code":       exitCode,
-		"output":          output,
-		"context":         "system-direct",
-		"started_at":      startedAt.UTC().Format(time.RFC3339),
-		"completed_at":    completedAt.UTC().Format(time.RFC3339),
-		"duration_ms":     completedAt.Sub(startedAt).Milliseconds(),
+		"installation_id": result.InstallationID,
+		"status":          string(result.Status),
+		"exit_code":       result.ExitCode,
+		"output":          result.Output,
+		"error":           result.Error,
+		"started_at":      result.StartedAt.UTC().Format(time.RFC3339),
+		"completed_at":    result.CompletedAt.UTC().Format(time.RFC3339),
+		"duration_ms":     int64(result.Duration * 1000),
 	}
 
 	h.SendRaw(response)
-	h.logger.Info("software installation completed",
-		"installation_id", req.InstallationID,
-		"status", status,
-		"exit_code", exitCode,
-		"duration_ms", completedAt.Sub(startedAt).Milliseconds(),
+	h.logger.Info("software installation completed via service layer",
+		"installation_id", result.InstallationID,
+		"status", result.Status,
+		"exit_code", result.ExitCode,
+		"duration", result.Duration,
 	)
 
 	return response, nil
