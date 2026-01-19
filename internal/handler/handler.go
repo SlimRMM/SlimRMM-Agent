@@ -27,6 +27,8 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/security/audit"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/security/ratelimit"
+	"github.com/slimrmm/slimrmm-agent/internal/services/models"
+	"github.com/slimrmm/slimrmm-agent/internal/services/software"
 	"github.com/slimrmm/slimrmm-agent/internal/tamper"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
@@ -218,6 +220,9 @@ type Handler struct {
 
 	// Self-healing watchdog for connection monitoring
 	selfHealingWatchdog SelfHealingWatchdog
+
+	// Software services for installation/uninstallation operations
+	softwareServices *software.Services
 }
 
 // SelfHealingWatchdog is the interface for the self-healing watchdog.
@@ -262,6 +267,9 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		"audit_logging", "enabled",
 	)
 
+	// Initialize software services for installation/uninstallation
+	softwareServices := software.NewServices(logger)
+
 	h := &Handler{
 		cfg:               cfg,
 		paths:             paths,
@@ -281,9 +289,34 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		rateLimiter:       rateLimiter,
 		antiReplay:        antiReplay,
 		auditLogger:       auditLogger,
+		softwareServices:  softwareServices,
 	}
 
 	h.registerHandlers()
+
+	// Set up software service progress callbacks to send via WebSocket
+	h.softwareServices.SetInstallationProgressCallback(func(progress interface{}) {
+		if p, ok := progress.(*models.InstallProgress); ok {
+			h.SendRaw(map[string]interface{}{
+				"action":           "software_install_progress",
+				"installation_id":  p.InstallationID,
+				"status":           p.Status,
+				"output":           p.Output,
+				"progress_percent": p.Percent,
+			})
+		}
+	})
+	h.softwareServices.SetUninstallationProgressCallback(func(progress interface{}) {
+		if p, ok := progress.(*models.UninstallProgress); ok {
+			h.SendRaw(map[string]interface{}{
+				"action":            "software_uninstall_progress",
+				"uninstallation_id": p.UninstallationID,
+				"status":            p.Status,
+				"output":            p.Output,
+				"phase":             p.Phase,
+			})
+		}
+	})
 
 	// Set up maintenance callback for updater
 	h.updater.SetMaintenanceCallback(h.sendMaintenanceStatus)
