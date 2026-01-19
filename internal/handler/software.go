@@ -630,213 +630,67 @@ func (h *Handler) handleDownloadAndInstallMSI(ctx context.Context, data json.Raw
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	h.logger.Info("starting MSI download and install",
+	h.logger.Info("starting MSI download and install via service layer",
 		"installation_id", req.InstallationID,
 		"filename", req.Filename,
 	)
 
-	// Set timeout
-	timeout := time.Duration(req.TimeoutSeconds) * time.Second
-	if timeout == 0 {
-		timeout = 15 * time.Minute
+	// Normalize hash format - remove "sha256:" prefix if present
+	expectedHash := req.ExpectedHash
+	if strings.HasPrefix(expectedHash, "sha256:") {
+		expectedHash = strings.TrimPrefix(expectedHash, "sha256:")
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
-	// Track this installation so it can be cancelled
-	runningInstallations.Lock()
-	runningInstallations.m[req.InstallationID] = &runningInstallation{cancel: cancel}
-	runningInstallations.Unlock()
-	defer func() {
-		runningInstallations.Lock()
-		delete(runningInstallations.m, req.InstallationID)
-		runningInstallations.Unlock()
-	}()
+	// Convert to service request
+	serviceReq := &models.InstallRequest{
+		InstallationID:   req.InstallationID,
+		InstallationType: models.InstallationTypeMSI,
+		DownloadURL:      req.DownloadURL,
+		DownloadToken:    req.DownloadToken,
+		ExpectedHash:     expectedHash,
+		Filename:         req.Filename,
+		Silent:           true,
+		SilentArgs:       req.SilentArgs,
+		TimeoutSeconds:   req.TimeoutSeconds,
+	}
 
-	startedAt := time.Now()
-
-	// Create temp directory for download
-	tempDir, err := os.MkdirTemp("", "slimrmm-msi-*")
+	// Delegate to service layer
+	result, err := h.softwareServices.Installation.Install(ctx, serviceReq)
 	if err != nil {
 		response := map[string]interface{}{
 			"action":          "software_install_result",
 			"installation_id": req.InstallationID,
 			"status":          "failed",
-			"error":           fmt.Sprintf("failed to create temp directory: %v", err),
-		}
-		h.SendRaw(response)
-		return response, nil
-	}
-	// Track if installation succeeded - only cleanup on success
-	installSuccess := false
-	defer func() {
-		if installSuccess {
-			os.RemoveAll(tempDir)
-		} else {
-			h.logger.Info("keeping temp directory for debugging", "path", tempDir)
-		}
-	}()
-
-	msiPath := filepath.Join(tempDir, req.Filename)
-
-	// Send progress: downloading
-	h.SendRaw(map[string]interface{}{
-		"action":           "software_install_progress",
-		"installation_id":  req.InstallationID,
-		"status":           "downloading",
-		"progress_percent": 0,
-	})
-
-	// Download the MSI file
-	err = h.downloadFile(ctx, req.DownloadURL, req.DownloadToken, msiPath, req.InstallationID)
-	if err != nil {
-		response := map[string]interface{}{
-			"action":          "software_install_result",
-			"installation_id": req.InstallationID,
-			"status":          "failed",
-			"error":           fmt.Sprintf("failed to download MSI: %v", err),
+			"error":           err.Error(),
 		}
 		h.SendRaw(response)
 		return response, nil
 	}
 
-	// Verify hash
-	if req.ExpectedHash != "" {
-		calculatedHash, err := calculateFileHash(msiPath)
-		if err != nil {
-			response := map[string]interface{}{
-				"action":          "software_install_result",
-				"installation_id": req.InstallationID,
-				"status":          "failed",
-				"error":           fmt.Sprintf("failed to calculate file hash: %v", err),
-			}
-			h.SendRaw(response)
-			return response, nil
-		}
-
-		// Normalize hash format for comparison
-		// Backend sends "sha256:{hash}", we calculate just "{hash}"
-		expectedHash := req.ExpectedHash
-		if strings.HasPrefix(expectedHash, "sha256:") {
-			expectedHash = strings.TrimPrefix(expectedHash, "sha256:")
-		}
-
-		h.logger.Info("verifying MSI hash",
-			"installation_id", req.InstallationID,
-			"expected", expectedHash,
-			"calculated", calculatedHash,
-		)
-
-		if calculatedHash != expectedHash {
-			response := map[string]interface{}{
-				"action":          "software_install_result",
-				"installation_id": req.InstallationID,
-				"status":          "failed",
-				"error":           fmt.Sprintf("hash mismatch: expected %s, got %s", req.ExpectedHash, calculatedHash),
-			}
-			h.SendRaw(response)
-			return response, nil
-		}
-
-		h.logger.Info("MSI hash verified", "installation_id", req.InstallationID)
-	}
-
-	// Send progress: installing
-	h.SendRaw(map[string]interface{}{
-		"action":          "software_install_progress",
-		"installation_id": req.InstallationID,
-		"status":          "installing",
-		"output":          "Installing MSI package...",
-	})
-
-	// Build msiexec command
-	logPath := filepath.Join(tempDir, "install.log")
-	silentArgs := req.SilentArgs
-	if silentArgs == "" {
-		silentArgs = "/quiet /norestart"
-	}
-
-	// Sanitize silentArgs - remove /i flag if present (we add it ourselves)
-	silentArgs = sanitizeMsiArgs(silentArgs)
-
-	args := []string{"/i", msiPath}
-	args = append(args, parseArgs(silentArgs)...)
-	args = append(args, "/log", logPath)
-
-	h.logger.Info("starting msiexec",
-		"installation_id", req.InstallationID,
-		"command", "msiexec",
-		"args", strings.Join(args, " "),
-		"log_path", logPath,
-	)
-
-	cmd := exec.CommandContext(ctx, "msiexec", args...)
-	outputBytes, err := cmd.CombinedOutput()
-	output := string(outputBytes)
-
-	h.logger.Info("msiexec finished",
-		"installation_id", req.InstallationID,
-		"error", err,
-		"output_len", len(output),
-	)
-
-	// Read log file if it exists
-	var logContent string
-	if logBytes, readErr := os.ReadFile(logPath); readErr == nil {
-		logContent = string(logBytes)
-		h.logger.Info("MSI log file read", "installation_id", req.InstallationID, "log_size", len(logContent))
-	} else {
-		h.logger.Info("MSI log file not found or unreadable", "installation_id", req.InstallationID, "error", readErr)
-	}
-
-	// Determine exit code and status
-	var exitCode int
-	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	}
-
-	// Determine success (msiexec returns 0 for success, 3010 for success with reboot required)
-	completedAt := time.Now()
-	status := "completed"
-	if ctx.Err() == context.DeadlineExceeded {
-		status = "failed"
-		output = fmt.Sprintf("Installation timed out after %d seconds. Check %s for details.", req.TimeoutSeconds, tempDir)
-		h.logger.Info("MSI installation timed out", "installation_id", req.InstallationID, "temp_dir", tempDir)
-	} else if ctx.Err() == context.Canceled {
-		status = "cancelled"
-		output = "Installation cancelled by user request"
-	} else if exitCode != 0 && exitCode != 3010 {
-		status = "failed"
-	} else {
-		installSuccess = true
-	}
-
+	// Build response from service result
 	response := map[string]interface{}{
 		"action":          "software_install_result",
-		"installation_id": req.InstallationID,
-		"status":          status,
-		"exit_code":       exitCode,
-		"output":          output,
-		"msi_log":         logContent,
-		"started_at":      startedAt.UTC().Format(time.RFC3339),
-		"completed_at":    completedAt.UTC().Format(time.RFC3339),
-		"duration_ms":     completedAt.Sub(startedAt).Milliseconds(),
+		"installation_id": result.InstallationID,
+		"status":          string(result.Status),
+		"exit_code":       result.ExitCode,
+		"output":          result.Output,
+		"error":           result.Error,
+		"started_at":      result.StartedAt.UTC().Format(time.RFC3339),
+		"completed_at":    result.CompletedAt.UTC().Format(time.RFC3339),
+		"duration_ms":     int64(result.Duration * 1000),
 	}
 
-	if exitCode == 3010 {
+	// Check for reboot required (exit code 3010)
+	if result.ExitCode == 3010 {
 		response["reboot_required"] = true
 	}
 
 	h.SendRaw(response)
-	h.logger.Info("MSI installation completed",
-		"installation_id", req.InstallationID,
-		"status", status,
-		"exit_code", exitCode,
-		"duration_ms", completedAt.Sub(startedAt).Milliseconds(),
+	h.logger.Info("MSI installation completed via service layer",
+		"installation_id", result.InstallationID,
+		"status", result.Status,
+		"exit_code", result.ExitCode,
+		"duration", result.Duration,
 	)
 
 	return response, nil
