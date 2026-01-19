@@ -1287,6 +1287,14 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		"download_and_install_pkg":   true,
 		"download_and_install_cask":  true,
 		"cancel_software_install":    true,
+		// Software uninstallation actions - all fields at root
+		"uninstall_software":         true,
+		"uninstall_msi":              true,
+		"uninstall_pkg":              true,
+		"uninstall_cask":             true,
+		"uninstall_deb":              true,
+		"uninstall_rpm":              true,
+		"cancel_software_uninstall":  true,
 	}
 	if rootLevelActions[msg.Action] {
 		handlerData = msg.Raw

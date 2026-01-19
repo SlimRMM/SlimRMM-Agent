@@ -106,6 +106,9 @@ func (h *Handler) registerHandlers() {
 	// Software installation handlers (Windows only)
 	h.registerSoftwareHandlers()
 
+	// Software uninstallation handlers (all platforms)
+	h.registerUninstallHandlers()
+
 	// Proxmox handlers (only active on Proxmox hosts)
 	h.registerProxmoxHandlers()
 
