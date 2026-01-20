@@ -17,6 +17,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/helper"
 	"github.com/slimrmm/slimrmm-agent/internal/logging"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
+	"github.com/slimrmm/slimrmm-agent/internal/services/compliance"
 	"github.com/slimrmm/slimrmm-agent/internal/security/archive"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
@@ -1878,118 +1879,39 @@ func (h *Handler) handleRunComplianceCheck(ctx context.Context, data json.RawMes
 		"check_count", len(req.Checks),
 	)
 
-	results := make([]complianceCheckResult, 0, len(req.Checks))
-	client := osquery.New()
-	osqueryAvailable := client.IsAvailable()
+	// Convert request to service format
+	serviceChecks := make([]compliance.Check, 0, len(req.Checks))
+	for _, c := range req.Checks {
+		serviceChecks = append(serviceChecks, compliance.Check{
+			ID:             c.CheckID,
+			Name:           c.CisID,
+			Type:           c.CheckType,
+			Query:          c.Query,
+			ExpectedResult: c.ExpectedResult,
+			Operator:       c.ComparisonOperator,
+		})
+	}
 
-	for _, check := range req.Checks {
-		result := complianceCheckResult{
-			CheckID: check.CheckID,
-		}
+	policyReq := &compliance.PolicyRequest{
+		PolicyID: req.PolicyID,
+		Checks:   serviceChecks,
+	}
 
-		// Handle different check types
-		switch check.CheckType {
-		case "osquery":
-			if !osqueryAvailable {
-				result.Status = "error"
-				result.Details = "osquery not available on this system"
-				results = append(results, result)
-				continue
-			}
+	// Delegate to compliance service
+	policyResult, err := h.complianceService.RunPolicyCheck(ctx, policyReq)
+	if err != nil {
+		return nil, fmt.Errorf("compliance check failed: %w", err)
+	}
 
-			if check.Query == "" {
-				result.Status = "error"
-				result.Details = "no query provided"
-				results = append(results, result)
-				continue
-			}
-
-			// Execute osquery
-			queryResult, err := client.QueryWithTimeout(ctx, check.Query, osquery.DefaultTimeout)
-			if err != nil {
-				result.Status = "error"
-				result.Details = fmt.Sprintf("osquery error: %v", err)
-				results = append(results, result)
-				continue
-			}
-
-			result.ActualValue = queryResult
-
-			// Compare with expected result - pass only the Rows, not the full QueryResult
-			passed, details := h.compareComplianceResult(queryResult.Rows, check.ExpectedResult, check.ComparisonOperator)
-			if passed {
-				result.Status = "passed"
-				result.Details = details
-			} else {
-				result.Status = "failed"
-				result.Details = details
-			}
-
-		case "command":
-			// For command-based checks, execute the command and check exit code
-			if check.Query == "" {
-				result.Status = "error"
-				result.Details = "no command provided"
-				results = append(results, result)
-				continue
-			}
-
-			cmdResult, err := actions.ExecuteCommand(ctx, check.Query, 30*time.Second)
-			if err != nil {
-				result.Status = "error"
-				result.Details = fmt.Sprintf("command error: %v", err)
-				results = append(results, result)
-				continue
-			}
-
-			result.ActualValue = cmdResult
-
-			// Check if command succeeded (exit code 0 usually means pass)
-			if cmdResult.ExitCode == 0 {
-				result.Status = "passed"
-				result.Details = "command executed successfully"
-			} else {
-				result.Status = "failed"
-				result.Details = fmt.Sprintf("command exited with code %d", cmdResult.ExitCode)
-			}
-
-		case "registry":
-			// Windows registry check
-			if check.Query == "" {
-				result.Status = "error"
-				result.Details = "no registry path provided"
-				results = append(results, result)
-				continue
-			}
-
-			regResult, err := actions.ReadRegistryValue(check.Query)
-			if err != nil {
-				// Registry value not found - this might be expected for some checks
-				result.Status = "failed"
-				result.ActualValue = nil
-				result.Details = fmt.Sprintf("registry error: %v", err)
-				results = append(results, result)
-				continue
-			}
-
-			result.ActualValue = regResult.Value
-
-			// Compare with expected result
-			passed, details := h.compareRegistryResult(regResult.Value, check.ExpectedResult, check.ComparisonOperator)
-			if passed {
-				result.Status = "passed"
-				result.Details = details
-			} else {
-				result.Status = "failed"
-				result.Details = details
-			}
-
-		default:
-			result.Status = "skipped"
-			result.Details = fmt.Sprintf("unsupported check type: %s", check.CheckType)
-		}
-
-		results = append(results, result)
+	// Convert service results back to wire format
+	results := make([]complianceCheckResult, 0, len(policyResult.Results))
+	for _, r := range policyResult.Results {
+		results = append(results, complianceCheckResult{
+			CheckID:     r.CheckID,
+			Status:      r.Status,
+			ActualValue: r.ActualValue,
+			Details:     r.Message,
+		})
 	}
 
 	// Send results back to backend
@@ -2010,312 +1932,6 @@ func (h *Handler) handleRunComplianceCheck(ctx context.Context, data json.RawMes
 	)
 
 	return response, nil
-}
-
-// compareComplianceResult compares the actual result with the expected result.
-func (h *Handler) compareComplianceResult(actual interface{}, expected interface{}, operator string) (bool, string) {
-	if expected == nil {
-		return true, "no expected result specified"
-	}
-
-	// Convert actual to []map[string]interface{} if it's osquery result
-	var actualRows []map[string]interface{}
-
-	switch v := actual.(type) {
-	case []map[string]interface{}:
-		actualRows = v
-	case []map[string]string:
-		// osquery returns []map[string]string - convert to interface{}
-		actualRows = make([]map[string]interface{}, len(v))
-		for i, row := range v {
-			converted := make(map[string]interface{}, len(row))
-			for k, val := range row {
-				converted[k] = val
-			}
-			actualRows[i] = converted
-		}
-	case []interface{}:
-		// Try to convert from []interface{}
-		actualRows = make([]map[string]interface{}, 0, len(v))
-		for _, item := range v {
-			if m, ok := item.(map[string]interface{}); ok {
-				actualRows = append(actualRows, m)
-			}
-		}
-	default:
-		return false, fmt.Sprintf("unexpected actual type: %T", actual)
-	}
-
-	switch operator {
-	case "equals", "eq", "":
-		// Check if any row matches the expected result
-		expectedMap, ok := expected.(map[string]interface{})
-		if !ok {
-			return false, "expected result is not a valid map"
-		}
-
-		for _, row := range actualRows {
-			if h.mapsMatch(row, expectedMap) {
-				return true, "result matches expected value"
-			}
-		}
-		return false, "no matching result found"
-
-	case "not_equals", "ne", "neq":
-		expectedMap, ok := expected.(map[string]interface{})
-		if !ok {
-			return false, "expected result is not a valid map"
-		}
-
-		for _, row := range actualRows {
-			if h.mapsMatch(row, expectedMap) {
-				return false, "result matches value that should not match"
-			}
-		}
-		return true, "no matching result found (expected)"
-
-	case "exists", "not_empty":
-		if len(actualRows) > 0 {
-			return true, fmt.Sprintf("found %d matching rows", len(actualRows))
-		}
-		return false, "no results found"
-
-	case "not_exists", "empty":
-		if len(actualRows) == 0 {
-			return true, "no results found (expected)"
-		}
-		return false, fmt.Sprintf("found %d rows when none expected", len(actualRows))
-
-	case "contains":
-		expectedMap, ok := expected.(map[string]interface{})
-		if !ok {
-			return false, "expected result is not a valid map"
-		}
-
-		for _, row := range actualRows {
-			if h.mapContains(row, expectedMap) {
-				return true, "result contains expected values"
-			}
-		}
-		return false, "no result contains expected values"
-
-	case "gte", ">=":
-		// Compare numeric values
-		return h.compareNumeric(actualRows, expected, ">=")
-
-	case "lte", "<=":
-		return h.compareNumeric(actualRows, expected, "<=")
-
-	case "gt", ">":
-		return h.compareNumeric(actualRows, expected, ">")
-
-	case "lt", "<":
-		return h.compareNumeric(actualRows, expected, "<")
-
-	default:
-		return false, fmt.Sprintf("unsupported comparison operator: %s", operator)
-	}
-}
-
-// mapsMatch checks if all keys in expected exist in actual with matching values.
-func (h *Handler) mapsMatch(actual, expected map[string]interface{}) bool {
-	for key, expectedVal := range expected {
-		actualVal, exists := actual[key]
-		if !exists {
-			return false
-		}
-		if !h.valuesEqual(actualVal, expectedVal) {
-			return false
-		}
-	}
-	return true
-}
-
-// mapContains checks if actual contains all key-value pairs from expected.
-func (h *Handler) mapContains(actual, expected map[string]interface{}) bool {
-	return h.mapsMatch(actual, expected)
-}
-
-// valuesEqual compares two values for equality, handling type conversions.
-func (h *Handler) valuesEqual(a, b interface{}) bool {
-	// Handle nil cases
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-
-	// Convert to strings for comparison (osquery returns strings)
-	aStr := fmt.Sprintf("%v", a)
-	bStr := fmt.Sprintf("%v", b)
-	return aStr == bStr
-}
-
-// compareNumeric compares numeric values from query results.
-func (h *Handler) compareNumeric(rows []map[string]interface{}, expected interface{}, op string) (bool, string) {
-	expectedMap, ok := expected.(map[string]interface{})
-	if !ok {
-		return false, "expected result is not a valid map"
-	}
-
-	for key, expectedVal := range expectedMap {
-		for _, row := range rows {
-			if actualVal, exists := row[key]; exists {
-				passed, err := h.compareNumbers(actualVal, expectedVal, op)
-				if err != nil {
-					return false, err.Error()
-				}
-				if passed {
-					return true, fmt.Sprintf("%s %s %v: passed", key, op, expectedVal)
-				}
-				return false, fmt.Sprintf("%s %s %v: actual value is %v", key, op, expectedVal, actualVal)
-			}
-		}
-	}
-	return false, "key not found in results"
-}
-
-// compareNumbers compares two numbers with the given operator.
-func (h *Handler) compareNumbers(a, b interface{}, op string) (bool, error) {
-	aFloat, err := toFloat64(a)
-	if err != nil {
-		return false, err
-	}
-	bFloat, err := toFloat64(b)
-	if err != nil {
-		return false, err
-	}
-
-	switch op {
-	case ">=", "gte":
-		return aFloat >= bFloat, nil
-	case "<=", "lte":
-		return aFloat <= bFloat, nil
-	case ">", "gt":
-		return aFloat > bFloat, nil
-	case "<", "lt":
-		return aFloat < bFloat, nil
-	default:
-		return false, fmt.Errorf("unsupported numeric operator: %s", op)
-	}
-}
-
-// toFloat64 converts a value to float64.
-func toFloat64(v interface{}) (float64, error) {
-	switch n := v.(type) {
-	case float64:
-		return n, nil
-	case float32:
-		return float64(n), nil
-	case int:
-		return float64(n), nil
-	case int64:
-		return float64(n), nil
-	case int32:
-		return float64(n), nil
-	case string:
-		var f float64
-		_, err := fmt.Sscanf(n, "%f", &f)
-		if err != nil {
-			return 0, fmt.Errorf("cannot convert %q to number", n)
-		}
-		return f, nil
-	default:
-		return 0, fmt.Errorf("cannot convert %T to number", v)
-	}
-}
-
-// compareRegistryResult compares a registry value with the expected value.
-func (h *Handler) compareRegistryResult(actual interface{}, expected interface{}, operator string) (bool, string) {
-	if expected == nil {
-		return true, "no expected result specified"
-	}
-
-	// Convert expected to string for comparison
-	expectedStr := fmt.Sprintf("%v", expected)
-
-	// Convert actual to string for comparison
-	actualStr := fmt.Sprintf("%v", actual)
-
-	switch operator {
-	case "equals", "eq", "":
-		if actualStr == expectedStr {
-			return true, fmt.Sprintf("registry value %q matches expected %q", actualStr, expectedStr)
-		}
-		return false, fmt.Sprintf("registry value %q does not match expected %q", actualStr, expectedStr)
-
-	case "not_equals", "ne", "neq":
-		if actualStr != expectedStr {
-			return true, fmt.Sprintf("registry value %q does not equal %q (expected)", actualStr, expectedStr)
-		}
-		return false, fmt.Sprintf("registry value %q equals %q but should not", actualStr, expectedStr)
-
-	case "contains":
-		if strings.Contains(actualStr, expectedStr) {
-			return true, fmt.Sprintf("registry value contains %q", expectedStr)
-		}
-		return false, fmt.Sprintf("registry value %q does not contain %q", actualStr, expectedStr)
-
-	case "exists", "not_empty":
-		if actual != nil && actualStr != "" {
-			return true, fmt.Sprintf("registry value exists: %q", actualStr)
-		}
-		return false, "registry value is empty or does not exist"
-
-	case "not_exists", "empty":
-		if actual == nil || actualStr == "" {
-			return true, "registry value does not exist (expected)"
-		}
-		return false, fmt.Sprintf("registry value exists (%q) but should not", actualStr)
-
-	case "gte", ">=":
-		actualFloat, err1 := toFloat64(actual)
-		expectedFloat, err2 := toFloat64(expected)
-		if err1 != nil || err2 != nil {
-			return false, "cannot compare non-numeric values with >= operator"
-		}
-		if actualFloat >= expectedFloat {
-			return true, fmt.Sprintf("registry value %v >= %v", actualFloat, expectedFloat)
-		}
-		return false, fmt.Sprintf("registry value %v < %v", actualFloat, expectedFloat)
-
-	case "lte", "<=":
-		actualFloat, err1 := toFloat64(actual)
-		expectedFloat, err2 := toFloat64(expected)
-		if err1 != nil || err2 != nil {
-			return false, "cannot compare non-numeric values with <= operator"
-		}
-		if actualFloat <= expectedFloat {
-			return true, fmt.Sprintf("registry value %v <= %v", actualFloat, expectedFloat)
-		}
-		return false, fmt.Sprintf("registry value %v > %v", actualFloat, expectedFloat)
-
-	case "gt", ">":
-		actualFloat, err1 := toFloat64(actual)
-		expectedFloat, err2 := toFloat64(expected)
-		if err1 != nil || err2 != nil {
-			return false, "cannot compare non-numeric values with > operator"
-		}
-		if actualFloat > expectedFloat {
-			return true, fmt.Sprintf("registry value %v > %v", actualFloat, expectedFloat)
-		}
-		return false, fmt.Sprintf("registry value %v <= %v", actualFloat, expectedFloat)
-
-	case "lt", "<":
-		actualFloat, err1 := toFloat64(actual)
-		expectedFloat, err2 := toFloat64(expected)
-		if err1 != nil || err2 != nil {
-			return false, "cannot compare non-numeric values with < operator"
-		}
-		if actualFloat < expectedFloat {
-			return true, fmt.Sprintf("registry value %v < %v", actualFloat, expectedFloat)
-		}
-		return false, fmt.Sprintf("registry value %v >= %v", actualFloat, expectedFloat)
-
-	default:
-		return false, fmt.Sprintf("unsupported comparison operator: %s", operator)
-	}
 }
 
 // Agent logs handler
