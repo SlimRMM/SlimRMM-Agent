@@ -11,6 +11,9 @@ var (
 
 	// ErrNotAvailable is returned when winget is not installed.
 	ErrNotAvailable = errors.New("winget is not available")
+
+	// ErrWingetNotAvailable is returned when winget binary is not found.
+	ErrWingetNotAvailable = errors.New("winget binary not available")
 )
 
 // Windows exit codes for winget operations.

@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/homebrew"
+	"github.com/slimrmm/slimrmm-agent/internal/services/filesystem"
 	"github.com/slimrmm/slimrmm-agent/internal/services/models"
+	"github.com/slimrmm/slimrmm-agent/internal/services/registry"
 )
 
 // =============================================================================
@@ -139,7 +141,7 @@ func (h *Handler) handleCreateUninstallSnapshot(ctx context.Context, data json.R
 
 // createWindowsSnapshot creates a snapshot for Windows.
 func (h *Handler) createWindowsSnapshot(ctx context.Context, req CreateSnapshotRequest, snapshot *UninstallSnapshot) {
-	// Export relevant registry keys
+	// Export relevant registry keys using registry service
 	if req.IncludeConfig {
 		regExportPath := filepath.Join(os.TempDir(), fmt.Sprintf("snapshot_%s.reg", snapshot.ID))
 
@@ -149,9 +151,9 @@ func (h *Handler) createWindowsSnapshot(ctx context.Context, req CreateSnapshotR
 			fmt.Sprintf(`HKCU\SOFTWARE\%s`, req.AppName),
 		}
 
+		regService := registry.GetDefault()
 		for _, regPath := range regPaths {
-			cmd := exec.CommandContext(ctx, "reg", "export", regPath, regExportPath, "/y")
-			if err := cmd.Run(); err == nil {
+			if err := regService.ExportKey(ctx, regPath, regExportPath); err == nil {
 				snapshot.RegistryBackup = regExportPath
 				break
 			}
@@ -169,6 +171,8 @@ func (h *Handler) createWindowsSnapshot(ctx context.Context, req CreateSnapshotR
 
 // createMacOSSnapshot creates a snapshot for macOS.
 func (h *Handler) createMacOSSnapshot(ctx context.Context, req CreateSnapshotRequest, snapshot *UninstallSnapshot) {
+	fs := filesystem.GetDefault()
+
 	// Find app bundle path
 	appPaths := []string{
 		filepath.Join("/Applications", req.AppName+".app"),
@@ -176,7 +180,7 @@ func (h *Handler) createMacOSSnapshot(ctx context.Context, req CreateSnapshotReq
 	}
 
 	for _, appPath := range appPaths {
-		if _, err := os.Stat(appPath); err == nil {
+		if fs.FileExists(appPath) {
 			snapshot.AppBundlePath = appPath
 			break
 		}
@@ -192,7 +196,7 @@ func (h *Handler) createMacOSSnapshot(ctx context.Context, req CreateSnapshotReq
 		}
 
 		for _, path := range configPaths {
-			if _, err := os.Stat(path); err == nil {
+			if fs.FileExists(path) {
 				snapshot.ConfigFiles = append(snapshot.ConfigFiles, path)
 			}
 		}
@@ -209,6 +213,8 @@ func (h *Handler) createMacOSSnapshot(ctx context.Context, req CreateSnapshotReq
 
 // createLinuxSnapshot creates a snapshot for Linux.
 func (h *Handler) createLinuxSnapshot(ctx context.Context, req CreateSnapshotRequest, snapshot *UninstallSnapshot) {
+	fs := filesystem.GetDefault()
+
 	// List config files
 	if req.IncludeConfig {
 		home, _ := os.UserHomeDir()
@@ -219,7 +225,7 @@ func (h *Handler) createLinuxSnapshot(ctx context.Context, req CreateSnapshotReq
 		}
 
 		for _, path := range configPaths {
-			if _, err := os.Stat(path); err == nil {
+			if fs.FileExists(path) {
 				snapshot.ConfigFiles = append(snapshot.ConfigFiles, path)
 			}
 		}

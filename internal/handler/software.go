@@ -9,13 +9,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/homebrew"
+	"github.com/slimrmm/slimrmm-agent/internal/services/filesystem"
 	"github.com/slimrmm/slimrmm-agent/internal/services/models"
 )
 
@@ -303,8 +303,9 @@ func (h *Handler) downloadFile(ctx context.Context, url, token, destPath, instal
 		return fmt.Errorf("download failed with status: %d", resp.StatusCode)
 	}
 
-	// Create destination file
-	out, err := os.Create(destPath)
+	// Create destination file using filesystem service
+	fs := filesystem.GetDefault()
+	out, err := fs.CreateFile(destPath)
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
@@ -355,9 +356,10 @@ func (h *Handler) downloadFile(ctx context.Context, url, token, destPath, instal
 	return nil
 }
 
-// calculateFileHash calculates SHA256 hash of a file.
+// calculateFileHash calculates SHA256 hash of a file using filesystem service.
 func calculateFileHash(path string) (string, error) {
-	f, err := os.Open(path)
+	fs := filesystem.GetDefault()
+	f, err := fs.OpenRead(path)
 	if err != nil {
 		return "", err
 	}

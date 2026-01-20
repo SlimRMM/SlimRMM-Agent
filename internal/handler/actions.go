@@ -17,9 +17,10 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/helper"
 	"github.com/slimrmm/slimrmm-agent/internal/logging"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
-	"github.com/slimrmm/slimrmm-agent/internal/services/compliance"
 	"github.com/slimrmm/slimrmm-agent/internal/security/archive"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
+	"github.com/slimrmm/slimrmm-agent/internal/services/compliance"
+	"github.com/slimrmm/slimrmm-agent/internal/services/filesystem"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
@@ -569,13 +570,14 @@ func (h *Handler) handleUploadChunk(ctx context.Context, data json.RawMessage) (
 		return nil, fmt.Errorf("path or session_id required")
 	}
 
-	var file *os.File
+	fs := filesystem.GetDefault()
+	var file filesystem.File
 	if req.Offset == 0 {
 		// First chunk - create new file
-		file, err = os.Create(req.Path)
+		file, err = fs.OpenFile(req.Path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	} else {
 		// Subsequent chunk - open for append
-		file, err = os.OpenFile(req.Path, os.O_WRONLY|os.O_APPEND, 0644)
+		file, err = fs.OpenFile(req.Path, os.O_WRONLY|os.O_APPEND, 0644)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("opening file: %w", err)
@@ -2369,7 +2371,6 @@ func (h *Handler) handleExecuteWingetInstallPolicy(ctx context.Context, data jso
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	wingetPath := client.GetBinaryPath()
 	scope := req.InstallScope
 	if scope == "" {
 		scope = "machine"
@@ -2397,9 +2398,8 @@ func (h *Handler) handleExecuteWingetInstallPolicy(ctx context.Context, data jso
 
 		// Check if already installed (if skip_if_installed is true)
 		if req.SkipIfInstalled {
-			checkCmd := exec.CommandContext(ctx, wingetPath, "list", "--id", pkg.PackageID, "--accept-source-agreements")
-			checkOutput, _ := checkCmd.CombinedOutput()
-			if strings.Contains(string(checkOutput), pkg.PackageID) {
+			listResult, _ := client.ListPackage(ctx, pkg.PackageID)
+			if listResult != nil && listResult.Installed {
 				h.logger.Info("package already installed, skipping", "package_id", pkg.PackageID)
 				results = append(results, wingetInstallResult{
 					PackageID:   pkg.PackageID,
@@ -2412,47 +2412,41 @@ func (h *Handler) handleExecuteWingetInstallPolicy(ctx context.Context, data jso
 			}
 		}
 
-		// Build install command
-		args := []string{
-			"install",
-			"--id", pkg.PackageID,
-			"--scope", scope,
-			"--accept-source-agreements",
-			"--accept-package-agreements",
-			"--disable-interactivity",
+		// Build install options
+		opts := &winget.InstallOptions{
+			Scope:  scope,
+			Silent: req.Silent,
 		}
-
-		if req.Silent {
-			args = append(args, "--silent")
-		}
-
 		if pkg.Version != nil && *pkg.Version != "" {
-			args = append(args, "--version", *pkg.Version)
+			opts.Version = *pkg.Version
 		}
 
-		// Execute install
-		cmd := exec.CommandContext(ctx, wingetPath, args...)
-		output, err := cmd.CombinedOutput()
+		// Execute install via service
+		installResult, installErr := client.InstallPackage(ctx, pkg.PackageID, opts)
 
 		result := wingetInstallResult{
 			PackageID:   pkg.PackageID,
 			PackageName: packageName,
-			Output:      string(output),
 		}
 
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				result.ExitCode = exitErr.ExitCode()
-			} else {
+		if installResult != nil {
+			result.Output = installResult.Output
+			result.ExitCode = installResult.ExitCode
+		}
+
+		if installErr != nil || (installResult != nil && !installResult.Success) {
+			if installResult != nil {
+				result.Error = installResult.Error
+			} else if installErr != nil {
+				result.Error = installErr.Error()
 				result.ExitCode = -1
 			}
 			result.Status = "failed"
-			result.Error = err.Error()
 			failed++
 			h.logger.Error("package installation failed",
 				"package_id", pkg.PackageID,
 				"exit_code", result.ExitCode,
-				"error", err,
+				"error", result.Error,
 			)
 		} else {
 			result.Status = "success"
@@ -2520,8 +2514,8 @@ func (h *Handler) handleExecuteWingetInstallPolicy(ctx context.Context, data jso
 	return response, nil
 }
 
-// executeWingetUpgrade runs winget upgrade for a single package.
-func (h *Handler) executeWingetUpgrade(ctx context.Context, wingetPath string, update actions.Update) wingetUpdateResult {
+// executeWingetUpgrade runs winget upgrade for a single package using the winget client.
+func (h *Handler) executeWingetUpgrade(ctx context.Context, _ string, update actions.Update) wingetUpdateResult {
 	result := wingetUpdateResult{
 		PackageID:   update.KB, // KB contains the package ID for winget updates
 		PackageName: update.Name,
@@ -2529,43 +2523,47 @@ func (h *Handler) executeWingetUpgrade(ctx context.Context, wingetPath string, u
 		NewVersion:  update.Version,
 	}
 
-	// Run winget upgrade --id <package_id>
-	cmd := exec.CommandContext(ctx, wingetPath, "upgrade",
-		"--id", update.KB,
-		"--accept-source-agreements",
-		"--accept-package-agreements",
-		"--disable-interactivity",
-		"--silent",
-	)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		// Check for specific exit codes
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode := exitErr.ExitCode()
-			// 0x8A150011 = No applicable upgrade found (already up to date)
-			if exitCode == 0x8A150011 || exitCode == -1978335215 {
-				result.Status = "skipped"
-				result.Error = "already up to date"
-				return result
-			}
-		}
+	client := winget.GetDefault()
+	if !client.IsAvailable() {
 		result.Status = "failed"
-		result.Error = fmt.Sprintf("upgrade failed: %v - %s", err, string(output))
+		result.Error = "winget not available"
+		return result
+	}
+
+	// Run winget upgrade via service
+	upgradeResult, err := client.UpgradePackage(ctx, update.KB)
+	if err != nil {
+		result.Status = "failed"
+		result.Error = fmt.Sprintf("upgrade failed: %v", err)
 		h.logger.Error("winget upgrade failed",
 			"package", update.KB,
 			"error", err,
-			"output", string(output),
 		)
 		return result
 	}
 
-	result.Status = "success"
-	h.logger.Info("winget upgrade succeeded",
-		"package", update.KB,
-		"old_version", update.CurrentVer,
-		"new_version", update.Version,
-	)
+	if upgradeResult.Success {
+		if upgradeResult.Error == "already up to date" {
+			result.Status = "skipped"
+			result.Error = "already up to date"
+		} else {
+			result.Status = "success"
+			h.logger.Info("winget upgrade succeeded",
+				"package", update.KB,
+				"old_version", update.CurrentVer,
+				"new_version", update.Version,
+			)
+		}
+	} else {
+		result.Status = "failed"
+		result.Error = fmt.Sprintf("upgrade failed: %s - %s", upgradeResult.Error, upgradeResult.Output)
+		h.logger.Error("winget upgrade failed",
+			"package", update.KB,
+			"error", upgradeResult.Error,
+			"output", upgradeResult.Output,
+		)
+	}
+
 	return result
 }
 
