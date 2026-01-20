@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/services/models"
 )
@@ -221,4 +222,54 @@ func (s *DefaultFileLockService) IsPathLocked(ctx context.Context, path string) 
 		return false, err
 	}
 	return len(locks) > 0, nil
+}
+
+// WaitForLocksRelease waits for file locks to be released with timeout.
+func (s *DefaultFileLockService) WaitForLocksRelease(ctx context.Context, paths []string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	checkInterval := 500 * time.Millisecond
+
+	s.logger.Info("waiting for locks to be released", "paths", paths, "timeout", timeout)
+
+	for time.Now().Before(deadline) {
+		allClear := true
+
+		for _, path := range paths {
+			locks, err := s.detectLocksForPath(ctx, path)
+			if err != nil {
+				continue
+			}
+
+			if len(locks) > 0 {
+				allClear = false
+				s.logger.Debug("locks still present", "path", path, "count", len(locks))
+				break
+			}
+		}
+
+		if allClear {
+			s.logger.Info("all locks released")
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(checkInterval):
+			continue
+		}
+	}
+
+	return fmt.Errorf("timeout waiting for locks to be released")
+}
+
+// GetFileHandleCount returns the number of open handles for a path.
+func (s *DefaultFileLockService) GetFileHandleCount(ctx context.Context, path string) int {
+	locks, err := s.detectLocksForPath(ctx, path)
+	if err != nil {
+		s.logger.Warn("failed to get file handle count", "path", path, "error", err)
+		return -1
+	}
+
+	return len(locks)
 }

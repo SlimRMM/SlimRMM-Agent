@@ -64,10 +64,30 @@ type DependencyInfo struct {
 	Type    string `json:"type,omitempty"`
 }
 
+// StopServicesRequest represents a request to stop services.
+type StopServicesRequest struct {
+	Services       []string `json:"services"`
+	ForceKill      bool     `json:"force_kill"`
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
+}
+
+// StopServicesResult contains the result of stopping services.
+type StopServicesResult struct {
+	StoppedServices []string `json:"stopped_services"`
+	FailedServices  []string `json:"failed_services"`
+	Errors          []string `json:"errors,omitempty"`
+}
+
 // ValidationService defines the interface for pre-uninstall validation.
 type ValidationService interface {
 	// Validate validates if a package can be uninstalled.
 	Validate(ctx context.Context, req *ValidationRequest) (*ValidationResult, error)
+
+	// AnalyzeDependencies analyzes package dependencies.
+	AnalyzeDependencies(ctx context.Context, installationType, packageIdentifier string) (*DependencyAnalysis, error)
+
+	// StopServices stops services before uninstallation.
+	StopServices(ctx context.Context, req *StopServicesRequest) (*StopServicesResult, error)
 }
 
 // PlatformValidator defines the interface for platform-specific validation.

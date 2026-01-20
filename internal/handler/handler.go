@@ -29,6 +29,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/security/ratelimit"
 	"github.com/slimrmm/slimrmm-agent/internal/services/compliance"
 	"github.com/slimrmm/slimrmm-agent/internal/services/models"
+	"github.com/slimrmm/slimrmm-agent/internal/services/process"
 	"github.com/slimrmm/slimrmm-agent/internal/services/software"
 	"github.com/slimrmm/slimrmm-agent/internal/services/validation"
 	"github.com/slimrmm/slimrmm-agent/internal/tamper"
@@ -231,6 +232,9 @@ type Handler struct {
 
 	// Compliance service for compliance check operations
 	complianceService *compliance.DefaultComplianceService
+
+	// Process service for process management operations
+	processService *process.DefaultProcessService
 }
 
 // SelfHealingWatchdog is the interface for the self-healing watchdog.
@@ -284,6 +288,9 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	// Initialize compliance service for compliance checks
 	complianceService := compliance.NewServices(logger)
 
+	// Initialize process service for process management
+	processService := process.NewServices(logger)
+
 	h := &Handler{
 		cfg:               cfg,
 		paths:             paths,
@@ -306,6 +313,7 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		softwareServices:  softwareServices,
 		validationService: validationService,
 		complianceService: complianceService,
+		processService:    processService,
 	}
 
 	h.registerHandlers()

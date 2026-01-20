@@ -3,6 +3,7 @@ package software
 
 import (
 	"context"
+	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/services/models"
 )
@@ -99,6 +100,12 @@ type FileLockService interface {
 
 	// IsPathLocked checks if a specific path is locked.
 	IsPathLocked(ctx context.Context, path string) (bool, error)
+
+	// WaitForLocksRelease waits for file locks to be released with timeout.
+	WaitForLocksRelease(ctx context.Context, paths []string, timeout time.Duration) error
+
+	// GetFileHandleCount returns the number of open handles for a path.
+	GetFileHandleCount(ctx context.Context, path string) int
 }
 
 // SnapshotService defines operations for pre-uninstall snapshots.
