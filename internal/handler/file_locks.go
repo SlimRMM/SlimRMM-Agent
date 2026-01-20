@@ -1,4 +1,5 @@
 // Package handler provides file-lock detection and resolution functions.
+// Delegates to DefaultFileLockService for business logic (MVC pattern).
 package handler
 
 import (
@@ -12,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/slimrmm/slimrmm-agent/internal/services/models"
 )
 
 // FileLock represents a file lock with detailed information.
@@ -66,6 +69,7 @@ type ProcessInfo struct {
 }
 
 // handleDetectFileLocks handles file lock detection requests.
+// Delegates to FileLockService for business logic (MVC pattern).
 func (h *Handler) handleDetectFileLocks(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req FileLockDetectionRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -74,32 +78,35 @@ func (h *Handler) handleDetectFileLocks(ctx context.Context, data json.RawMessag
 
 	h.logger.Info("detecting file locks", "paths", req.Paths)
 
+	// Expand paths
+	expandedPaths := make([]string, len(req.Paths))
+	for i, path := range req.Paths {
+		expandedPaths[i] = expandPath(path)
+	}
+
+	// Delegate to service layer (MVC pattern)
+	serviceLocks, err := h.softwareServices.FileLock.DetectLocks(ctx, expandedPaths)
+	if err != nil {
+		h.logger.Warn("error detecting locks", "error", err)
+	}
+
+	// Convert service model to handler response format
 	response := &FileLockDetectionResponse{
-		Locks:         make([]FileLock, 0),
+		Locks:         make([]FileLock, 0, len(serviceLocks)),
 		AffectedPaths: make([]string, 0),
 	}
 
-	for _, path := range req.Paths {
-		expandedPath := expandPath(path)
-
-		var locks []FileLock
-		var err error
-
-		switch runtime.GOOS {
-		case "darwin", "linux":
-			locks, err = detectUnixFileLocks(ctx, expandedPath, req.IncludeSubdirs)
-		case "windows":
-			locks, err = detectWindowsFileLocks(ctx, expandedPath, req.IncludeSubdirs)
-		}
-
-		if err != nil {
-			h.logger.Warn("error detecting locks", "path", expandedPath, "error", err)
-			continue
-		}
-
-		if len(locks) > 0 {
-			response.Locks = append(response.Locks, locks...)
-			response.AffectedPaths = append(response.AffectedPaths, expandedPath)
+	affectedPathsMap := make(map[string]bool)
+	for _, sl := range serviceLocks {
+		response.Locks = append(response.Locks, FileLock{
+			Path:        sl.Path,
+			ProcessName: sl.Process,
+			PID:         sl.PID,
+			LockType:    sl.LockType,
+		})
+		if !affectedPathsMap[sl.Path] {
+			response.AffectedPaths = append(response.AffectedPaths, sl.Path)
+			affectedPathsMap[sl.Path] = true
 		}
 	}
 
@@ -295,6 +302,7 @@ func (h *Handler) registerFileLockHandlers() {
 }
 
 // handleResolveFileLocks handles file lock resolution requests.
+// Delegates to FileLockService for business logic (MVC pattern).
 func (h *Handler) handleResolveFileLocks(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req FileLockResolutionRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -307,33 +315,35 @@ func (h *Handler) handleResolveFileLocks(ctx context.Context, data json.RawMessa
 		"force", req.Force,
 	)
 
-	var results []FileLockResolutionResult
-
-	for _, lock := range req.Locks {
-		var result FileLockResolutionResult
-
-		switch req.Strategy {
-		case "terminate":
-			result = h.resolveLockByTerminating(ctx, lock, req.Force)
-		case "schedule":
-			result = h.resolveLockByScheduling(ctx, lock)
-		case "rename":
-			result = h.resolveLockByRenaming(ctx, lock)
-		case "skip":
-			result = FileLockResolutionResult{
-				Lock:     lock,
-				Strategy: "skip",
-				Success:  true,
-			}
-		default:
-			result = FileLockResolutionResult{
-				Lock:     lock,
-				Strategy: req.Strategy,
-				Success:  false,
-				Error:    fmt.Sprintf("unknown strategy: %s", req.Strategy),
-			}
+	// Convert handler types to service models
+	resolutions := make([]models.FileLockResolution, len(req.Locks))
+	for i, lock := range req.Locks {
+		resolutions[i] = models.FileLockResolution{
+			Lock: models.FileLockInfo{
+				Path:     lock.Path,
+				Process:  lock.ProcessName,
+				PID:      lock.PID,
+				LockType: lock.LockType,
+			},
+			Strategy:  req.Strategy,
+			ForceKill: req.Force,
 		}
+	}
 
+	// Delegate to service layer (MVC pattern)
+	err := h.softwareServices.FileLock.ResolveLocks(ctx, resolutions)
+
+	// Build results for response
+	var results []FileLockResolutionResult
+	for _, lock := range req.Locks {
+		result := FileLockResolutionResult{
+			Lock:     lock,
+			Strategy: req.Strategy,
+			Success:  err == nil,
+		}
+		if err != nil {
+			result.Error = err.Error()
+		}
 		results = append(results, result)
 	}
 
