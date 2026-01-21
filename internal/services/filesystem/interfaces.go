@@ -37,6 +37,9 @@ type FileService interface {
 
 	// WriteFile writes data to a file, creating it if necessary.
 	WriteFile(path string, data []byte, perm os.FileMode) error
+
+	// CommandExists checks if a command/executable exists in PATH.
+	CommandExists(name string) bool
 }
 
 // File extends io.ReadWriteCloser with additional file operations.

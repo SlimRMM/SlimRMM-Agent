@@ -4,6 +4,7 @@ package filesystem
 import (
 	"io"
 	"os"
+	"os/exec"
 	"sync"
 )
 
@@ -77,4 +78,10 @@ func (s *Service) ReadFile(path string) ([]byte, error) {
 // WriteFile writes data to a file, creating it if necessary.
 func (s *Service) WriteFile(path string, data []byte, perm os.FileMode) error {
 	return os.WriteFile(path, data, perm)
+}
+
+// CommandExists checks if a command/executable exists in PATH.
+func (s *Service) CommandExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
 }

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -64,11 +63,12 @@ func expandPath(path string) string {
 	return path
 }
 
-// detectRPMPackageManager detects the available RPM package manager.
+// detectRPMPackageManager detects the available RPM package manager using filesystem service.
 func detectRPMPackageManager() string {
+	fs := filesystem.GetDefault()
 	managers := []string{"dnf", "yum", "zypper"}
 	for _, mgr := range managers {
-		if _, err := exec.LookPath(mgr); err == nil {
+		if fs.CommandExists(mgr) {
 			return mgr
 		}
 	}
