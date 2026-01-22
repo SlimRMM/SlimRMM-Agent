@@ -226,7 +226,7 @@ func (u *CaskUninstaller) Uninstall(ctx context.Context, req *models.UninstallRe
 	var output strings.Builder
 
 	// Execute brew uninstall --cask
-	cmd := exec.CommandContext(ctx, "brew", "uninstall", "--cask", caskName)
+	cmd := exec.CommandContext(ctx, getBrewPath(), "uninstall", "--cask", caskName)
 	cmd.Env = append(os.Environ(), "HOMEBREW_NO_AUTO_UPDATE=1")
 	brewOutput, err := cmd.CombinedOutput()
 	output.WriteString(string(brewOutput))

@@ -21,10 +21,41 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/services/models"
 )
 
+// Common Homebrew paths
+var brewPaths = []string{
+	"/opt/homebrew/bin/brew", // Apple Silicon
+	"/usr/local/bin/brew",    // Intel Mac
+	"/home/linuxbrew/.linuxbrew/bin/brew", // Linux
+}
+
 // isBrewAvailable checks if Homebrew is installed and available.
 func isBrewAvailable() bool {
-	_, err := exec.LookPath("brew")
-	return err == nil
+	// First try PATH
+	if _, err := exec.LookPath("brew"); err == nil {
+		return true
+	}
+	// Check common installation paths (needed when running as root/LaunchDaemon)
+	for _, path := range brewPaths {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// getBrewPath returns the path to the brew executable.
+func getBrewPath() string {
+	// First try PATH
+	if path, err := exec.LookPath("brew"); err == nil {
+		return path
+	}
+	// Check common installation paths
+	for _, path := range brewPaths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return "brew" // fallback
 }
 
 // CaskInstaller implements PlatformInstaller for Homebrew Cask on macOS.
@@ -72,7 +103,7 @@ func (i *CaskInstaller) Install(ctx context.Context, req *models.InstallRequest)
 	)
 
 	// Execute brew install --cask
-	cmd := exec.CommandContext(ctx, "brew", "install", "--cask", caskName)
+	cmd := exec.CommandContext(ctx, getBrewPath(), "install", "--cask", caskName)
 	cmd.Env = append(os.Environ(), "HOMEBREW_NO_AUTO_UPDATE=1")
 	output, err := cmd.CombinedOutput()
 
