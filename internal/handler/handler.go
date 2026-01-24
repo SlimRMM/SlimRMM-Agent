@@ -97,6 +97,7 @@ type HeartbeatMessage struct {
 	ExternalIP   string              `json:"external_ip,omitempty"`
 	SerialNumber string              `json:"serial_number,omitempty"`
 	Proxmox      *HeartbeatProxmox   `json:"proxmox,omitempty"`
+	HyperV       *HeartbeatHyperV    `json:"hyperv,omitempty"`
 	Winget       *HeartbeatWinget    `json:"winget,omitempty"`
 }
 
@@ -120,6 +121,15 @@ type HeartbeatProxmox struct {
 	ClusterName    string `json:"cluster_name,omitempty"`
 	NodeName       string `json:"node_name,omitempty"`
 	RepositoryType string `json:"repository_type,omitempty"`
+}
+
+// HeartbeatHyperV contains Hyper-V host information.
+type HeartbeatHyperV struct {
+	IsHyperV       bool   `json:"is_hyperv"`
+	Version        string `json:"version,omitempty"`
+	HostName       string `json:"host_name,omitempty"`
+	VMCount        int    `json:"vm_count,omitempty"`
+	ClusterEnabled bool   `json:"cluster_enabled,omitempty"`
 }
 
 // HeartbeatStats contains the stats in the format expected by the backend.
@@ -207,6 +217,7 @@ type Handler struct {
 
 	// Delta tracking for heartbeat optimization - only send when changed
 	lastProxmoxHash string
+	lastHyperVHash  string
 	lastWingetHash  string
 
 	// Winget helper availability (updated by update scans)
@@ -1040,6 +1051,25 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 		}
 		h.mu.Unlock()
 		// If unchanged, omit Proxmox field entirely to save bandwidth
+	}
+
+	// Add Hyper-V info if this is a Hyper-V host - delta-based (only send if changed)
+	if hypervInfo := GetHyperVInfo(ctx); hypervInfo != nil {
+		hypervData := &HeartbeatHyperV{
+			IsHyperV:       hypervInfo.IsHyperV,
+			Version:        hypervInfo.Version,
+			HostName:       hypervInfo.HostName,
+			VMCount:        hypervInfo.VMCount,
+			ClusterEnabled: hypervInfo.ClusterEnabled,
+		}
+		currentHash := hashStruct(hypervData)
+		h.mu.Lock()
+		if currentHash != h.lastHyperVHash {
+			heartbeat.HyperV = hypervData
+			h.lastHyperVHash = currentHash
+			h.logger.Debug("hyperv info changed, including in heartbeat")
+		}
+		h.mu.Unlock()
 	}
 
 	// Add winget info on Windows - always include on full heartbeats

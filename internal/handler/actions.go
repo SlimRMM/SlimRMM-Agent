@@ -115,6 +115,9 @@ func (h *Handler) registerHandlers() {
 	// Proxmox handlers (only active on Proxmox hosts)
 	h.registerProxmoxHandlers()
 
+	// Hyper-V handlers (only active on Hyper-V hosts)
+	h.registerHyperVHandlers()
+
 	// Remote desktop handlers
 	h.registerRemoteDesktopHandlers()
 
