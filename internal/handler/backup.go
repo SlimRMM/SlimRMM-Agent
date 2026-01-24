@@ -27,12 +27,34 @@ import (
 
 // Backup request types
 
+// CompressionLevel defines the compression levels supported by the agent.
+type CompressionLevel string
+
+const (
+	CompressionNone     CompressionLevel = "none"
+	CompressionFast     CompressionLevel = "fast"
+	CompressionBalanced CompressionLevel = "balanced"
+	CompressionHigh     CompressionLevel = "high"
+	CompressionMaximum  CompressionLevel = "maximum"
+)
+
+// compressionLevelToGzip maps compression levels to gzip compression levels.
+// gzip levels: 1 (fastest) to 9 (best compression)
+var compressionLevelToGzip = map[CompressionLevel]int{
+	CompressionNone:     0,  // No compression
+	CompressionFast:     1,  // Fastest
+	CompressionBalanced: 5,  // Default
+	CompressionHigh:     7,  // Good balance
+	CompressionMaximum:  9,  // Best compression
+}
+
 type createBackupRequest struct {
-	BackupID   string `json:"backup_id"`
-	BackupType string `json:"backup_type"` // config, logs, system_state, software_inventory, compliance_results
-	UploadURL  string `json:"upload_url"`  // Pre-signed URL for upload
-	Encrypt    bool   `json:"encrypt"`
-	EncryptKey string `json:"encrypt_key,omitempty"` // DEK for client-side encryption (base64)
+	BackupID         string           `json:"backup_id"`
+	BackupType       string           `json:"backup_type"` // config, logs, system_state, software_inventory, compliance_results, docker_*, proxmox_*, hyperv_*
+	UploadURL        string           `json:"upload_url"`  // Pre-signed URL for upload
+	Encrypt          bool             `json:"encrypt"`
+	EncryptKey       string           `json:"encrypt_key,omitempty"`       // DEK for client-side encryption (base64)
+	CompressionLevel CompressionLevel `json:"compression_level,omitempty"` // Compression level: none, fast, balanced, high, maximum
 }
 
 type createBackupResponse struct {
@@ -116,20 +138,47 @@ func (h *Handler) handleCreateAgentBackup(ctx context.Context, data json.RawMess
 
 	originalSize := int64(len(backupData))
 
-	// Compress with gzip
-	var compressedBuf bytes.Buffer
-	gzWriter := gzip.NewWriter(&compressedBuf)
-	if _, err := gzWriter.Write(backupData); err != nil {
-		gzWriter.Close()
-		return createBackupResponse{
-			BackupID: req.BackupID,
-			Status:   "failed",
-			Error:    fmt.Sprintf("compression failed: %v", err),
-		}, nil
+	// Determine compression level
+	compressionLevel := req.CompressionLevel
+	if compressionLevel == "" {
+		compressionLevel = CompressionBalanced
 	}
-	gzWriter.Close()
-	compressedData := compressedBuf.Bytes()
-	compressedSize := int64(len(compressedData))
+
+	var compressedData []byte
+	var compressedSize int64
+
+	if compressionLevel == CompressionNone {
+		// No compression
+		compressedData = backupData
+		compressedSize = originalSize
+	} else {
+		// Compress with gzip using the specified level
+		gzipLevel := compressionLevelToGzip[compressionLevel]
+		if gzipLevel == 0 {
+			gzipLevel = gzip.DefaultCompression
+		}
+
+		var compressedBuf bytes.Buffer
+		gzWriter, err := gzip.NewWriterLevel(&compressedBuf, gzipLevel)
+		if err != nil {
+			return createBackupResponse{
+				BackupID: req.BackupID,
+				Status:   "failed",
+				Error:    fmt.Sprintf("failed to create compressor: %v", err),
+			}, nil
+		}
+		if _, err := gzWriter.Write(backupData); err != nil {
+			gzWriter.Close()
+			return createBackupResponse{
+				BackupID: req.BackupID,
+				Status:   "failed",
+				Error:    fmt.Sprintf("compression failed: %v", err),
+			}, nil
+		}
+		gzWriter.Close()
+		compressedData = compressedBuf.Bytes()
+		compressedSize = int64(len(compressedData))
+	}
 
 	// Compute hashes on compressed data
 	sha256Hash := sha256.Sum256(compressedData)
