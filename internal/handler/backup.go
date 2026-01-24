@@ -83,6 +83,38 @@ type createBackupRequest struct {
 	CheckpointName     string `json:"checkpoint_name,omitempty"`
 	IncludeCheckpoints bool   `json:"include_checkpoints,omitempty"`
 	UseVSS             bool   `json:"use_vss,omitempty"` // Volume Shadow Copy for consistent backup
+
+	// PostgreSQL-specific parameters
+	PostgreSQL *postgresqlBackupParams `json:"postgresql,omitempty"`
+
+	// MySQL-specific parameters
+	MySQL *mysqlBackupParams `json:"mysql,omitempty"`
+}
+
+// postgresqlBackupParams contains parameters for PostgreSQL database backups.
+type postgresqlBackupParams struct {
+	ConnectionType string `json:"connection_type"` // host, socket
+	Host           string `json:"host,omitempty"`
+	Port           int    `json:"port,omitempty"`
+	SocketPath     string `json:"socket_path,omitempty"`
+	Username       string `json:"username,omitempty"`
+	Password       string `json:"password,omitempty"`
+	DatabaseName   string `json:"database_name,omitempty"`
+	SchemaOnly     bool   `json:"schema_only,omitempty"`
+	DataOnly       bool   `json:"data_only,omitempty"`
+}
+
+// mysqlBackupParams contains parameters for MySQL/MariaDB database backups.
+type mysqlBackupParams struct {
+	ConnectionType    string `json:"connection_type"` // host, socket
+	Host              string `json:"host,omitempty"`
+	Port              int    `json:"port,omitempty"`
+	SocketPath        string `json:"socket_path,omitempty"`
+	Username          string `json:"username,omitempty"`
+	Password          string `json:"password,omitempty"`
+	DatabaseName      string `json:"database_name,omitempty"`
+	AllDatabases      bool   `json:"all_databases,omitempty"`
+	SingleTransaction bool   `json:"single_transaction,omitempty"`
 }
 
 type createBackupResponse struct {
@@ -192,6 +224,7 @@ func (h *Handler) registerBackupHandlers() {
 	h.handlers["verify_agent_backup"] = h.handleVerifyAgentBackup
 	h.handlers["backup_paths"] = h.handleBackupPaths
 	h.handlers["list_backup_contents"] = h.handleListBackupContents
+	h.handlers["test_database_connection"] = h.handleTestDatabaseConnection
 }
 
 // handleCreateAgentBackup handles backup creation requests.
@@ -384,6 +417,12 @@ func (h *Handler) collectBackupDataWithRequest(ctx context.Context, req createBa
 		return h.collectHyperVCheckpointBackup(ctx, req)
 	case "hyperv_config":
 		return h.collectHyperVConfigBackup(ctx, req)
+
+	// Database backups
+	case "postgresql":
+		return h.collectPostgreSQLBackup(ctx, req)
+	case "mysql":
+		return h.collectMySQLBackup(ctx, req)
 
 	default:
 		return nil, fmt.Errorf("unknown backup type: %s", req.BackupType)
@@ -1277,6 +1316,7 @@ func isVirtualizationBackup(backupType string) bool {
 		"proxmox_vm", "proxmox_lxc", "proxmox_config",
 		"hyperv_vm", "hyperv_checkpoint", "hyperv_config",
 		"files_and_folders",
+		"postgresql", "mysql",
 	}
 	for _, vt := range virtTypes {
 		if backupType == vt {
@@ -3117,4 +3157,424 @@ func (h *Handler) handleListBackupContents(ctx context.Context, data json.RawMes
 		Entries:  entries,
 		Count:    len(entries),
 	}, nil
+}
+
+// =============================================================================
+// Database Backup Functions
+// =============================================================================
+
+// collectPostgreSQLBackup creates a backup of a PostgreSQL database using pg_dump.
+func (h *Handler) collectPostgreSQLBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if req.PostgreSQL == nil {
+		return nil, fmt.Errorf("postgresql parameters are required for postgresql backup")
+	}
+
+	params := req.PostgreSQL
+
+	// Build pg_dump command arguments
+	args := []string{}
+
+	// Connection parameters
+	if params.ConnectionType == "socket" && params.SocketPath != "" {
+		args = append(args, "-h", params.SocketPath)
+	} else if params.Host != "" {
+		args = append(args, "-h", params.Host)
+		if params.Port > 0 {
+			args = append(args, "-p", fmt.Sprintf("%d", params.Port))
+		}
+	}
+
+	if params.Username != "" {
+		args = append(args, "-U", params.Username)
+	}
+
+	// Dump options
+	if params.SchemaOnly {
+		args = append(args, "--schema-only")
+	}
+	if params.DataOnly {
+		args = append(args, "--data-only")
+	}
+
+	// Database name
+	if params.DatabaseName != "" {
+		args = append(args, params.DatabaseName)
+	}
+
+	h.logger.Info("executing pg_dump",
+		"host", params.Host,
+		"port", params.Port,
+		"database", params.DatabaseName,
+		"schema_only", params.SchemaOnly,
+		"data_only", params.DataOnly,
+	)
+
+	// Create command
+	cmd := exec.CommandContext(ctx, "pg_dump", args...)
+
+	// Set password via environment variable (secure way to pass password to pg_dump)
+	if params.Password != "" {
+		cmd.Env = append(os.Environ(), "PGPASSWORD="+params.Password)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		h.logger.Error("pg_dump failed",
+			"error", err,
+			"stderr", stderr.String(),
+		)
+		return nil, fmt.Errorf("pg_dump failed: %w - %s", err, stderr.String())
+	}
+
+	// Build backup metadata
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "postgresql"
+	backupData["database_type"] = "postgresql"
+	backupData["database_name"] = params.DatabaseName
+	backupData["host"] = params.Host
+	backupData["port"] = params.Port
+	backupData["schema_only"] = params.SchemaOnly
+	backupData["data_only"] = params.DataOnly
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+	backupData["dump_size"] = stdout.Len()
+	backupData["dump_data"] = base64.StdEncoding.EncodeToString(stdout.Bytes())
+
+	return json.Marshal(backupData)
+}
+
+// collectMySQLBackup creates a backup of a MySQL/MariaDB database using mysqldump.
+func (h *Handler) collectMySQLBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if req.MySQL == nil {
+		return nil, fmt.Errorf("mysql parameters are required for mysql backup")
+	}
+
+	params := req.MySQL
+
+	// Build mysqldump command arguments
+	args := []string{}
+
+	// Connection parameters
+	if params.ConnectionType == "socket" && params.SocketPath != "" {
+		args = append(args, "--socket="+params.SocketPath)
+	} else if params.Host != "" {
+		args = append(args, "-h", params.Host)
+		if params.Port > 0 {
+			args = append(args, "-P", fmt.Sprintf("%d", params.Port))
+		}
+	}
+
+	if params.Username != "" {
+		args = append(args, "-u", params.Username)
+	}
+
+	// Password (note: passing password on command line is not ideal but mysqldump requires it)
+	// In production, consider using --defaults-file or mysql_config_editor
+	if params.Password != "" {
+		args = append(args, "-p"+params.Password)
+	}
+
+	// Dump options
+	if params.SingleTransaction {
+		args = append(args, "--single-transaction")
+	}
+
+	// Database selection
+	if params.AllDatabases {
+		args = append(args, "--all-databases")
+	} else if params.DatabaseName != "" {
+		args = append(args, params.DatabaseName)
+	}
+
+	h.logger.Info("executing mysqldump",
+		"host", params.Host,
+		"port", params.Port,
+		"database", params.DatabaseName,
+		"all_databases", params.AllDatabases,
+		"single_transaction", params.SingleTransaction,
+	)
+
+	// Create command
+	cmd := exec.CommandContext(ctx, "mysqldump", args...)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		h.logger.Error("mysqldump failed",
+			"error", err,
+			"stderr", stderr.String(),
+		)
+		return nil, fmt.Errorf("mysqldump failed: %w - %s", err, stderr.String())
+	}
+
+	// Build backup metadata
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "mysql"
+	backupData["database_type"] = "mysql"
+	backupData["database_name"] = params.DatabaseName
+	backupData["all_databases"] = params.AllDatabases
+	backupData["host"] = params.Host
+	backupData["port"] = params.Port
+	backupData["single_transaction"] = params.SingleTransaction
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+	backupData["dump_size"] = stdout.Len()
+	backupData["dump_data"] = base64.StdEncoding.EncodeToString(stdout.Bytes())
+
+	return json.Marshal(backupData)
+}
+
+// testDatabaseConnectionRequest holds parameters for testing database connections.
+type testDatabaseConnectionRequest struct {
+	DatabaseType   string `json:"database_type"`   // postgresql, mysql
+	ConnectionType string `json:"connection_type"` // host, socket
+	Host           string `json:"host,omitempty"`
+	Port           int    `json:"port,omitempty"`
+	SocketPath     string `json:"socket_path,omitempty"`
+	Username       string `json:"username,omitempty"`
+	Password       string `json:"password,omitempty"`
+	DatabaseName   string `json:"database_name,omitempty"`
+}
+
+// testDatabaseConnectionResponse holds the result of a database connection test.
+type testDatabaseConnectionResponse struct {
+	Success       bool     `json:"success"`
+	Message       string   `json:"message,omitempty"`
+	Error         string   `json:"error,omitempty"`
+	ServerVersion string   `json:"server_version,omitempty"`
+	Databases     []string `json:"databases,omitempty"`
+}
+
+// handleTestDatabaseConnection tests a database connection.
+func (h *Handler) handleTestDatabaseConnection(ctx context.Context, payload json.RawMessage) (interface{}, error) {
+	var req testDatabaseConnectionRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("failed to parse test connection request: %w", err)
+	}
+
+	h.logger.Info("testing database connection",
+		"database_type", req.DatabaseType,
+		"connection_type", req.ConnectionType,
+		"host", req.Host,
+		"port", req.Port,
+	)
+
+	var response testDatabaseConnectionResponse
+
+	switch req.DatabaseType {
+	case "postgresql":
+		response = h.testPostgreSQLConnection(ctx, req)
+	case "mysql":
+		response = h.testMySQLConnection(ctx, req)
+	default:
+		return testDatabaseConnectionResponse{
+			Success: false,
+			Error:   fmt.Sprintf("unsupported database type: %s", req.DatabaseType),
+		}, nil
+	}
+
+	return response, nil
+}
+
+// testPostgreSQLConnection tests a PostgreSQL database connection.
+func (h *Handler) testPostgreSQLConnection(ctx context.Context, req testDatabaseConnectionRequest) testDatabaseConnectionResponse {
+	// Build connection string for psql
+	args := []string{"-c", "SELECT version();", "-t", "-A"}
+
+	// Connection parameters
+	if req.ConnectionType == "socket" && req.SocketPath != "" {
+		args = append(args, "-h", req.SocketPath)
+	} else if req.Host != "" {
+		args = append(args, "-h", req.Host)
+		if req.Port > 0 {
+			args = append(args, "-p", fmt.Sprintf("%d", req.Port))
+		}
+	}
+
+	if req.Username != "" {
+		args = append(args, "-U", req.Username)
+	}
+
+	dbName := req.DatabaseName
+	if dbName == "" {
+		dbName = "postgres"
+	}
+	args = append(args, dbName)
+
+	// Create command
+	cmd := exec.CommandContext(ctx, "psql", args...)
+	if req.Password != "" {
+		cmd.Env = append(os.Environ(), "PGPASSWORD="+req.Password)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		h.logger.Error("postgresql connection test failed",
+			"error", err,
+			"stderr", stderr.String(),
+		)
+		return testDatabaseConnectionResponse{
+			Success: false,
+			Error:   fmt.Sprintf("connection failed: %s", stderr.String()),
+		}
+	}
+
+	serverVersion := strings.TrimSpace(stdout.String())
+
+	// Get list of databases
+	databases := h.getPostgreSQLDatabases(ctx, req)
+
+	return testDatabaseConnectionResponse{
+		Success:       true,
+		Message:       "Connection successful",
+		ServerVersion: serverVersion,
+		Databases:     databases,
+	}
+}
+
+// getPostgreSQLDatabases retrieves the list of databases from PostgreSQL.
+func (h *Handler) getPostgreSQLDatabases(ctx context.Context, req testDatabaseConnectionRequest) []string {
+	args := []string{"-c", "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname;", "-t", "-A"}
+
+	if req.ConnectionType == "socket" && req.SocketPath != "" {
+		args = append(args, "-h", req.SocketPath)
+	} else if req.Host != "" {
+		args = append(args, "-h", req.Host)
+		if req.Port > 0 {
+			args = append(args, "-p", fmt.Sprintf("%d", req.Port))
+		}
+	}
+
+	if req.Username != "" {
+		args = append(args, "-U", req.Username)
+	}
+
+	args = append(args, "postgres")
+
+	cmd := exec.CommandContext(ctx, "psql", args...)
+	if req.Password != "" {
+		cmd.Env = append(os.Environ(), "PGPASSWORD="+req.Password)
+	}
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+
+	if err := cmd.Run(); err != nil {
+		return nil
+	}
+
+	var databases []string
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			databases = append(databases, line)
+		}
+	}
+
+	return databases
+}
+
+// testMySQLConnection tests a MySQL database connection.
+func (h *Handler) testMySQLConnection(ctx context.Context, req testDatabaseConnectionRequest) testDatabaseConnectionResponse {
+	// Build arguments for mysql command
+	args := []string{"-e", "SELECT VERSION();", "-N", "-B"}
+
+	// Connection parameters
+	if req.ConnectionType == "socket" && req.SocketPath != "" {
+		args = append(args, "--socket="+req.SocketPath)
+	} else if req.Host != "" {
+		args = append(args, "-h", req.Host)
+		if req.Port > 0 {
+			args = append(args, "-P", fmt.Sprintf("%d", req.Port))
+		}
+	}
+
+	if req.Username != "" {
+		args = append(args, "-u", req.Username)
+	}
+	if req.Password != "" {
+		args = append(args, "-p"+req.Password)
+	}
+
+	if req.DatabaseName != "" {
+		args = append(args, req.DatabaseName)
+	}
+
+	// Create command
+	cmd := exec.CommandContext(ctx, "mysql", args...)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		h.logger.Error("mysql connection test failed",
+			"error", err,
+			"stderr", stderr.String(),
+		)
+		return testDatabaseConnectionResponse{
+			Success: false,
+			Error:   fmt.Sprintf("connection failed: %s", stderr.String()),
+		}
+	}
+
+	serverVersion := strings.TrimSpace(stdout.String())
+
+	// Get list of databases
+	databases := h.getMySQLDatabases(ctx, req)
+
+	return testDatabaseConnectionResponse{
+		Success:       true,
+		Message:       "Connection successful",
+		ServerVersion: serverVersion,
+		Databases:     databases,
+	}
+}
+
+// getMySQLDatabases retrieves the list of databases from MySQL.
+func (h *Handler) getMySQLDatabases(ctx context.Context, req testDatabaseConnectionRequest) []string {
+	args := []string{"-e", "SHOW DATABASES;", "-N", "-B"}
+
+	if req.ConnectionType == "socket" && req.SocketPath != "" {
+		args = append(args, "--socket="+req.SocketPath)
+	} else if req.Host != "" {
+		args = append(args, "-h", req.Host)
+		if req.Port > 0 {
+			args = append(args, "-P", fmt.Sprintf("%d", req.Port))
+		}
+	}
+
+	if req.Username != "" {
+		args = append(args, "-u", req.Username)
+	}
+	if req.Password != "" {
+		args = append(args, "-p"+req.Password)
+	}
+
+	cmd := exec.CommandContext(ctx, "mysql", args...)
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+
+	if err := cmd.Run(); err != nil {
+		return nil
+	}
+
+	var databases []string
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && line != "information_schema" && line != "performance_schema" && line != "sys" {
+			databases = append(databases, line)
+		}
+	}
+
+	return databases
 }
