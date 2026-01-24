@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -53,11 +54,15 @@ var compressionLevelToGzip = map[CompressionLevel]int{
 
 type createBackupRequest struct {
 	BackupID         string           `json:"backup_id"`
-	BackupType       string           `json:"backup_type"` // config, logs, system_state, software_inventory, compliance_results, docker_*, proxmox_*, hyperv_*
+	BackupType       string           `json:"backup_type"` // config, logs, system_state, software_inventory, compliance_results, docker_*, proxmox_*, hyperv_*, files_and_folders
 	UploadURL        string           `json:"upload_url"`  // Pre-signed URL for upload
 	Encrypt          bool             `json:"encrypt"`
 	EncryptKey       string           `json:"encrypt_key,omitempty"`       // DEK for client-side encryption (base64)
 	CompressionLevel CompressionLevel `json:"compression_level,omitempty"` // Compression level: none, fast, balanced, high, maximum
+
+	// Files and Folders specific parameters
+	IncludePaths    []string `json:"include_paths,omitempty"`    // Paths to include in backup
+	ExcludePatterns []string `json:"exclude_patterns,omitempty"` // Glob patterns to exclude
 
 	// Docker-specific parameters
 	ContainerID   string `json:"container_id,omitempty"`
@@ -93,12 +98,20 @@ type createBackupResponse struct {
 }
 
 type restoreBackupRequest struct {
-	BackupID    string `json:"backup_id"`
-	BackupType  string `json:"backup_type"`
-	DownloadURL string `json:"download_url"` // Pre-signed URL for download
-	Encrypted   bool   `json:"encrypted"`
-	EncryptKey  string `json:"encrypt_key,omitempty"` // DEK for decryption (base64)
-	EncryptIV   string `json:"encryption_iv,omitempty"`
+	BackupID      string `json:"backup_id"`
+	RestoreJobID  string `json:"restore_job_id,omitempty"` // For progress tracking
+	BackupType    string `json:"backup_type"`
+	DownloadURL   string `json:"download_url"` // Pre-signed URL for download
+	Encrypted     bool   `json:"encrypted"`
+	EncryptKey    string `json:"encrypt_key,omitempty"` // DEK for decryption (base64)
+	EncryptIV     string `json:"encryption_iv,omitempty"`
+	ProgressURL   string `json:"progress_url,omitempty"` // URL to report progress to
+
+	// Files and Folders specific restore parameters
+	RestorePaths      []string `json:"restore_paths,omitempty"`      // Specific paths to restore (empty = all)
+	RestoreTarget     string   `json:"restore_target,omitempty"`     // Target directory for restore
+	OverwriteFiles    bool     `json:"overwrite_files,omitempty"`    // Overwrite existing files
+	PreserveStructure bool     `json:"preserve_structure,omitempty"` // Keep original directory structure
 
 	// Docker-specific restore parameters
 	ContainerName  string `json:"container_name,omitempty"`  // New container name for restore
@@ -120,9 +133,34 @@ type restoreBackupRequest struct {
 }
 
 type restoreBackupResponse struct {
-	BackupID string `json:"backup_id"`
-	Status   string `json:"status"`
-	Error    string `json:"error,omitempty"`
+	BackupID      string `json:"backup_id"`
+	RestoreJobID  string `json:"restore_job_id,omitempty"`
+	Status        string `json:"status"`
+	Success       bool   `json:"success"`
+	TotalFiles    int    `json:"total_files"`
+	RestoredFiles int    `json:"restored_files"`
+	SkippedFiles  int    `json:"skipped_files"`
+	FailedFiles   int    `json:"failed_files"`
+	TotalSize     int64  `json:"total_size"`
+	RestoredSize  int64  `json:"restored_size"`
+	Error         string `json:"error,omitempty"`
+}
+
+// restoreProgress represents progress update for restore operations.
+type restoreProgress struct {
+	RestoreJobID  string `json:"job_id"`
+	Status        string `json:"status"`
+	Progress      int    `json:"progress"`       // 0-100
+	CurrentPhase  string `json:"current_phase"`
+	LogMessage    string `json:"log_message,omitempty"`
+	LogLevel      string `json:"log_level,omitempty"` // info, warning, error
+	TotalFiles    int    `json:"total_files,omitempty"`
+	RestoredFiles int    `json:"restored_files,omitempty"`
+	TotalSize     int64  `json:"total_size,omitempty"`
+	RestoredSize  int64  `json:"restored_size,omitempty"`
+	SkippedFiles  int    `json:"skipped_files,omitempty"`
+	FailedFiles   int    `json:"failed_files,omitempty"`
+	ErrorMessage  string `json:"error_message,omitempty"`
 }
 
 type getBackupStatusRequest struct {
@@ -152,6 +190,8 @@ func (h *Handler) registerBackupHandlers() {
 	h.handlers["restore_agent_backup"] = h.handleRestoreAgentBackup
 	h.handlers["get_backup_status"] = h.handleGetBackupStatus
 	h.handlers["verify_agent_backup"] = h.handleVerifyAgentBackup
+	h.handlers["backup_paths"] = h.handleBackupPaths
+	h.handlers["list_backup_contents"] = h.handleListBackupContents
 }
 
 // handleCreateAgentBackup handles backup creation requests.
@@ -316,6 +356,8 @@ func (h *Handler) collectBackupDataWithRequest(ctx context.Context, req createBa
 		return h.collectComplianceResultsData()
 	case "full":
 		return h.collectFullBackupData(ctx)
+	case "files_and_folders":
+		return h.collectFilesAndFoldersBackup(ctx, req)
 
 	// Docker backups
 	case "docker_container":
@@ -665,76 +707,332 @@ func (h *Handler) handleRestoreAgentBackup(ctx context.Context, data json.RawMes
 
 	h.logger.Info("restoring agent backup",
 		"backup_id", req.BackupID,
+		"restore_job_id", req.RestoreJobID,
 		"backup_type", req.BackupType,
 		"encrypted", req.Encrypted,
 	)
 
+	// Create a restore context to track progress
+	restoreCtx := &restoreContext{
+		req:           req,
+		handler:       h,
+		totalFiles:    0,
+		restoredFiles: 0,
+		skippedFiles:  0,
+		failedFiles:   0,
+		totalSize:     0,
+		restoredSize:  0,
+	}
+
+	// Report downloading phase
+	restoreCtx.reportProgress("downloading", 5, "Downloading backup data", "info")
+
 	// Download backup data
 	backupData, err := h.downloadBackupData(ctx, req.DownloadURL)
 	if err != nil {
+		restoreCtx.reportProgress("failed", 0, fmt.Sprintf("Download failed: %v", err), "error")
 		return restoreBackupResponse{
-			BackupID: req.BackupID,
-			Status:   "failed",
-			Error:    fmt.Sprintf("download failed: %v", err),
+			BackupID:     req.BackupID,
+			RestoreJobID: req.RestoreJobID,
+			Status:       "failed",
+			Error:        fmt.Sprintf("download failed: %v", err),
 		}, nil
 	}
+
+	// Report decrypting phase
+	restoreCtx.reportProgress("decrypting", 20, "Download complete, decrypting...", "info")
 
 	// Decrypt if needed
 	if req.Encrypted && req.EncryptKey != "" {
 		backupData, err = h.decryptData(backupData, req.EncryptKey, req.EncryptIV)
 		if err != nil {
+			restoreCtx.reportProgress("failed", 0, fmt.Sprintf("Decryption failed: %v", err), "error")
 			return restoreBackupResponse{
-				BackupID: req.BackupID,
-				Status:   "failed",
-				Error:    fmt.Sprintf("decryption failed: %v", err),
+				BackupID:     req.BackupID,
+				RestoreJobID: req.RestoreJobID,
+				Status:       "failed",
+				Error:        fmt.Sprintf("decryption failed: %v", err),
 			}, nil
 		}
 	}
 
+	// Report extracting phase
+	restoreCtx.reportProgress("extracting", 40, "Decryption complete, extracting...", "info")
+
 	// Decompress
 	gzReader, err := gzip.NewReader(bytes.NewReader(backupData))
 	if err != nil {
+		restoreCtx.reportProgress("failed", 0, fmt.Sprintf("Decompression failed: %v", err), "error")
 		return restoreBackupResponse{
-			BackupID: req.BackupID,
-			Status:   "failed",
-			Error:    fmt.Sprintf("decompression failed: %v", err),
+			BackupID:     req.BackupID,
+			RestoreJobID: req.RestoreJobID,
+			Status:       "failed",
+			Error:        fmt.Sprintf("decompression failed: %v", err),
 		}, nil
 	}
 	defer gzReader.Close()
 
 	decompressedData, err := io.ReadAll(gzReader)
 	if err != nil {
+		restoreCtx.reportProgress("failed", 0, fmt.Sprintf("Reading decompressed data failed: %v", err), "error")
 		return restoreBackupResponse{
-			BackupID: req.BackupID,
-			Status:   "failed",
-			Error:    fmt.Sprintf("reading decompressed data: %v", err),
+			BackupID:     req.BackupID,
+			RestoreJobID: req.RestoreJobID,
+			Status:       "failed",
+			Error:        fmt.Sprintf("reading decompressed data: %v", err),
 		}, nil
 	}
 
-	// Restore based on backup type
-	var restoreErr error
-	if isVirtualizationBackup(req.BackupType) {
-		restoreErr = h.restoreBackupDataWithRequest(ctx, req, decompressedData)
-	} else {
-		restoreErr = h.restoreBackupData(req.BackupType, decompressedData)
-	}
+	// Report restoring phase
+	restoreCtx.reportProgress("restoring", 50, "Extraction complete, restoring files...", "info")
+
+	// Restore based on backup type - all types now support progress tracking
+	restoreErr := h.restoreBackupDataWithRequestProgress(ctx, req, decompressedData, restoreCtx)
 	if restoreErr != nil {
+		restoreCtx.reportProgress("failed", 0, fmt.Sprintf("Restore failed: %v", restoreErr), "error")
 		return restoreBackupResponse{
-			BackupID: req.BackupID,
-			Status:   "failed",
-			Error:    fmt.Sprintf("restore failed: %v", restoreErr),
+			BackupID:      req.BackupID,
+			RestoreJobID:  req.RestoreJobID,
+			Status:        "failed",
+			TotalFiles:    restoreCtx.totalFiles,
+			RestoredFiles: restoreCtx.restoredFiles,
+			SkippedFiles:  restoreCtx.skippedFiles,
+			FailedFiles:   restoreCtx.failedFiles,
+			TotalSize:     restoreCtx.totalSize,
+			RestoredSize:  restoreCtx.restoredSize,
+			Error:         fmt.Sprintf("restore failed: %v", restoreErr),
 		}, nil
 	}
+
+	// Report completion
+	restoreCtx.reportProgress("completed", 100, "Restore completed successfully", "info")
 
 	h.logger.Info("agent backup restored successfully",
 		"backup_id", req.BackupID,
+		"restore_job_id", req.RestoreJobID,
 		"backup_type", req.BackupType,
+		"restored_files", restoreCtx.restoredFiles,
+		"skipped_files", restoreCtx.skippedFiles,
+		"failed_files", restoreCtx.failedFiles,
 	)
 
 	return restoreBackupResponse{
-		BackupID: req.BackupID,
-		Status:   "completed",
+		BackupID:      req.BackupID,
+		RestoreJobID:  req.RestoreJobID,
+		Status:        "completed",
+		Success:       true,
+		TotalFiles:    restoreCtx.totalFiles,
+		RestoredFiles: restoreCtx.restoredFiles,
+		SkippedFiles:  restoreCtx.skippedFiles,
+		FailedFiles:   restoreCtx.failedFiles,
+		TotalSize:     restoreCtx.totalSize,
+		RestoredSize:  restoreCtx.restoredSize,
 	}, nil
+}
+
+// restoreContext tracks progress during restore operations.
+type restoreContext struct {
+	req           restoreBackupRequest
+	handler       *Handler
+	totalFiles    int
+	restoredFiles int
+	skippedFiles  int
+	failedFiles   int
+	totalSize     int64
+	restoredSize  int64
+}
+
+// reportProgress sends a progress update via WebSocket.
+func (rc *restoreContext) reportProgress(status string, progress int, message string, level string) {
+	if rc.req.RestoreJobID == "" {
+		return // No job ID, skip progress reporting
+	}
+
+	progressUpdate := restoreProgress{
+		RestoreJobID:  rc.req.RestoreJobID,
+		Status:        status,
+		Progress:      progress,
+		CurrentPhase:  message,
+		LogMessage:    message,
+		LogLevel:      level,
+		TotalFiles:    rc.totalFiles,
+		RestoredFiles: rc.restoredFiles,
+		TotalSize:     rc.totalSize,
+		RestoredSize:  rc.restoredSize,
+		SkippedFiles:  rc.skippedFiles,
+		FailedFiles:   rc.failedFiles,
+	}
+
+	// Log progress update
+	rc.handler.logger.Debug("restore progress update",
+		"job_id", rc.req.RestoreJobID,
+		"status", status,
+		"progress", progress,
+		"message", message,
+	)
+
+	// Send progress update via WebSocket
+	rc.handler.Send(Response{
+		Action:  "restore_progress",
+		Success: true,
+		Data:    progressUpdate,
+	})
+}
+
+// restoreBackupDataWithRequestProgress wraps restoreBackupDataWithRequest with progress reporting.
+func (h *Handler) restoreBackupDataWithRequestProgress(ctx context.Context, req restoreBackupRequest, data []byte, restoreCtx *restoreContext) error {
+	switch req.BackupType {
+	// Agent backups with progress
+	case "agent_config":
+		restoreCtx.reportProgress("restoring", 60, "Restoring agent configuration...", "info")
+		restoreCtx.totalFiles = 1
+		if err := h.restoreConfigData(data); err != nil {
+			restoreCtx.failedFiles = 1
+			return err
+		}
+		restoreCtx.restoredFiles = 1
+		restoreCtx.reportProgress("restoring", 90, "Agent configuration restored", "info")
+		return nil
+
+	case "agent_logs":
+		restoreCtx.reportProgress("restoring", 60, "Log restoration not supported (logs are immutable)", "warning")
+		return nil
+
+	case "system_state", "software_inventory":
+		restoreCtx.reportProgress("restoring", 60, fmt.Sprintf("%s restoration not applicable (informational data)", req.BackupType), "info")
+		return nil
+
+	case "compliance_results":
+		restoreCtx.reportProgress("restoring", 60, "Restoring compliance results...", "info")
+		restoreCtx.totalFiles = 1
+		if err := h.restoreComplianceData(data); err != nil {
+			restoreCtx.failedFiles = 1
+			return err
+		}
+		restoreCtx.restoredFiles = 1
+		restoreCtx.reportProgress("restoring", 90, "Compliance results restored", "info")
+		return nil
+
+	case "full":
+		restoreCtx.reportProgress("restoring", 55, "Restoring full backup (config + compliance)...", "info")
+		var fullBackup map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fullBackup); err != nil {
+			return err
+		}
+		restoreCtx.totalFiles = 2
+		if configData, ok := fullBackup["config"]; ok {
+			restoreCtx.reportProgress("restoring", 65, "Restoring configuration...", "info")
+			if err := h.restoreConfigData(configData); err != nil {
+				h.logger.Warn("failed to restore config from full backup", "error", err)
+				restoreCtx.failedFiles++
+			} else {
+				restoreCtx.restoredFiles++
+			}
+		}
+		if complianceData, ok := fullBackup["compliance_results"]; ok {
+			restoreCtx.reportProgress("restoring", 80, "Restoring compliance results...", "info")
+			if err := h.restoreComplianceData(complianceData); err != nil {
+				h.logger.Warn("failed to restore compliance from full backup", "error", err)
+				restoreCtx.failedFiles++
+			} else {
+				restoreCtx.restoredFiles++
+			}
+		}
+		restoreCtx.reportProgress("restoring", 90, "Full backup restored", "info")
+		return nil
+
+	// Files and Folders with detailed progress
+	case "files_and_folders":
+		return h.restoreFilesAndFoldersWithProgress(ctx, req, data, restoreCtx)
+
+	// Docker restores with progress
+	case "docker_container":
+		restoreCtx.reportProgress("restoring", 60, "Restoring Docker container...", "info")
+		restoreCtx.totalFiles = 1
+		if err := h.restoreDockerContainer(ctx, req, data); err != nil {
+			restoreCtx.failedFiles = 1
+			return err
+		}
+		restoreCtx.restoredFiles = 1
+		restoreCtx.reportProgress("restoring", 90, "Docker container restored", "info")
+		return nil
+
+	case "docker_volume":
+		restoreCtx.reportProgress("restoring", 60, "Restoring Docker volume...", "info")
+		restoreCtx.totalFiles = 1
+		if err := h.restoreDockerVolume(ctx, req, data); err != nil {
+			restoreCtx.failedFiles = 1
+			return err
+		}
+		restoreCtx.restoredFiles = 1
+		restoreCtx.reportProgress("restoring", 90, "Docker volume restored", "info")
+		return nil
+
+	case "docker_image":
+		restoreCtx.reportProgress("restoring", 60, "Restoring Docker image...", "info")
+		restoreCtx.totalFiles = 1
+		if err := h.restoreDockerImage(ctx, req, data); err != nil {
+			restoreCtx.failedFiles = 1
+			return err
+		}
+		restoreCtx.restoredFiles = 1
+		restoreCtx.reportProgress("restoring", 90, "Docker image restored", "info")
+		return nil
+
+	case "docker_compose":
+		restoreCtx.reportProgress("restoring", 60, "Restoring Docker Compose project...", "info")
+		restoreCtx.totalFiles = 1
+		if err := h.restoreDockerCompose(ctx, req, data); err != nil {
+			restoreCtx.failedFiles = 1
+			return err
+		}
+		restoreCtx.restoredFiles = 1
+		restoreCtx.reportProgress("restoring", 90, "Docker Compose project restored", "info")
+		return nil
+
+	// Proxmox restores with progress
+	case "proxmox_vm", "proxmox_lxc":
+		restoreCtx.reportProgress("restoring", 60, "Proxmox VM/LXC restoration should be performed via Proxmox restore tools", "warning")
+		h.logger.Info("Proxmox VM/LXC restoration should be performed via Proxmox restore tools",
+			"backup_type", req.BackupType)
+		return nil
+
+	case "proxmox_config":
+		restoreCtx.reportProgress("restoring", 60, "Restoring Proxmox configuration...", "info")
+		restoreCtx.totalFiles = 1
+		if err := h.restoreProxmoxConfig(ctx, req, data); err != nil {
+			restoreCtx.failedFiles = 1
+			return err
+		}
+		restoreCtx.restoredFiles = 1
+		restoreCtx.reportProgress("restoring", 90, "Proxmox configuration restored", "info")
+		return nil
+
+	// Hyper-V restores with progress
+	case "hyperv_vm":
+		restoreCtx.reportProgress("restoring", 60, "Restoring Hyper-V VM...", "info")
+		restoreCtx.totalFiles = 1
+		if err := h.restoreHyperVVM(ctx, req, data); err != nil {
+			restoreCtx.failedFiles = 1
+			return err
+		}
+		restoreCtx.restoredFiles = 1
+		restoreCtx.reportProgress("restoring", 90, "Hyper-V VM restored", "info")
+		return nil
+
+	case "hyperv_checkpoint":
+		restoreCtx.reportProgress("restoring", 60, "Hyper-V checkpoint restoration is informational only", "info")
+		h.logger.Info("Hyper-V checkpoint restoration is informational only")
+		return nil
+
+	case "hyperv_config":
+		restoreCtx.reportProgress("restoring", 60, "Hyper-V config restoration is informational only", "info")
+		h.logger.Info("Hyper-V config restoration is informational only")
+		return nil
+
+	default:
+		return fmt.Errorf("unknown backup type: %s", req.BackupType)
+	}
 }
 
 // downloadBackupData downloads backup data from a pre-signed URL.
@@ -809,6 +1107,10 @@ func (h *Handler) restoreBackupDataWithRequest(ctx context.Context, req restoreB
 	// Agent backups - use standard restore
 	case "agent_config", "agent_logs", "system_state", "software_inventory", "compliance_results", "full":
 		return h.restoreBackupData(req.BackupType, data)
+
+	// Files and Folders restore with selective path support
+	case "files_and_folders":
+		return h.restoreFilesAndFolders(ctx, req, data)
 
 	// Docker restores
 	case "docker_container":
@@ -974,6 +1276,7 @@ func isVirtualizationBackup(backupType string) bool {
 		"docker_container", "docker_volume", "docker_image", "docker_compose",
 		"proxmox_vm", "proxmox_lxc", "proxmox_config",
 		"hyperv_vm", "hyperv_checkpoint", "hyperv_config",
+		"files_and_folders",
 	}
 	for _, vt := range virtTypes {
 		if backupType == vt {
@@ -2027,4 +2330,791 @@ func (h *Handler) restoreHyperVVM(ctx context.Context, req restoreBackupRequest,
 	}
 
 	return nil
+}
+
+// =============================================================================
+// Files and Folders Backup Functions
+// =============================================================================
+
+// backupPathsRequest is the request for backup_paths action.
+type backupPathsRequest struct {
+	Paths           []string `json:"paths"`
+	ExcludePatterns []string `json:"exclude_patterns,omitempty"`
+	RequestID       string   `json:"request_id"`
+}
+
+// backupPathsResponse is the response for backup_paths action.
+type backupPathsResponse struct {
+	RequestID  string `json:"request_id"`
+	TotalFiles int    `json:"total_files"`
+	TotalSize  int64  `json:"total_size"`
+	Data       string `json:"data"` // Base64 encoded tar.gz
+	Hash       string `json:"hash"` // SHA256
+}
+
+// handleBackupPaths handles the backup_paths action for creating path-based backups.
+func (h *Handler) handleBackupPaths(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req backupPathsRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if len(req.Paths) == 0 {
+		return nil, fmt.Errorf("at least one path is required")
+	}
+
+	h.logger.Info("creating path-based backup",
+		"request_id", req.RequestID,
+		"paths", len(req.Paths),
+		"exclude_patterns", len(req.ExcludePatterns),
+	)
+
+	// Create tar.gz archive
+	var buf bytes.Buffer
+	gzWriter := gzip.NewWriter(&buf)
+	tarWriter := newTarWriter(gzWriter)
+
+	var totalFiles int
+	var totalSize int64
+
+	for _, path := range req.Paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			h.logger.Warn("skipping inaccessible path", "path", path, "error", err)
+			continue
+		}
+
+		if info.IsDir() {
+			// Walk directory
+			err = filepath.Walk(path, func(filePath string, fi os.FileInfo, err error) error {
+				if err != nil {
+					return nil // Skip errors
+				}
+
+				// Check exclude patterns
+				if shouldExclude(filePath, fi.Name(), req.ExcludePatterns) {
+					if fi.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+
+				if fi.IsDir() {
+					return nil // Skip directories (they're created implicitly)
+				}
+
+				// Add file to archive
+				if err := addFileToTar(tarWriter, filePath, path); err != nil {
+					h.logger.Warn("failed to add file to archive", "file", filePath, "error", err)
+					return nil
+				}
+
+				totalFiles++
+				totalSize += fi.Size()
+				return nil
+			})
+			if err != nil {
+				h.logger.Warn("error walking directory", "path", path, "error", err)
+			}
+		} else {
+			// Single file
+			if !shouldExclude(path, info.Name(), req.ExcludePatterns) {
+				if err := addFileToTar(tarWriter, path, filepath.Dir(path)); err != nil {
+					h.logger.Warn("failed to add file to archive", "file", path, "error", err)
+				} else {
+					totalFiles++
+					totalSize += info.Size()
+				}
+			}
+		}
+	}
+
+	// Close writers
+	if err := tarWriter.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close tar writer: %w", err)
+	}
+	if err := gzWriter.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close gzip writer: %w", err)
+	}
+
+	// Calculate hash
+	hash := sha256.Sum256(buf.Bytes())
+	hashHex := hex.EncodeToString(hash[:])
+
+	// Encode as base64
+	dataBase64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+
+	h.logger.Info("path-based backup created",
+		"request_id", req.RequestID,
+		"total_files", totalFiles,
+		"total_size", totalSize,
+		"compressed_size", buf.Len(),
+	)
+
+	return backupPathsResponse{
+		RequestID:  req.RequestID,
+		TotalFiles: totalFiles,
+		TotalSize:  totalSize,
+		Data:       dataBase64,
+		Hash:       hashHex,
+	}, nil
+}
+
+// collectFilesAndFoldersBackup creates a backup of specified files and folders.
+func (h *Handler) collectFilesAndFoldersBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if len(req.IncludePaths) == 0 {
+		return nil, fmt.Errorf("include_paths is required for files_and_folders backup")
+	}
+
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "files_and_folders"
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+	backupData["include_paths"] = req.IncludePaths
+	backupData["exclude_patterns"] = req.ExcludePatterns
+
+	// Create tar.gz archive of the paths
+	var buf bytes.Buffer
+	gzWriter := gzip.NewWriter(&buf)
+	tarWriter := newTarWriter(gzWriter)
+
+	var totalFiles int
+	var totalSize int64
+	fileList := make([]map[string]interface{}, 0)
+
+	for _, path := range req.IncludePaths {
+		info, err := os.Stat(path)
+		if err != nil {
+			h.logger.Warn("skipping inaccessible path", "path", path, "error", err)
+			continue
+		}
+
+		if info.IsDir() {
+			err = filepath.Walk(path, func(filePath string, fi os.FileInfo, err error) error {
+				if err != nil {
+					return nil
+				}
+
+				if shouldExclude(filePath, fi.Name(), req.ExcludePatterns) {
+					if fi.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+
+				if fi.IsDir() {
+					return nil
+				}
+
+				if err := addFileToTar(tarWriter, filePath, path); err != nil {
+					h.logger.Warn("failed to add file to archive", "file", filePath, "error", err)
+					return nil
+				}
+
+				relPath, _ := filepath.Rel(path, filePath)
+				fileList = append(fileList, map[string]interface{}{
+					"path":     relPath,
+					"size":     fi.Size(),
+					"modified": fi.ModTime().Format(time.RFC3339),
+				})
+
+				totalFiles++
+				totalSize += fi.Size()
+				return nil
+			})
+			if err != nil {
+				h.logger.Warn("error walking directory", "path", path, "error", err)
+			}
+		} else {
+			if !shouldExclude(path, info.Name(), req.ExcludePatterns) {
+				if err := addFileToTar(tarWriter, path, filepath.Dir(path)); err != nil {
+					h.logger.Warn("failed to add file to archive", "file", path, "error", err)
+				} else {
+					fileList = append(fileList, map[string]interface{}{
+						"path":     filepath.Base(path),
+						"size":     info.Size(),
+						"modified": info.ModTime().Format(time.RFC3339),
+					})
+					totalFiles++
+					totalSize += info.Size()
+				}
+			}
+		}
+	}
+
+	tarWriter.Close()
+	gzWriter.Close()
+
+	backupData["archive_data"] = base64.StdEncoding.EncodeToString(buf.Bytes())
+	backupData["archive_size"] = buf.Len()
+	backupData["total_files"] = totalFiles
+	backupData["total_size"] = totalSize
+	backupData["files"] = fileList
+
+	return json.Marshal(backupData)
+}
+
+// shouldExclude checks if a path should be excluded based on patterns.
+func shouldExclude(path, name string, patterns []string) bool {
+	for _, pattern := range patterns {
+		// Check filename match
+		if matched, _ := filepath.Match(pattern, name); matched {
+			return true
+		}
+		// Check full path match
+		if matched, _ := filepath.Match(pattern, path); matched {
+			return true
+		}
+		// Check if pattern is contained in path (for directory names like node_modules)
+		if strings.Contains(path, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// tarWriter wraps archive/tar.Writer
+type tarWriterWrapper struct {
+	*tar.Writer
+}
+
+func newTarWriter(w io.Writer) *tarWriterWrapper {
+	return &tarWriterWrapper{tar.NewWriter(w)}
+}
+
+// addFileToTar adds a file to the tar archive.
+func addFileToTar(tw *tarWriterWrapper, filePath, basePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+
+	// Create header
+	header, err := tar.FileInfoHeader(info, "")
+	if err != nil {
+		return err
+	}
+
+	// Use relative path in archive
+	relPath, err := filepath.Rel(basePath, filePath)
+	if err != nil {
+		relPath = filepath.Base(filePath)
+	}
+	header.Name = filepath.ToSlash(relPath)
+
+	// Write header
+	if err := tw.WriteHeader(header); err != nil {
+		return err
+	}
+
+	// Write content
+	_, err = io.Copy(tw.Writer, file)
+	return err
+}
+
+// =============================================================================
+// Files and Folders Restore Functions
+// =============================================================================
+
+// restoreFilesAndFolders restores files from a files_and_folders backup.
+// Supports selective restore of specific paths.
+func (h *Handler) restoreFilesAndFolders(ctx context.Context, req restoreBackupRequest, data []byte) error {
+	// Parse the backup data
+	var backupData map[string]interface{}
+	if err := json.Unmarshal(data, &backupData); err != nil {
+		return fmt.Errorf("failed to parse backup data: %w", err)
+	}
+
+	// Get the archive data
+	archiveDataB64, ok := backupData["archive_data"].(string)
+	if !ok {
+		return fmt.Errorf("no archive_data found in backup")
+	}
+
+	archiveData, err := base64.StdEncoding.DecodeString(archiveDataB64)
+	if err != nil {
+		return fmt.Errorf("failed to decode archive data: %w", err)
+	}
+
+	// Determine target directory
+	targetDir := req.RestoreTarget
+	if targetDir == "" {
+		// Default to temp directory with timestamp
+		targetDir = filepath.Join(os.TempDir(), "restore_"+time.Now().Format("20060102150405"))
+	}
+
+	// Create target directory
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create target directory: %w", err)
+	}
+
+	// Build a set of paths to restore (if selective restore)
+	restorePathSet := make(map[string]bool)
+	selectiveRestore := len(req.RestorePaths) > 0
+	for _, p := range req.RestorePaths {
+		// Normalize path separators
+		restorePathSet[filepath.ToSlash(p)] = true
+	}
+
+	// Open gzip reader
+	gzReader, err := gzip.NewReader(bytes.NewReader(archiveData))
+	if err != nil {
+		return fmt.Errorf("failed to open gzip reader: %w", err)
+	}
+	defer gzReader.Close()
+
+	// Open tar reader
+	tarReader := tar.NewReader(gzReader)
+
+	var restoredFiles int
+	var restoredSize int64
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read tar header: %w", err)
+		}
+
+		// Check if this file should be restored (selective restore)
+		if selectiveRestore {
+			shouldRestore := false
+			normalizedName := filepath.ToSlash(header.Name)
+
+			// Check if file matches any of the restore paths
+			for restorePath := range restorePathSet {
+				// Exact match
+				if normalizedName == restorePath {
+					shouldRestore = true
+					break
+				}
+				// File is under a directory that should be restored
+				if strings.HasPrefix(normalizedName, restorePath+"/") {
+					shouldRestore = true
+					break
+				}
+				// Restore path is a file under this directory
+				if strings.HasPrefix(restorePath, normalizedName+"/") {
+					shouldRestore = true
+					break
+				}
+			}
+
+			if !shouldRestore {
+				continue
+			}
+		}
+
+		// Determine target path
+		var targetPath string
+		if req.PreserveStructure {
+			targetPath = filepath.Join(targetDir, header.Name)
+		} else {
+			// Flatten structure - use just the filename
+			targetPath = filepath.Join(targetDir, filepath.Base(header.Name))
+		}
+
+		// Create parent directories
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			h.logger.Warn("failed to create directory", "path", filepath.Dir(targetPath), "error", err)
+			continue
+		}
+
+		// Check if file exists and overwrite setting
+		if _, err := os.Stat(targetPath); err == nil {
+			if !req.OverwriteFiles {
+				h.logger.Info("skipping existing file", "path", targetPath)
+				continue
+			}
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
+				h.logger.Warn("failed to create directory", "path", targetPath, "error", err)
+			}
+
+		case tar.TypeReg:
+			// Create file
+			file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+			if err != nil {
+				h.logger.Warn("failed to create file", "path", targetPath, "error", err)
+				continue
+			}
+
+			// Copy content
+			written, err := io.Copy(file, tarReader)
+			file.Close()
+			if err != nil {
+				h.logger.Warn("failed to write file", "path", targetPath, "error", err)
+				continue
+			}
+
+			restoredFiles++
+			restoredSize += written
+
+			// Set modification time
+			if err := os.Chtimes(targetPath, header.AccessTime, header.ModTime); err != nil {
+				h.logger.Debug("failed to set file times", "path", targetPath, "error", err)
+			}
+
+		case tar.TypeSymlink:
+			if err := os.Symlink(header.Linkname, targetPath); err != nil {
+				h.logger.Warn("failed to create symlink", "path", targetPath, "error", err)
+			}
+		}
+	}
+
+	h.logger.Info("files and folders restore completed",
+		"target_dir", targetDir,
+		"restored_files", restoredFiles,
+		"restored_size", restoredSize,
+		"selective", selectiveRestore,
+	)
+
+	return nil
+}
+
+// restoreFilesAndFoldersWithProgress restores files with detailed progress reporting.
+func (h *Handler) restoreFilesAndFoldersWithProgress(ctx context.Context, req restoreBackupRequest, data []byte, restoreCtx *restoreContext) error {
+	// Parse the backup data
+	var backupData map[string]interface{}
+	if err := json.Unmarshal(data, &backupData); err != nil {
+		return fmt.Errorf("failed to parse backup data: %w", err)
+	}
+
+	// Get file count from metadata for progress calculation
+	if totalFiles, ok := backupData["total_files"].(float64); ok {
+		restoreCtx.totalFiles = int(totalFiles)
+	}
+	if totalSize, ok := backupData["total_size"].(float64); ok {
+		restoreCtx.totalSize = int64(totalSize)
+	}
+
+	// Get the archive data
+	archiveDataB64, ok := backupData["archive_data"].(string)
+	if !ok {
+		return fmt.Errorf("no archive_data found in backup")
+	}
+
+	archiveData, err := base64.StdEncoding.DecodeString(archiveDataB64)
+	if err != nil {
+		return fmt.Errorf("failed to decode archive data: %w", err)
+	}
+
+	// Determine target directory
+	targetDir := req.RestoreTarget
+	if targetDir == "" {
+		targetDir = filepath.Join(os.TempDir(), "restore_"+time.Now().Format("20060102150405"))
+	}
+
+	// Create target directory
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create target directory: %w", err)
+	}
+
+	restoreCtx.reportProgress("restoring", 55, fmt.Sprintf("Restoring to %s", targetDir), "info")
+
+	// Build a set of paths to restore (if selective restore)
+	restorePathSet := make(map[string]bool)
+	selectiveRestore := len(req.RestorePaths) > 0
+	for _, p := range req.RestorePaths {
+		restorePathSet[filepath.ToSlash(p)] = true
+	}
+
+	// Open gzip reader
+	gzReader, err := gzip.NewReader(bytes.NewReader(archiveData))
+	if err != nil {
+		return fmt.Errorf("failed to open gzip reader: %w", err)
+	}
+	defer gzReader.Close()
+
+	// Open tar reader
+	tarReader := tar.NewReader(gzReader)
+
+	// Track progress
+	lastProgressUpdate := time.Now()
+	progressInterval := 500 * time.Millisecond
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read tar header: %w", err)
+		}
+
+		// Check if this file should be restored (selective restore)
+		if selectiveRestore {
+			shouldRestore := false
+			normalizedName := filepath.ToSlash(header.Name)
+
+			for restorePath := range restorePathSet {
+				if normalizedName == restorePath ||
+					strings.HasPrefix(normalizedName, restorePath+"/") ||
+					strings.HasPrefix(restorePath, normalizedName+"/") {
+					shouldRestore = true
+					break
+				}
+			}
+
+			if !shouldRestore {
+				restoreCtx.skippedFiles++
+				continue
+			}
+		}
+
+		// Determine target path
+		var targetPath string
+		if req.PreserveStructure {
+			targetPath = filepath.Join(targetDir, header.Name)
+		} else {
+			targetPath = filepath.Join(targetDir, filepath.Base(header.Name))
+		}
+
+		// Create parent directories
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			h.logger.Warn("failed to create directory", "path", filepath.Dir(targetPath), "error", err)
+			restoreCtx.failedFiles++
+			continue
+		}
+
+		// Check if file exists and overwrite setting
+		if _, err := os.Stat(targetPath); err == nil {
+			if !req.OverwriteFiles {
+				restoreCtx.skippedFiles++
+				continue
+			}
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
+				h.logger.Warn("failed to create directory", "path", targetPath, "error", err)
+				restoreCtx.failedFiles++
+			}
+
+		case tar.TypeReg:
+			file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+			if err != nil {
+				h.logger.Warn("failed to create file", "path", targetPath, "error", err)
+				restoreCtx.failedFiles++
+				continue
+			}
+
+			written, err := io.Copy(file, tarReader)
+			file.Close()
+			if err != nil {
+				h.logger.Warn("failed to write file", "path", targetPath, "error", err)
+				restoreCtx.failedFiles++
+				continue
+			}
+
+			restoreCtx.restoredFiles++
+			restoreCtx.restoredSize += written
+
+			// Set modification time
+			os.Chtimes(targetPath, header.AccessTime, header.ModTime)
+
+			// Report progress periodically
+			if time.Since(lastProgressUpdate) > progressInterval {
+				progress := 50
+				if restoreCtx.totalFiles > 0 {
+					progress = 50 + (restoreCtx.restoredFiles * 45 / restoreCtx.totalFiles)
+				} else if restoreCtx.totalSize > 0 {
+					progress = 50 + int(restoreCtx.restoredSize*45/restoreCtx.totalSize)
+				}
+				restoreCtx.reportProgress("restoring", progress,
+					fmt.Sprintf("Restored %d files (%s)",
+						restoreCtx.restoredFiles,
+						formatBytes(restoreCtx.restoredSize)),
+					"info")
+				lastProgressUpdate = time.Now()
+			}
+
+		case tar.TypeSymlink:
+			if err := os.Symlink(header.Linkname, targetPath); err != nil {
+				h.logger.Warn("failed to create symlink", "path", targetPath, "error", err)
+				restoreCtx.failedFiles++
+			} else {
+				restoreCtx.restoredFiles++
+			}
+		}
+	}
+
+	// Final progress update
+	restoreCtx.reportProgress("restoring", 95,
+		fmt.Sprintf("Restored %d files, %d skipped, %d failed",
+			restoreCtx.restoredFiles,
+			restoreCtx.skippedFiles,
+			restoreCtx.failedFiles),
+		"info")
+
+	h.logger.Info("files and folders restore with progress completed",
+		"target_dir", targetDir,
+		"restored_files", restoreCtx.restoredFiles,
+		"skipped_files", restoreCtx.skippedFiles,
+		"failed_files", restoreCtx.failedFiles,
+		"restored_size", restoreCtx.restoredSize,
+	)
+
+	return nil
+}
+
+// formatBytes formats bytes to human-readable string.
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// listBackupContents lists the contents of a files_and_folders backup without extracting.
+// This is used for the preview/selection UI before restore.
+type backupFileEntry struct {
+	Path     string `json:"path"`
+	Size     int64  `json:"size"`
+	Modified string `json:"modified"`
+	IsDir    bool   `json:"is_dir"`
+}
+
+type listBackupContentsRequest struct {
+	BackupID    string `json:"backup_id"`
+	DownloadURL string `json:"download_url"`
+	Encrypted   bool   `json:"encrypted"`
+	EncryptKey  string `json:"encrypt_key,omitempty"`
+	EncryptIV   string `json:"encryption_iv,omitempty"`
+}
+
+type listBackupContentsResponse struct {
+	BackupID string            `json:"backup_id"`
+	Entries  []backupFileEntry `json:"entries"`
+	Count    int               `json:"count"`
+	Error    string            `json:"error,omitempty"`
+}
+
+// handleListBackupContents handles the list_backup_contents action.
+func (h *Handler) handleListBackupContents(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req listBackupContentsRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	h.logger.Info("listing backup contents", "backup_id", req.BackupID)
+
+	// Download backup data
+	backupData, err := h.downloadBackupData(ctx, req.DownloadURL)
+	if err != nil {
+		return listBackupContentsResponse{
+			BackupID: req.BackupID,
+			Error:    fmt.Sprintf("download failed: %v", err),
+		}, nil
+	}
+
+	// Decrypt if needed
+	if req.Encrypted && req.EncryptKey != "" {
+		decryptedData, err := h.decryptData(backupData, req.EncryptKey, req.EncryptIV)
+		if err != nil {
+			return listBackupContentsResponse{
+				BackupID: req.BackupID,
+				Error:    fmt.Sprintf("decryption failed: %v", err),
+			}, nil
+		}
+		backupData = decryptedData
+	}
+
+	// Decompress
+	gzReader, err := gzip.NewReader(bytes.NewReader(backupData))
+	if err != nil {
+		return listBackupContentsResponse{
+			BackupID: req.BackupID,
+			Error:    fmt.Sprintf("decompression failed: %v", err),
+		}, nil
+	}
+	defer gzReader.Close()
+
+	decompressedData, err := io.ReadAll(gzReader)
+	if err != nil {
+		return listBackupContentsResponse{
+			BackupID: req.BackupID,
+			Error:    fmt.Sprintf("reading decompressed data: %v", err),
+		}, nil
+	}
+
+	// Parse backup data
+	var backupMeta map[string]interface{}
+	if err := json.Unmarshal(decompressedData, &backupMeta); err != nil {
+		return listBackupContentsResponse{
+			BackupID: req.BackupID,
+			Error:    fmt.Sprintf("failed to parse backup: %v", err),
+		}, nil
+	}
+
+	// Get archive data
+	archiveDataB64, ok := backupMeta["archive_data"].(string)
+	if !ok {
+		return listBackupContentsResponse{
+			BackupID: req.BackupID,
+			Error:    "no archive_data found in backup",
+		}, nil
+	}
+
+	archiveData, err := base64.StdEncoding.DecodeString(archiveDataB64)
+	if err != nil {
+		return listBackupContentsResponse{
+			BackupID: req.BackupID,
+			Error:    fmt.Sprintf("failed to decode archive: %v", err),
+		}, nil
+	}
+
+	// Read tar contents
+	archiveGzReader, err := gzip.NewReader(bytes.NewReader(archiveData))
+	if err != nil {
+		return listBackupContentsResponse{
+			BackupID: req.BackupID,
+			Error:    fmt.Sprintf("failed to open archive: %v", err),
+		}, nil
+	}
+	defer archiveGzReader.Close()
+
+	tarReader := tar.NewReader(archiveGzReader)
+	var entries []backupFileEntry
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+
+		entries = append(entries, backupFileEntry{
+			Path:     header.Name,
+			Size:     header.Size,
+			Modified: header.ModTime.Format(time.RFC3339),
+			IsDir:    header.Typeflag == tar.TypeDir,
+		})
+	}
+
+	return listBackupContentsResponse{
+		BackupID: req.BackupID,
+		Entries:  entries,
+		Count:    len(entries),
+	}, nil
 }
