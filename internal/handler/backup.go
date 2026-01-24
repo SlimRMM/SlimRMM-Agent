@@ -94,6 +94,44 @@ func isSymlinkSafe(baseDir, symlinkPath, linkTarget string) bool {
 	return isPathSafe(baseDir, targetPath)
 }
 
+// escapePowerShellString escapes a string for safe use in PowerShell single-quoted strings.
+// Single quotes in PowerShell are escaped by doubling them: ' becomes ''
+// This prevents command injection via user-supplied strings like VM names.
+func escapePowerShellString(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// isValidVMName validates a VM name to contain only safe characters.
+// Allowed: alphanumeric, spaces, hyphens, underscores, and periods.
+func isValidVMName(name string) bool {
+	if name == "" || len(name) > 256 {
+		return false
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == ' ' || r == '-' ||
+			r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidDatabaseName validates a database name to contain only safe characters.
+// Allowed: alphanumeric, underscores, and hyphens.
+func isValidDatabaseName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 type createBackupRequest struct {
 	BackupID         string           `json:"backup_id"`
 	BackupType       string           `json:"backup_type"` // config, logs, system_state, software_inventory, compliance_results, docker_*, proxmox_*, hyperv_*, files_and_folders
@@ -1822,9 +1860,15 @@ func (h *Handler) collectHyperVVMBackup(ctx context.Context, req createBackupReq
 	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
 	backupData["agent_uuid"] = h.cfg.GetUUID()
 
+	// Validate VM name to prevent command injection
+	if !isValidVMName(req.VMName) {
+		return nil, fmt.Errorf("invalid VM name: contains disallowed characters")
+	}
+	escapedVMName := escapePowerShellString(req.VMName)
+
 	// Get VM info via PowerShell
 	getVMCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
-		fmt.Sprintf(`Get-VM -Name '%s' | ConvertTo-Json -Depth 5`, req.VMName))
+		fmt.Sprintf(`Get-VM -Name '%s' | ConvertTo-Json -Depth 5`, escapedVMName))
 	if vmInfo, err := getVMCmd.Output(); err == nil {
 		var vmData interface{}
 		if json.Unmarshal(vmInfo, &vmData) == nil {
@@ -1836,7 +1880,7 @@ func (h *Handler) collectHyperVVMBackup(ctx context.Context, req createBackupReq
 
 	// Get VM snapshots/checkpoints
 	getSnapshotsCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
-		fmt.Sprintf(`Get-VMSnapshot -VMName '%s' | ConvertTo-Json -Depth 3`, req.VMName))
+		fmt.Sprintf(`Get-VMSnapshot -VMName '%s' | ConvertTo-Json -Depth 3`, escapedVMName))
 	if snapshotsInfo, err := getSnapshotsCmd.Output(); err == nil {
 		var snapshots interface{}
 		if json.Unmarshal(snapshotsInfo, &snapshots) == nil {
@@ -1851,7 +1895,8 @@ func (h *Handler) collectHyperVVMBackup(ctx context.Context, req createBackupReq
 	}
 	defer os.RemoveAll(exportDir)
 
-	// Export VM using PowerShell
+	// Export VM using PowerShell (escapedVMName already validated above)
+	escapedExportDir := escapePowerShellString(exportDir)
 	exportScript := fmt.Sprintf(`
 		$ErrorActionPreference = 'Stop'
 		$vm = Get-VM -Name '%s'
@@ -1866,7 +1911,7 @@ func (h *Handler) collectHyperVVMBackup(ctx context.Context, req createBackupReq
 		} else {
 			Export-VM -Name '%s' -Path '%s'
 		}
-	`, req.VMName, req.UseVSS, req.VMName, exportDir, req.VMName, exportDir, req.VMName, exportDir)
+	`, escapedVMName, req.UseVSS, escapedVMName, escapedExportDir, escapedVMName, escapedExportDir, escapedVMName, escapedExportDir)
 
 	exportCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", exportScript)
 	if output, err := exportCmd.CombinedOutput(); err != nil {
@@ -1876,7 +1921,7 @@ func (h *Handler) collectHyperVVMBackup(ctx context.Context, req createBackupReq
 	// Create tar archive of export
 	vmExportPath := filepath.Join(exportDir, req.VMName)
 	var exportData bytes.Buffer
-	if err := createTarArchive(vmExportPath, &exportData); err != nil {
+	if err := createTarArchive(ctx, vmExportPath, &exportData); err != nil {
 		return nil, fmt.Errorf("failed to archive export: %w", err)
 	}
 
@@ -1896,6 +1941,12 @@ func (h *Handler) collectHyperVCheckpointBackup(ctx context.Context, req createB
 		return nil, fmt.Errorf("vm_name is required for hyperv_checkpoint backup")
 	}
 
+	// Validate VM name to prevent command injection
+	if !isValidVMName(req.VMName) {
+		return nil, fmt.Errorf("invalid VM name: contains disallowed characters")
+	}
+	escapedVMName := escapePowerShellString(req.VMName)
+
 	backupData := make(map[string]interface{})
 	backupData["backup_type"] = "hyperv_checkpoint"
 	backupData["vm_name"] = req.VMName
@@ -1906,6 +1957,11 @@ func (h *Handler) collectHyperVCheckpointBackup(ctx context.Context, req createB
 	if checkpointName == "" {
 		checkpointName = fmt.Sprintf("SlimRMM_Backup_%s", time.Now().Format("20060102_150405"))
 	}
+	// Validate checkpoint name
+	if !isValidVMName(checkpointName) {
+		return nil, fmt.Errorf("invalid checkpoint name: contains disallowed characters")
+	}
+	escapedCheckpointName := escapePowerShellString(checkpointName)
 	backupData["checkpoint_name"] = checkpointName
 
 	// Create checkpoint via PowerShell
@@ -1913,7 +1969,7 @@ func (h *Handler) collectHyperVCheckpointBackup(ctx context.Context, req createB
 		$ErrorActionPreference = 'Stop'
 		Checkpoint-VM -Name '%s' -SnapshotName '%s'
 		Get-VMSnapshot -VMName '%s' -Name '%s' | ConvertTo-Json -Depth 3
-	`, req.VMName, checkpointName, req.VMName, checkpointName)
+	`, escapedVMName, escapedCheckpointName, escapedVMName, escapedCheckpointName)
 
 	checkpointCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", createCheckpointScript)
 	if output, err := checkpointCmd.Output(); err == nil {
@@ -1971,8 +2027,13 @@ func (h *Handler) collectHyperVConfigBackup(ctx context.Context, req createBacku
 
 	// Get storage paths for each VM
 	if req.VMName != "" {
+		// Validate VM name to prevent command injection
+		if !isValidVMName(req.VMName) {
+			return nil, fmt.Errorf("invalid VM name: contains disallowed characters")
+		}
+		escapedVMName := escapePowerShellString(req.VMName)
 		getStorageCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
-			fmt.Sprintf(`Get-VMHardDiskDrive -VMName '%s' | ConvertTo-Json -Depth 3`, req.VMName))
+			fmt.Sprintf(`Get-VMHardDiskDrive -VMName '%s' | ConvertTo-Json -Depth 3`, escapedVMName))
 		if storageInfo, err := getStorageCmd.Output(); err == nil {
 			var storage interface{}
 			if json.Unmarshal(storageInfo, &storage) == nil {
@@ -1985,14 +2046,19 @@ func (h *Handler) collectHyperVConfigBackup(ctx context.Context, req createBacku
 }
 
 // createTarArchive creates a tar archive of a directory.
-func createTarArchive(srcDir string, buf *bytes.Buffer) error {
+// Note: srcDir and tempZip are internally generated paths, not user input,
+// but we still escape them for defense in depth.
+func createTarArchive(ctx context.Context, srcDir string, buf *bytes.Buffer) error {
 	// On Windows, use PowerShell Compress-Archive
 	if runtime.GOOS == "windows" {
 		tempZip := filepath.Join(os.TempDir(), "backup_"+time.Now().Format("20060102150405")+".zip")
 		defer os.Remove(tempZip)
 
-		compressCmd := exec.Command("powershell", "-NoProfile", "-Command",
-			fmt.Sprintf(`Compress-Archive -Path '%s\*' -DestinationPath '%s' -Force`, srcDir, tempZip))
+		// Escape paths for PowerShell (defense in depth)
+		escapedSrcDir := escapePowerShellString(srcDir)
+		escapedTempZip := escapePowerShellString(tempZip)
+		compressCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
+			fmt.Sprintf(`Compress-Archive -Path '%s\*' -DestinationPath '%s' -Force`, escapedSrcDir, escapedTempZip))
 		if err := compressCmd.Run(); err != nil {
 			return err
 		}
@@ -2005,8 +2071,8 @@ func createTarArchive(srcDir string, buf *bytes.Buffer) error {
 		return nil
 	}
 
-	// On Unix, use tar
-	tarCmd := exec.Command("tar", "-czf", "-", "-C", srcDir, ".")
+	// On Unix, use tar with context for timeout support
+	tarCmd := exec.CommandContext(ctx, "tar", "-czf", "-", "-C", srcDir, ".")
 	tarCmd.Stdout = buf
 	return tarCmd.Run()
 }
@@ -2361,11 +2427,13 @@ func (h *Handler) restoreHyperVVM(ctx context.Context, req restoreBackupRequest,
 	}
 	defer os.Remove(archivePath)
 
-	// Extract using PowerShell
+	// Extract using PowerShell (paths are internally generated, escape for defense in depth)
+	escapedArchivePath := escapePowerShellString(archivePath)
+	escapedTargetPath := escapePowerShellString(targetPath)
 	extractScript := fmt.Sprintf(`
 		$ErrorActionPreference = 'Stop'
 		Expand-Archive -Path '%s' -DestinationPath '%s' -Force
-	`, archivePath, targetPath)
+	`, escapedArchivePath, escapedTargetPath)
 
 	extractCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", extractScript)
 	if output, err := extractCmd.CombinedOutput(); err != nil {
@@ -2385,9 +2453,14 @@ func (h *Handler) restoreHyperVVM(ctx context.Context, req restoreBackupRequest,
 
 		// Find the VM configuration file
 		vmcxPattern := filepath.Join(targetPath, "**", "*.vmcx")
-		matches, _ := filepath.Glob(vmcxPattern)
+		matches, err := filepath.Glob(vmcxPattern)
+		if err != nil {
+			h.logger.Warn("failed to glob for vmcx files", "error", err)
+		}
 
 		if len(matches) > 0 {
+			// Escape the matched path for PowerShell
+			escapedVMCXPath := escapePowerShellString(matches[0])
 			importScript := fmt.Sprintf(`
 				$ErrorActionPreference = 'Stop'
 				$vmPath = '%s'
@@ -2398,7 +2471,7 @@ func (h *Handler) restoreHyperVVM(ctx context.Context, req restoreBackupRequest,
 					# Import preserving ID
 					Import-VM -Path $vmPath
 				}
-			`, matches[0], req.GenerateNewID)
+			`, escapedVMCXPath, req.GenerateNewID)
 
 			importCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", importScript)
 			if output, err := importCmd.CombinedOutput(); err != nil {
@@ -3242,6 +3315,11 @@ func (h *Handler) collectPostgreSQLBackup(ctx context.Context, req createBackupR
 
 	params := req.PostgreSQL
 
+	// Validate database name if provided to prevent command injection
+	if params.DatabaseName != "" && !isValidDatabaseName(params.DatabaseName) {
+		return nil, fmt.Errorf("invalid database name: contains disallowed characters")
+	}
+
 	// Build pg_dump command arguments
 	args := []string{}
 
@@ -3324,6 +3402,11 @@ func (h *Handler) collectMySQLBackup(ctx context.Context, req createBackupReques
 	}
 
 	params := req.MySQL
+
+	// Validate database name if provided to prevent command injection
+	if params.DatabaseName != "" && !isValidDatabaseName(params.DatabaseName) {
+		return nil, fmt.Errorf("invalid database name: contains disallowed characters")
+	}
 
 	// Build mysqldump command arguments
 	args := []string{}
