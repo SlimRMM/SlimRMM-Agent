@@ -1281,7 +1281,9 @@ func (h *Handler) restoreConfigData(data []byte) error {
 		// Backup current config
 		backupPath := h.paths.ConfigFile + ".backup"
 		if currentData, err := os.ReadFile(h.paths.ConfigFile); err == nil {
-			os.WriteFile(backupPath, currentData, 0600)
+			if err := os.WriteFile(backupPath, currentData, 0600); err != nil {
+				h.logger.Warn("failed to backup current config", "path", backupPath, "error", err)
+			}
 		}
 
 		// Write restored config
@@ -2273,7 +2275,7 @@ func (h *Handler) restoreDockerCompose(ctx context.Context, req restoreBackupReq
 		if err != nil {
 			return fmt.Errorf("failed to decode compose file: %w", err)
 		}
-		if err := os.WriteFile(composePath, composeFile, 0644); err != nil {
+		if err := os.WriteFile(composePath, composeFile, 0600); err != nil {
 			return fmt.Errorf("failed to write compose file: %w", err)
 		}
 		h.logger.Info("compose file restored", "path", composePath)
@@ -2359,8 +2361,11 @@ func (h *Handler) restoreProxmoxConfig(ctx context.Context, req restoreBackupReq
 		if _, err := os.Stat(path); err == nil {
 			backupPath := path + ".backup." + time.Now().Format("20060102150405")
 			if existingData, err := os.ReadFile(path); err == nil {
-				os.WriteFile(backupPath, existingData, 0600)
-				h.logger.Info("existing config backed up", "path", backupPath)
+				if err := os.WriteFile(backupPath, existingData, 0600); err != nil {
+					h.logger.Warn("failed to backup existing file", "path", backupPath, "error", err)
+				} else {
+					h.logger.Info("existing config backed up", "path", backupPath)
+				}
 			}
 		}
 
@@ -2422,7 +2427,7 @@ func (h *Handler) restoreHyperVVM(ctx context.Context, req restoreBackupRequest,
 
 	// Extract the zip/tar archive
 	archivePath := filepath.Join(os.TempDir(), "vm_restore_"+time.Now().Format("20060102150405")+".zip")
-	if err := os.WriteFile(archivePath, exportData, 0644); err != nil {
+	if err := os.WriteFile(archivePath, exportData, 0600); err != nil {
 		return fmt.Errorf("failed to write archive: %w", err)
 	}
 	defer os.Remove(archivePath)
