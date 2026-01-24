@@ -52,6 +52,48 @@ var compressionLevelToGzip = map[CompressionLevel]int{
 	CompressionMaximum:  9, // Best compression
 }
 
+// isPathSafe validates that a file path is safely contained within the target directory.
+// This prevents path traversal attacks via malicious tar entries containing "../" or absolute paths.
+func isPathSafe(baseDir, targetPath string) bool {
+	// Get absolute paths for comparison
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return false
+	}
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return false
+	}
+
+	// Clean the paths to normalize them
+	absBase = filepath.Clean(absBase)
+	absTarget = filepath.Clean(absTarget)
+
+	// Check if target is within base directory
+	// Use filepath.Separator to ensure we match directory boundaries
+	if !strings.HasPrefix(absTarget, absBase+string(filepath.Separator)) && absTarget != absBase {
+		return false
+	}
+
+	return true
+}
+
+// isSymlinkSafe validates that a symlink target doesn't escape the base directory.
+func isSymlinkSafe(baseDir, symlinkPath, linkTarget string) bool {
+	// Resolve the symlink target relative to the symlink's location
+	var targetPath string
+	if filepath.IsAbs(linkTarget) {
+		// Absolute symlink targets are not safe
+		return false
+	}
+
+	// Compute the actual path the symlink would point to
+	symlinkDir := filepath.Dir(symlinkPath)
+	targetPath = filepath.Join(symlinkDir, linkTarget)
+
+	return isPathSafe(baseDir, targetPath)
+}
+
 type createBackupRequest struct {
 	BackupID         string           `json:"backup_id"`
 	BackupType       string           `json:"backup_type"` // config, logs, system_state, software_inventory, compliance_results, docker_*, proxmox_*, hyperv_*, files_and_folders
@@ -2582,8 +2624,13 @@ func (h *Handler) collectFilesAndFoldersBackup(ctx context.Context, req createBa
 		}
 	}
 
-	tarWriter.Close()
-	gzWriter.Close()
+	// Properly close writers to ensure all data is flushed
+	if err := tarWriter.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close tar writer: %w", err)
+	}
+	if err := gzWriter.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close gzip writer: %w", err)
+	}
 
 	backupData["archive_data"] = base64.StdEncoding.EncodeToString(buf.Bytes())
 	backupData["archive_size"] = buf.Len()
@@ -2762,6 +2809,12 @@ func (h *Handler) restoreFilesAndFolders(ctx context.Context, req restoreBackupR
 			targetPath = filepath.Join(targetDir, filepath.Base(header.Name))
 		}
 
+		// Validate path is within target directory (prevent path traversal attacks)
+		if !isPathSafe(targetDir, targetPath) {
+			h.logger.Warn("skipping file with unsafe path", "path", header.Name, "target", targetPath)
+			continue
+		}
+
 		// Create parent directories
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 			h.logger.Warn("failed to create directory", "path", filepath.Dir(targetPath), "error", err)
@@ -2807,6 +2860,11 @@ func (h *Handler) restoreFilesAndFolders(ctx context.Context, req restoreBackupR
 			}
 
 		case tar.TypeSymlink:
+			// Validate symlink target doesn't escape the restore directory
+			if !isSymlinkSafe(targetDir, targetPath, header.Linkname) {
+				h.logger.Warn("skipping symlink with unsafe target", "path", targetPath, "target", header.Linkname)
+				continue
+			}
 			if err := os.Symlink(header.Linkname, targetPath); err != nil {
 				h.logger.Warn("failed to create symlink", "path", targetPath, "error", err)
 			}
@@ -2921,6 +2979,13 @@ func (h *Handler) restoreFilesAndFoldersWithProgress(ctx context.Context, req re
 			targetPath = filepath.Join(targetDir, filepath.Base(header.Name))
 		}
 
+		// Validate path is within target directory (prevent path traversal attacks)
+		if !isPathSafe(targetDir, targetPath) {
+			h.logger.Warn("skipping file with unsafe path", "path", header.Name, "target", targetPath)
+			restoreCtx.skippedFiles++
+			continue
+		}
+
 		// Create parent directories
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 			h.logger.Warn("failed to create directory", "path", filepath.Dir(targetPath), "error", err)
@@ -2982,6 +3047,12 @@ func (h *Handler) restoreFilesAndFoldersWithProgress(ctx context.Context, req re
 			}
 
 		case tar.TypeSymlink:
+			// Validate symlink target doesn't escape the restore directory
+			if !isSymlinkSafe(targetDir, targetPath, header.Linkname) {
+				h.logger.Warn("skipping symlink with unsafe target", "path", targetPath, "target", header.Linkname)
+				restoreCtx.skippedFiles++
+				continue
+			}
 			if err := os.Symlink(header.Linkname, targetPath); err != nil {
 				h.logger.Warn("failed to create symlink", "path", targetPath, "error", err)
 				restoreCtx.failedFiles++
@@ -3271,12 +3342,6 @@ func (h *Handler) collectMySQLBackup(ctx context.Context, req createBackupReques
 		args = append(args, "-u", params.Username)
 	}
 
-	// Password (note: passing password on command line is not ideal but mysqldump requires it)
-	// In production, consider using --defaults-file or mysql_config_editor
-	if params.Password != "" {
-		args = append(args, "-p"+params.Password)
-	}
-
 	// Dump options
 	if params.SingleTransaction {
 		args = append(args, "--single-transaction")
@@ -3299,6 +3364,11 @@ func (h *Handler) collectMySQLBackup(ctx context.Context, req createBackupReques
 
 	// Create command
 	cmd := exec.CommandContext(ctx, "mysqldump", args...)
+
+	// Set password via environment variable (secure way to pass password to mysqldump)
+	if params.Password != "" {
+		cmd.Env = append(os.Environ(), "MYSQL_PWD="+params.Password)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -3500,9 +3570,6 @@ func (h *Handler) testMySQLConnection(ctx context.Context, req testDatabaseConne
 	if req.Username != "" {
 		args = append(args, "-u", req.Username)
 	}
-	if req.Password != "" {
-		args = append(args, "-p"+req.Password)
-	}
 
 	if req.DatabaseName != "" {
 		args = append(args, req.DatabaseName)
@@ -3510,6 +3577,11 @@ func (h *Handler) testMySQLConnection(ctx context.Context, req testDatabaseConne
 
 	// Create command
 	cmd := exec.CommandContext(ctx, "mysql", args...)
+
+	// Set password via environment variable (secure way to pass password to mysql)
+	if req.Password != "" {
+		cmd.Env = append(os.Environ(), "MYSQL_PWD="+req.Password)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -3555,11 +3627,13 @@ func (h *Handler) getMySQLDatabases(ctx context.Context, req testDatabaseConnect
 	if req.Username != "" {
 		args = append(args, "-u", req.Username)
 	}
-	if req.Password != "" {
-		args = append(args, "-p"+req.Password)
-	}
 
 	cmd := exec.CommandContext(ctx, "mysql", args...)
+
+	// Set password via environment variable (secure way to pass password to mysql)
+	if req.Password != "" {
+		cmd.Env = append(os.Environ(), "MYSQL_PWD="+req.Password)
+	}
 
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
