@@ -213,6 +213,114 @@ func TestHeartbeatMessageStructure(t *testing.T) {
 	}
 }
 
+// TestDockerInfoStructure tests Docker info serialization.
+func TestDockerInfoStructure(t *testing.T) {
+	dockerInfo := DockerInfo{
+		Available:         true,
+		Version:           "24.0.7",
+		APIVersion:        "1.43",
+		Containers:        10,
+		ContainersRunning: 5,
+		Images:            15,
+	}
+
+	data, err := json.Marshal(dockerInfo)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if result["available"] != true {
+		t.Error("available should be true")
+	}
+	if result["version"] != "24.0.7" {
+		t.Errorf("version should be 24.0.7, got %v", result["version"])
+	}
+	if result["api_version"] != "1.43" {
+		t.Errorf("api_version should be 1.43, got %v", result["api_version"])
+	}
+	if int(result["containers"].(float64)) != 10 {
+		t.Errorf("containers should be 10, got %v", result["containers"])
+	}
+	if int(result["containers_running"].(float64)) != 5 {
+		t.Errorf("containers_running should be 5, got %v", result["containers_running"])
+	}
+	if int(result["images"].(float64)) != 15 {
+		t.Errorf("images should be 15, got %v", result["images"])
+	}
+}
+
+// TestDockerInfoOmitEmpty tests Docker info omitempty behavior.
+func TestDockerInfoOmitEmpty(t *testing.T) {
+	dockerInfo := DockerInfo{
+		Available: false,
+	}
+
+	data, err := json.Marshal(dockerInfo)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	// Version and APIVersion should be omitted when empty
+	if _, exists := result["version"]; exists {
+		t.Error("version should be omitted when empty")
+	}
+	if _, exists := result["api_version"]; exists {
+		t.Error("api_version should be omitted when empty")
+	}
+}
+
+// TestHeartbeatWithDocker tests heartbeat with Docker info.
+func TestHeartbeatWithDocker(t *testing.T) {
+	heartbeat := HeartbeatMessage{
+		Action:       "heartbeat",
+		Type:         "full",
+		AgentVersion: "1.0.0",
+		Stats: HeartbeatStats{
+			CPUPercent:    20.0,
+			MemoryPercent: 50.0,
+		},
+		Docker: &DockerInfo{
+			Available:         true,
+			Version:           "24.0.7",
+			APIVersion:        "1.43",
+			Containers:        5,
+			ContainersRunning: 3,
+			Images:            10,
+		},
+	}
+
+	data, err := json.Marshal(heartbeat)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	docker, ok := result["docker"].(map[string]interface{})
+	if !ok {
+		t.Fatal("docker should be a map")
+	}
+	if docker["available"] != true {
+		t.Error("docker.available should be true")
+	}
+	if docker["version"] != "24.0.7" {
+		t.Errorf("docker.version should be 24.0.7, got %v", docker["version"])
+	}
+}
+
 // TestSupportedActions tests all supported action types.
 func TestSupportedActions(t *testing.T) {
 	supportedActions := []string{

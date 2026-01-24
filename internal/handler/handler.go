@@ -98,6 +98,7 @@ type HeartbeatMessage struct {
 	SerialNumber string            `json:"serial_number,omitempty"`
 	Proxmox      *HeartbeatProxmox `json:"proxmox,omitempty"`
 	HyperV       *HeartbeatHyperV  `json:"hyperv,omitempty"`
+	Docker       *DockerInfo       `json:"docker,omitempty"`
 	Winget       *HeartbeatWinget  `json:"winget,omitempty"`
 }
 
@@ -218,6 +219,7 @@ type Handler struct {
 	// Delta tracking for heartbeat optimization - only send when changed
 	lastProxmoxHash string
 	lastHyperVHash  string
+	lastDockerHash  string
 	lastWingetHash  string
 
 	// Winget helper availability (updated by update scans)
@@ -1068,6 +1070,18 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 			heartbeat.HyperV = hypervData
 			h.lastHyperVHash = currentHash
 			h.logger.Debug("hyperv info changed, including in heartbeat")
+		}
+		h.mu.Unlock()
+	}
+
+	// Add Docker info if Docker is available - delta-based (only send if changed)
+	if dockerInfo := GetDockerInfo(ctx); dockerInfo != nil {
+		currentHash := hashStruct(dockerInfo)
+		h.mu.Lock()
+		if currentHash != h.lastDockerHash {
+			heartbeat.Docker = dockerInfo
+			h.lastDockerHash = currentHash
+			h.logger.Debug("docker info changed, including in heartbeat")
 		}
 		h.mu.Unlock()
 	}
