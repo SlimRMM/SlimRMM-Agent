@@ -162,6 +162,9 @@ func (h *Handler) registerHandlers() {
 	// Wake-on-LAN handlers
 	h.handlers["wake_on_lan"] = h.handleWakeOnLAN
 	h.handlers["get_network_interfaces"] = h.handleGetNetworkInterfaces
+
+	// Backup handlers
+	h.registerBackupHandlers()
 }
 
 // Command handlers
