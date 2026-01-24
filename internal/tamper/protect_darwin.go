@@ -4,6 +4,7 @@ package tamper
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 )
 
@@ -56,9 +57,8 @@ func InstallWatchdog() error {
 
 	plistPath := "/Library/LaunchDaemons/io.slimrmm.watchdog.plist"
 
-	// Write watchdog plist
-	cmd := exec.Command("bash", "-c", fmt.Sprintf("cat > %s << 'WATCHDOG_EOF'\n%sWATCHDOG_EOF", plistPath, watchdogPlist))
-	if err := cmd.Run(); err != nil {
+	// Write watchdog plist using os.WriteFile (safer than shell)
+	if err := os.WriteFile(plistPath, []byte(watchdogPlist), 0644); err != nil {
 		return fmt.Errorf("failed to write watchdog plist: %w", err)
 	}
 
@@ -90,8 +90,11 @@ func UninstallWatchdog() error {
 	_ = exec.Command("launchctl", "bootout", "system", plistPath).Run()
 	_ = exec.Command("launchctl", "unload", plistPath).Run()
 
-	// Remove plist
-	return exec.Command("rm", "-f", plistPath).Run()
+	// Remove plist using os.Remove (safer than shell)
+	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // ProtectServiceFile makes the launchd plist immutable.

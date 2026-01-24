@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -110,6 +111,18 @@ func getServiceName() string {
 	default:
 		return "slimrmm-agent"
 	}
+}
+
+// serviceNameRegex validates service names contain only safe characters.
+// Allows alphanumeric, dots, hyphens, and underscores.
+var serviceNameRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+// isValidServiceName checks if a service name is safe for use in commands.
+func isValidServiceName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	return serviceNameRegex.MatchString(name)
 }
 
 // SetMaintenanceCallback sets the callback for maintenance mode notifications.
@@ -1057,12 +1070,18 @@ func (u *Updater) startService() error {
 // On Unix, we use restart because the service is still running (binary was replaced in-place).
 // On Windows, this just calls startService since we stopped it first.
 func (u *Updater) restartService() error {
+	// Validate service name to prevent command injection
+	if !isValidServiceName(u.serviceName) {
+		return fmt.Errorf("invalid service name: %s", u.serviceName)
+	}
+
 	switch runtime.GOOS {
 	case "linux":
 		// On Linux, systemctl restart sends SIGTERM to the current process.
 		// We spawn it in the background so we can finish our cleanup first.
 		u.logger.Info("scheduling service restart in 2 seconds")
-		cmd := exec.Command("sh", "-c", "sleep 2 && systemctl restart "+u.serviceName)
+		// Service name is validated above - safe to use in shell command
+		cmd := exec.Command("sh", "-c", fmt.Sprintf("sleep 2 && systemctl restart %s", u.serviceName))
 		if err := cmd.Start(); err != nil {
 			u.logger.Error("failed to schedule restart", "error", err)
 			return err
@@ -1074,11 +1093,13 @@ func (u *Updater) restartService() error {
 		// We spawn a background shell that waits, then restarts the service.
 		// This allows the current process to finish cleanup before being killed.
 		u.logger.Info("scheduling service restart in 2 seconds")
-		cmd := exec.Command("sh", "-c", "sleep 2 && launchctl kickstart -k system/"+u.serviceName)
+		// Service name is validated above - safe to use in shell command
+		serviceIdentifier := fmt.Sprintf("system/%s", u.serviceName)
+		cmd := exec.Command("sh", "-c", fmt.Sprintf("sleep 2 && launchctl kickstart -k %s", serviceIdentifier))
 		if err := cmd.Start(); err != nil {
 			u.logger.Error("failed to schedule restart", "error", err)
-			// Fallback: try immediate restart (will kill us but at least binary is replaced)
-			exec.Command("launchctl", "kickstart", "-k", "system/"+u.serviceName).Start()
+			// Fallback: try immediate restart using direct exec (no shell)
+			_ = exec.Command("launchctl", "kickstart", "-k", serviceIdentifier).Start()
 			return nil
 		}
 		u.logger.Info("restart scheduled, process will be restarted shortly")

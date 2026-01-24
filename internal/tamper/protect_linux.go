@@ -4,6 +4,7 @@ package tamper
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 )
 
@@ -44,10 +45,9 @@ RestartSec=5
 WantedBy=multi-user.target
 `
 
-	// Write watchdog service file
+	// Write watchdog service file using os.WriteFile (safer than shell)
 	servicePath := "/etc/systemd/system/slimrmm-watchdog.service"
-	cmd := exec.Command("bash", "-c", fmt.Sprintf("echo '%s' > %s", watchdogService, servicePath))
-	if err := cmd.Run(); err != nil {
+	if err := os.WriteFile(servicePath, []byte(watchdogService), 0644); err != nil {
 		return fmt.Errorf("failed to write watchdog service: %w", err)
 	}
 
@@ -74,8 +74,8 @@ func UninstallWatchdog() error {
 	_ = exec.Command("systemctl", "stop", "slimrmm-watchdog").Run()
 	_ = exec.Command("systemctl", "disable", "slimrmm-watchdog").Run()
 
-	// Remove service file
-	_ = exec.Command("rm", "-f", "/etc/systemd/system/slimrmm-watchdog.service").Run()
+	// Remove service file using os.Remove (safer than shell)
+	_ = os.Remove("/etc/systemd/system/slimrmm-watchdog.service")
 
 	// Reload systemd
 	return exec.Command("systemctl", "daemon-reload").Run()
