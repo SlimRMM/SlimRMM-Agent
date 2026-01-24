@@ -21,6 +21,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/services/compliance"
 	"github.com/slimrmm/slimrmm-agent/internal/services/filesystem"
+	"github.com/slimrmm/slimrmm-agent/internal/services/wol"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
@@ -157,6 +158,10 @@ func (h *Handler) registerHandlers() {
 	h.handlers["docker_restart_unhealthy"] = h.handleDockerRestartUnhealthy
 	h.handlers["docker_update_images"] = h.handleDockerUpdateImages
 	h.handlers["docker_health_check"] = h.handleDockerHealthCheck
+
+	// Wake-on-LAN handlers
+	h.handlers["wake_on_lan"] = h.handleWakeOnLAN
+	h.handlers["get_network_interfaces"] = h.handleGetNetworkInterfaces
 }
 
 // Command handlers
@@ -3175,4 +3180,66 @@ func (h *Handler) triggerUpdatesRescan(ctx context.Context) {
 		"scan_type": "updates",
 		"data":      result,
 	})
+}
+
+// Wake-on-LAN handlers
+
+type wakeOnLANRequest struct {
+	MACAddress  string `json:"mac_address"`
+	BroadcastIP string `json:"broadcast_ip,omitempty"`
+	Port        int    `json:"port,omitempty"`
+}
+
+// handleWakeOnLAN sends a Wake-on-LAN magic packet to wake a remote device.
+func (h *Handler) handleWakeOnLAN(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var req wakeOnLANRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if req.MACAddress == "" {
+		return nil, fmt.Errorf("mac_address is required")
+	}
+
+	h.logger.Info("sending wake-on-lan packet", "mac_address", req.MACAddress)
+
+	wolService := wol.NewService()
+
+	port := req.Port
+	if port == 0 {
+		port = wol.DefaultPort
+	}
+
+	result, err := wolService.WakeWithOptions(req.MACAddress, port, req.BroadcastIP)
+	if err != nil {
+		h.logger.Error("wake-on-lan failed", "mac_address", req.MACAddress, "error", err)
+		return result, nil
+	}
+
+	h.logger.Info("wake-on-lan packet sent",
+		"mac_address", result.MACAddress,
+		"packets_sent", result.PacketsSent,
+		"broadcast_ips", result.BroadcastIPs,
+	)
+
+	return result, nil
+}
+
+// handleGetNetworkInterfaces returns information about network interfaces.
+func (h *Handler) handleGetNetworkInterfaces(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	h.logger.Info("getting network interfaces")
+
+	wolService := wol.NewService()
+	interfaces, err := wolService.GetNetworkInterfaces()
+	if err != nil {
+		h.logger.Error("failed to get network interfaces", "error", err)
+		return nil, err
+	}
+
+	h.logger.Info("network interfaces retrieved", "count", len(interfaces))
+
+	return map[string]interface{}{
+		"interfaces": interfaces,
+		"count":      len(interfaces),
+	}, nil
 }
