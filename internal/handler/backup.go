@@ -17,12 +17,15 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/slimrmm/slimrmm-agent/internal/actions"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
+	"github.com/slimrmm/slimrmm-agent/internal/proxmox"
 )
 
 // Backup request types
@@ -55,6 +58,26 @@ type createBackupRequest struct {
 	Encrypt          bool             `json:"encrypt"`
 	EncryptKey       string           `json:"encrypt_key,omitempty"`       // DEK for client-side encryption (base64)
 	CompressionLevel CompressionLevel `json:"compression_level,omitempty"` // Compression level: none, fast, balanced, high, maximum
+
+	// Docker-specific parameters
+	ContainerID   string `json:"container_id,omitempty"`
+	VolumeName    string `json:"volume_name,omitempty"`
+	ImageName     string `json:"image_name,omitempty"`
+	ComposePath   string `json:"compose_path,omitempty"`
+	IncludeLogs   bool   `json:"include_logs,omitempty"`
+	StopContainer bool   `json:"stop_container,omitempty"` // Stop container for consistent backup
+
+	// Proxmox-specific parameters
+	VMID           uint64 `json:"vmid,omitempty"`
+	ProxmoxStorage string `json:"proxmox_storage,omitempty"`
+	BackupMode     string `json:"backup_mode,omitempty"` // snapshot, stop, suspend
+	IncludeRAM     bool   `json:"include_ram,omitempty"`
+
+	// Hyper-V-specific parameters
+	VMName              string `json:"vm_name,omitempty"`
+	CheckpointName      string `json:"checkpoint_name,omitempty"`
+	IncludeCheckpoints  bool   `json:"include_checkpoints,omitempty"`
+	UseVSS              bool   `json:"use_vss,omitempty"` // Volume Shadow Copy for consistent backup
 }
 
 type createBackupResponse struct {
@@ -76,6 +99,24 @@ type restoreBackupRequest struct {
 	Encrypted   bool   `json:"encrypted"`
 	EncryptKey  string `json:"encrypt_key,omitempty"` // DEK for decryption (base64)
 	EncryptIV   string `json:"encryption_iv,omitempty"`
+
+	// Docker-specific restore parameters
+	ContainerName   string `json:"container_name,omitempty"`   // New container name for restore
+	VolumeName      string `json:"volume_name,omitempty"`      // Volume name for restore
+	ImageName       string `json:"image_name,omitempty"`       // Image name/tag for restore
+	ComposePath     string `json:"compose_path,omitempty"`     // Compose file path for restore
+	RestoreVolumes  bool   `json:"restore_volumes,omitempty"`  // Restore compose volumes
+
+	// Proxmox-specific restore parameters
+	VMID           uint64 `json:"vmid,omitempty"`
+	ProxmoxStorage string `json:"proxmox_storage,omitempty"`
+	TargetNode     string `json:"target_node,omitempty"`
+
+	// Hyper-V-specific restore parameters
+	VMName           string `json:"vm_name,omitempty"`
+	TargetPath       string `json:"target_path,omitempty"`       // Path for restored VM
+	RegisterVM       bool   `json:"register_vm,omitempty"`       // Register VM after restore
+	GenerateNewID    bool   `json:"generate_new_id,omitempty"`   // Generate new VM ID
 }
 
 type restoreBackupResponse struct {
@@ -126,8 +167,14 @@ func (h *Handler) handleCreateAgentBackup(ctx context.Context, data json.RawMess
 		"encrypt", req.Encrypt,
 	)
 
-	// Collect data based on backup type
-	backupData, err := h.collectBackupData(ctx, req.BackupType)
+	// Collect data based on backup type (use extended function for virtualization types)
+	var backupData []byte
+	var err error
+	if isVirtualizationBackup(req.BackupType) {
+		backupData, err = h.collectBackupDataWithRequest(ctx, req)
+	} else {
+		backupData, err = h.collectBackupData(ctx, req.BackupType)
+	}
 	if err != nil {
 		return createBackupResponse{
 			BackupID: req.BackupID,
@@ -250,6 +297,54 @@ func (h *Handler) collectBackupData(ctx context.Context, backupType string) ([]b
 		return h.collectFullBackupData(ctx)
 	default:
 		return nil, fmt.Errorf("unknown backup type: %s", backupType)
+	}
+}
+
+// collectBackupDataWithRequest gathers data based on backup type with full request context.
+func (h *Handler) collectBackupDataWithRequest(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	switch req.BackupType {
+	// Agent backups
+	case "agent_config":
+		return h.collectConfigData()
+	case "agent_logs":
+		return h.collectLogsData()
+	case "system_state":
+		return h.collectSystemStateData(ctx)
+	case "software_inventory":
+		return h.collectSoftwareInventoryData(ctx)
+	case "compliance_results":
+		return h.collectComplianceResultsData()
+	case "full":
+		return h.collectFullBackupData(ctx)
+
+	// Docker backups
+	case "docker_container":
+		return h.collectDockerContainerBackup(ctx, req)
+	case "docker_volume":
+		return h.collectDockerVolumeBackup(ctx, req)
+	case "docker_image":
+		return h.collectDockerImageBackup(ctx, req)
+	case "docker_compose":
+		return h.collectDockerComposeBackup(ctx, req)
+
+	// Proxmox backups
+	case "proxmox_vm":
+		return h.collectProxmoxVMBackup(ctx, req)
+	case "proxmox_lxc":
+		return h.collectProxmoxLXCBackup(ctx, req)
+	case "proxmox_config":
+		return h.collectProxmoxConfigBackup(ctx, req)
+
+	// Hyper-V backups (Windows only)
+	case "hyperv_vm":
+		return h.collectHyperVVMBackup(ctx, req)
+	case "hyperv_checkpoint":
+		return h.collectHyperVCheckpointBackup(ctx, req)
+	case "hyperv_config":
+		return h.collectHyperVConfigBackup(ctx, req)
+
+	default:
+		return nil, fmt.Errorf("unknown backup type: %s", req.BackupType)
 	}
 }
 
@@ -617,11 +712,17 @@ func (h *Handler) handleRestoreAgentBackup(ctx context.Context, data json.RawMes
 	}
 
 	// Restore based on backup type
-	if err := h.restoreBackupData(req.BackupType, decompressedData); err != nil {
+	var restoreErr error
+	if isVirtualizationBackup(req.BackupType) {
+		restoreErr = h.restoreBackupDataWithRequest(ctx, req, decompressedData)
+	} else {
+		restoreErr = h.restoreBackupData(req.BackupType, decompressedData)
+	}
+	if restoreErr != nil {
 		return restoreBackupResponse{
 			BackupID: req.BackupID,
 			Status:   "failed",
-			Error:    fmt.Sprintf("restore failed: %v", err),
+			Error:    fmt.Sprintf("restore failed: %v", restoreErr),
 		}, nil
 	}
 
@@ -699,6 +800,46 @@ func (h *Handler) restoreBackupData(backupType string, data []byte) error {
 		return nil
 	default:
 		return fmt.Errorf("unknown backup type: %s", backupType)
+	}
+}
+
+// restoreBackupDataWithRequest restores data with full request context for virtualization types.
+func (h *Handler) restoreBackupDataWithRequest(ctx context.Context, req restoreBackupRequest, data []byte) error {
+	switch req.BackupType {
+	// Agent backups - use standard restore
+	case "agent_config", "agent_logs", "system_state", "software_inventory", "compliance_results", "full":
+		return h.restoreBackupData(req.BackupType, data)
+
+	// Docker restores
+	case "docker_container":
+		return h.restoreDockerContainer(ctx, req, data)
+	case "docker_volume":
+		return h.restoreDockerVolume(ctx, req, data)
+	case "docker_image":
+		return h.restoreDockerImage(ctx, req, data)
+	case "docker_compose":
+		return h.restoreDockerCompose(ctx, req, data)
+
+	// Proxmox restores - typically handled by Proxmox itself
+	case "proxmox_vm", "proxmox_lxc":
+		h.logger.Info("Proxmox VM/LXC restoration should be performed via Proxmox restore tools",
+			"backup_type", req.BackupType)
+		return nil
+	case "proxmox_config":
+		return h.restoreProxmoxConfig(ctx, req, data)
+
+	// Hyper-V restores
+	case "hyperv_vm":
+		return h.restoreHyperVVM(ctx, req, data)
+	case "hyperv_checkpoint":
+		h.logger.Info("Hyper-V checkpoint restoration is informational only")
+		return nil
+	case "hyperv_config":
+		h.logger.Info("Hyper-V config restoration is informational only")
+		return nil
+
+	default:
+		return fmt.Errorf("unknown backup type: %s", req.BackupType)
 	}
 }
 
@@ -821,4 +962,1069 @@ func (h *Handler) handleVerifyAgentBackup(ctx context.Context, data json.RawMess
 		ActualSHA256: actualSHA256,
 		ActualSHA512: actualSHA512,
 	}, nil
+}
+
+// =============================================================================
+// Virtualization Backup Functions
+// =============================================================================
+
+// isVirtualizationBackup checks if the backup type is a virtualization backup.
+func isVirtualizationBackup(backupType string) bool {
+	virtTypes := []string{
+		"docker_container", "docker_volume", "docker_image", "docker_compose",
+		"proxmox_vm", "proxmox_lxc", "proxmox_config",
+		"hyperv_vm", "hyperv_checkpoint", "hyperv_config",
+	}
+	for _, vt := range virtTypes {
+		if backupType == vt {
+			return true
+		}
+	}
+	return false
+}
+
+// =============================================================================
+// Docker Backup Functions
+// =============================================================================
+
+// collectDockerContainerBackup creates a backup of a Docker container.
+func (h *Handler) collectDockerContainerBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if !actions.IsDockerAvailable() {
+		return nil, fmt.Errorf("docker is not available on this system")
+	}
+
+	if req.ContainerID == "" {
+		return nil, fmt.Errorf("container_id is required for docker_container backup")
+	}
+
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "docker_container"
+	backupData["container_id"] = req.ContainerID
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+
+	// Get container inspection data
+	inspectData, err := actions.InspectDockerContainer(ctx, req.ContainerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect container: %w", err)
+	}
+	backupData["inspect"] = inspectData
+
+	// Get container stats
+	stats, err := actions.GetDockerContainerStats(ctx, req.ContainerID)
+	if err == nil {
+		backupData["stats"] = stats
+	}
+
+	// Include logs if requested
+	if req.IncludeLogs {
+		logs, err := actions.GetDockerContainerLogs(ctx, req.ContainerID, 10000, true)
+		if err == nil {
+			backupData["logs"] = logs
+		}
+	}
+
+	// Stop container for consistent backup if requested
+	wasRunning := false
+	if req.StopContainer {
+		// Check if container is running
+		containers, err := actions.ListDockerContainers(ctx, false)
+		if err == nil {
+			for _, c := range containers {
+				if c.ID == req.ContainerID || c.Name == req.ContainerID {
+					wasRunning = c.State == "running"
+					break
+				}
+			}
+		}
+
+		if wasRunning {
+			h.logger.Info("stopping container for backup", "container_id", req.ContainerID)
+			if err := actions.DockerContainerAction(ctx, req.ContainerID, "stop"); err != nil {
+				h.logger.Warn("failed to stop container", "error", err)
+			}
+		}
+	}
+
+	// Export container filesystem
+	exportCmd := exec.CommandContext(ctx, "docker", "export", req.ContainerID)
+	exportData, err := exportCmd.Output()
+	if err != nil {
+		if req.StopContainer && wasRunning {
+			actions.DockerContainerAction(ctx, req.ContainerID, "start")
+		}
+		return nil, fmt.Errorf("failed to export container: %w", err)
+	}
+	backupData["export_data"] = base64.StdEncoding.EncodeToString(exportData)
+	backupData["export_size"] = len(exportData)
+
+	// Restart container if it was stopped
+	if req.StopContainer && wasRunning {
+		h.logger.Info("restarting container after backup", "container_id", req.ContainerID)
+		if err := actions.DockerContainerAction(ctx, req.ContainerID, "start"); err != nil {
+			h.logger.Warn("failed to restart container", "error", err)
+		}
+	}
+
+	return json.Marshal(backupData)
+}
+
+// collectDockerVolumeBackup creates a backup of a Docker volume.
+func (h *Handler) collectDockerVolumeBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if !actions.IsDockerAvailable() {
+		return nil, fmt.Errorf("docker is not available on this system")
+	}
+
+	if req.VolumeName == "" {
+		return nil, fmt.Errorf("volume_name is required for docker_volume backup")
+	}
+
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "docker_volume"
+	backupData["volume_name"] = req.VolumeName
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+
+	// Get volume info
+	inspectCmd := exec.CommandContext(ctx, "docker", "volume", "inspect", req.VolumeName)
+	inspectOutput, err := inspectCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect volume: %w", err)
+	}
+
+	var volumeInfo []map[string]interface{}
+	if err := json.Unmarshal(inspectOutput, &volumeInfo); err == nil && len(volumeInfo) > 0 {
+		backupData["volume_info"] = volumeInfo[0]
+	}
+
+	// Create tar archive of volume using a temporary container
+	// docker run --rm -v VOLUME:/data -v /tmp:/backup alpine tar czf /backup/volume.tar.gz -C /data .
+	tarCmd := exec.CommandContext(ctx, "docker", "run", "--rm",
+		"-v", req.VolumeName+":/data:ro",
+		"alpine", "tar", "-czf", "-", "-C", "/data", ".")
+	volumeData, err := tarCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to archive volume: %w", err)
+	}
+
+	backupData["volume_data"] = base64.StdEncoding.EncodeToString(volumeData)
+	backupData["volume_size"] = len(volumeData)
+
+	return json.Marshal(backupData)
+}
+
+// collectDockerImageBackup creates a backup of a Docker image.
+func (h *Handler) collectDockerImageBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if !actions.IsDockerAvailable() {
+		return nil, fmt.Errorf("docker is not available on this system")
+	}
+
+	if req.ImageName == "" {
+		return nil, fmt.Errorf("image_name is required for docker_image backup")
+	}
+
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "docker_image"
+	backupData["image_name"] = req.ImageName
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+
+	// Get image info
+	inspectCmd := exec.CommandContext(ctx, "docker", "image", "inspect", req.ImageName)
+	inspectOutput, err := inspectCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect image: %w", err)
+	}
+
+	var imageInfo []map[string]interface{}
+	if err := json.Unmarshal(inspectOutput, &imageInfo); err == nil && len(imageInfo) > 0 {
+		backupData["image_info"] = imageInfo[0]
+	}
+
+	// Save image to tar
+	saveCmd := exec.CommandContext(ctx, "docker", "save", req.ImageName)
+	imageData, err := saveCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to save image: %w", err)
+	}
+
+	backupData["image_data"] = base64.StdEncoding.EncodeToString(imageData)
+	backupData["image_size"] = len(imageData)
+
+	return json.Marshal(backupData)
+}
+
+// collectDockerComposeBackup creates a backup of a Docker Compose project.
+func (h *Handler) collectDockerComposeBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if !actions.IsDockerAvailable() {
+		return nil, fmt.Errorf("docker is not available on this system")
+	}
+
+	if req.ComposePath == "" {
+		return nil, fmt.Errorf("compose_path is required for docker_compose backup")
+	}
+
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "docker_compose"
+	backupData["compose_path"] = req.ComposePath
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+
+	// Read compose file
+	composeData, err := os.ReadFile(req.ComposePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read compose file: %w", err)
+	}
+	backupData["compose_file"] = base64.StdEncoding.EncodeToString(composeData)
+
+	// Read .env file if exists
+	envPath := filepath.Join(filepath.Dir(req.ComposePath), ".env")
+	if envData, err := os.ReadFile(envPath); err == nil {
+		backupData["env_file"] = base64.StdEncoding.EncodeToString(envData)
+	}
+
+	// Get compose project info
+	composeDir := filepath.Dir(req.ComposePath)
+	psCmd := exec.CommandContext(ctx, "docker", "compose", "-f", req.ComposePath, "ps", "--format", "json")
+	psCmd.Dir = composeDir
+	if psOutput, err := psCmd.Output(); err == nil {
+		var services []interface{}
+		if json.Unmarshal(psOutput, &services) == nil {
+			backupData["services"] = services
+		}
+	}
+
+	// Collect volumes used by the compose project
+	configCmd := exec.CommandContext(ctx, "docker", "compose", "-f", req.ComposePath, "config", "--format", "json")
+	configCmd.Dir = composeDir
+	if configOutput, err := configCmd.Output(); err == nil {
+		var config map[string]interface{}
+		if json.Unmarshal(configOutput, &config) == nil {
+			backupData["compose_config"] = config
+
+			// Backup named volumes
+			if volumes, ok := config["volumes"].(map[string]interface{}); ok {
+				volumeBackups := make(map[string]string)
+				for volumeName := range volumes {
+					// Create tar archive of volume
+					tarCmd := exec.CommandContext(ctx, "docker", "run", "--rm",
+						"-v", volumeName+":/data:ro",
+						"alpine", "tar", "-czf", "-", "-C", "/data", ".")
+					if volumeData, err := tarCmd.Output(); err == nil {
+						volumeBackups[volumeName] = base64.StdEncoding.EncodeToString(volumeData)
+					}
+				}
+				if len(volumeBackups) > 0 {
+					backupData["volume_backups"] = volumeBackups
+				}
+			}
+		}
+	}
+
+	return json.Marshal(backupData)
+}
+
+// =============================================================================
+// Proxmox Backup Functions
+// =============================================================================
+
+// collectProxmoxVMBackup creates a backup of a Proxmox VM using the existing Proxmox integration.
+func (h *Handler) collectProxmoxVMBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if !proxmox.IsProxmoxHost() {
+		return nil, fmt.Errorf("this system is not a Proxmox host")
+	}
+
+	if req.VMID == 0 {
+		return nil, fmt.Errorf("vmid is required for proxmox_vm backup")
+	}
+
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "proxmox_vm"
+	backupData["vmid"] = req.VMID
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+
+	// Create Proxmox client with config directory
+	configDir := filepath.Dir(h.paths.ConfigFile)
+	client, err := proxmox.NewClient(ctx, configDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Proxmox client: %w", err)
+	}
+	defer client.Close()
+
+	// Determine backup mode
+	mode := proxmox.BackupModeSnapshot
+	if req.BackupMode != "" {
+		switch req.BackupMode {
+		case "stop":
+			mode = proxmox.BackupModeStop
+		case "suspend":
+			mode = proxmox.BackupModeSuspend
+		}
+	}
+
+	// Determine compression
+	compress := proxmox.CompressionZSTD
+
+	// Create backup using the existing Proxmox integration
+	backupReq := proxmox.BackupRequest{
+		VMIDs:    []uint64{req.VMID},
+		Storage:  req.ProxmoxStorage,
+		Mode:     mode,
+		Compress: compress,
+		Notes:    fmt.Sprintf("SlimRMM backup %s", req.BackupID),
+	}
+
+	results := client.CreateBackup(ctx, backupReq)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no backup result returned")
+	}
+
+	result := results[0]
+	if !result.Success {
+		return nil, fmt.Errorf("backup failed: %s", result.Error)
+	}
+
+	backupData["backup_result"] = result
+	backupData["task_id"] = result.TaskID
+	backupData["storage"] = result.Storage
+	backupData["backup_file"] = result.BackupFile
+
+	return json.Marshal(backupData)
+}
+
+// collectProxmoxLXCBackup creates a backup of a Proxmox LXC container.
+func (h *Handler) collectProxmoxLXCBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if !proxmox.IsProxmoxHost() {
+		return nil, fmt.Errorf("this system is not a Proxmox host")
+	}
+
+	if req.VMID == 0 {
+		return nil, fmt.Errorf("vmid is required for proxmox_lxc backup")
+	}
+
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "proxmox_lxc"
+	backupData["vmid"] = req.VMID
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+
+	configDir := filepath.Dir(h.paths.ConfigFile)
+	client, err := proxmox.NewClient(ctx, configDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Proxmox client: %w", err)
+	}
+	defer client.Close()
+
+	// Determine backup mode
+	mode := proxmox.BackupModeSnapshot
+	if req.BackupMode != "" {
+		switch req.BackupMode {
+		case "stop":
+			mode = proxmox.BackupModeStop
+		case "suspend":
+			mode = proxmox.BackupModeSuspend
+		}
+	}
+
+	// Create backup
+	backupReq := proxmox.BackupRequest{
+		VMIDs:    []uint64{req.VMID},
+		Storage:  req.ProxmoxStorage,
+		Mode:     mode,
+		Compress: proxmox.CompressionZSTD,
+		Notes:    fmt.Sprintf("SlimRMM LXC backup %s", req.BackupID),
+	}
+
+	results := client.CreateBackup(ctx, backupReq)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no backup result returned")
+	}
+
+	result := results[0]
+	if !result.Success {
+		return nil, fmt.Errorf("backup failed: %s", result.Error)
+	}
+
+	backupData["backup_result"] = result
+	backupData["task_id"] = result.TaskID
+	backupData["storage"] = result.Storage
+	backupData["backup_file"] = result.BackupFile
+
+	return json.Marshal(backupData)
+}
+
+// collectProxmoxConfigBackup creates a backup of Proxmox configuration files.
+func (h *Handler) collectProxmoxConfigBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if !proxmox.IsProxmoxHost() {
+		return nil, fmt.Errorf("this system is not a Proxmox host")
+	}
+
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "proxmox_config"
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+
+	configFiles := make(map[string]string)
+
+	// Key Proxmox configuration directories and files
+	configPaths := []string{
+		"/etc/pve/storage.cfg",
+		"/etc/pve/datacenter.cfg",
+		"/etc/pve/user.cfg",
+		"/etc/pve/corosync.conf",
+		"/etc/pve/ha/groups.cfg",
+		"/etc/pve/ha/resources.cfg",
+		"/etc/pve/firewall/cluster.fw",
+	}
+
+	// Read config files
+	for _, path := range configPaths {
+		if data, err := os.ReadFile(path); err == nil {
+			configFiles[path] = base64.StdEncoding.EncodeToString(data)
+		}
+	}
+
+	// Read VM/CT config files from /etc/pve/qemu-server and /etc/pve/lxc
+	for _, dir := range []string{"/etc/pve/qemu-server", "/etc/pve/lxc"} {
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".conf") {
+					path := filepath.Join(dir, entry.Name())
+					if data, err := os.ReadFile(path); err == nil {
+						configFiles[path] = base64.StdEncoding.EncodeToString(data)
+					}
+				}
+			}
+		}
+	}
+
+	backupData["config_files"] = configFiles
+
+	// Get cluster info
+	configDir := filepath.Dir(h.paths.ConfigFile)
+	client, err := proxmox.NewClient(ctx, configDir)
+	if err == nil {
+		defer client.Close()
+		if resources, err := client.GetResources(ctx); err == nil {
+			backupData["resources"] = resources
+		}
+		if haStatus := client.GetHAStatus(ctx); haStatus.Success {
+			backupData["ha_status"] = haStatus
+		}
+	}
+
+	return json.Marshal(backupData)
+}
+
+// =============================================================================
+// Hyper-V Backup Functions (Windows only)
+// =============================================================================
+
+// collectHyperVVMBackup creates a backup of a Hyper-V VM.
+func (h *Handler) collectHyperVVMBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if runtime.GOOS != "windows" {
+		return nil, fmt.Errorf("hyper-v backups are only supported on Windows")
+	}
+
+	if req.VMName == "" {
+		return nil, fmt.Errorf("vm_name is required for hyperv_vm backup")
+	}
+
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "hyperv_vm"
+	backupData["vm_name"] = req.VMName
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+
+	// Get VM info via PowerShell
+	getVMCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
+		fmt.Sprintf(`Get-VM -Name '%s' | ConvertTo-Json -Depth 5`, req.VMName))
+	if vmInfo, err := getVMCmd.Output(); err == nil {
+		var vmData interface{}
+		if json.Unmarshal(vmInfo, &vmData) == nil {
+			backupData["vm_info"] = vmData
+		}
+	} else {
+		return nil, fmt.Errorf("failed to get VM info: %w", err)
+	}
+
+	// Get VM snapshots/checkpoints
+	getSnapshotsCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
+		fmt.Sprintf(`Get-VMSnapshot -VMName '%s' | ConvertTo-Json -Depth 3`, req.VMName))
+	if snapshotsInfo, err := getSnapshotsCmd.Output(); err == nil {
+		var snapshots interface{}
+		if json.Unmarshal(snapshotsInfo, &snapshots) == nil {
+			backupData["snapshots"] = snapshots
+		}
+	}
+
+	// Create export directory
+	exportDir := filepath.Join(os.TempDir(), "hyperv_export_"+req.BackupID)
+	if err := os.MkdirAll(exportDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create export directory: %w", err)
+	}
+	defer os.RemoveAll(exportDir)
+
+	// Export VM using PowerShell
+	exportScript := fmt.Sprintf(`
+		$ErrorActionPreference = 'Stop'
+		$vm = Get-VM -Name '%s'
+		if ($vm.State -eq 'Running') {
+			if (%t) {
+				# Use VSS for consistent backup without stopping VM
+				Export-VM -Name '%s' -Path '%s' -CaptureLiveState $true
+			} else {
+				# Standard export
+				Export-VM -Name '%s' -Path '%s'
+			}
+		} else {
+			Export-VM -Name '%s' -Path '%s'
+		}
+	`, req.VMName, req.UseVSS, req.VMName, exportDir, req.VMName, exportDir, req.VMName, exportDir)
+
+	exportCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", exportScript)
+	if output, err := exportCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to export VM: %w - %s", err, string(output))
+	}
+
+	// Create tar archive of export
+	vmExportPath := filepath.Join(exportDir, req.VMName)
+	var exportData bytes.Buffer
+	if err := createTarArchive(vmExportPath, &exportData); err != nil {
+		return nil, fmt.Errorf("failed to archive export: %w", err)
+	}
+
+	backupData["export_data"] = base64.StdEncoding.EncodeToString(exportData.Bytes())
+	backupData["export_size"] = exportData.Len()
+
+	return json.Marshal(backupData)
+}
+
+// collectHyperVCheckpointBackup creates a backup of a Hyper-V checkpoint.
+func (h *Handler) collectHyperVCheckpointBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if runtime.GOOS != "windows" {
+		return nil, fmt.Errorf("hyper-v backups are only supported on Windows")
+	}
+
+	if req.VMName == "" {
+		return nil, fmt.Errorf("vm_name is required for hyperv_checkpoint backup")
+	}
+
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "hyperv_checkpoint"
+	backupData["vm_name"] = req.VMName
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+
+	checkpointName := req.CheckpointName
+	if checkpointName == "" {
+		checkpointName = fmt.Sprintf("SlimRMM_Backup_%s", time.Now().Format("20060102_150405"))
+	}
+	backupData["checkpoint_name"] = checkpointName
+
+	// Create checkpoint via PowerShell
+	createCheckpointScript := fmt.Sprintf(`
+		$ErrorActionPreference = 'Stop'
+		Checkpoint-VM -Name '%s' -SnapshotName '%s'
+		Get-VMSnapshot -VMName '%s' -Name '%s' | ConvertTo-Json -Depth 3
+	`, req.VMName, checkpointName, req.VMName, checkpointName)
+
+	checkpointCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", createCheckpointScript)
+	if output, err := checkpointCmd.Output(); err == nil {
+		var checkpointInfo interface{}
+		if json.Unmarshal(output, &checkpointInfo) == nil {
+			backupData["checkpoint_info"] = checkpointInfo
+		}
+	} else {
+		return nil, fmt.Errorf("failed to create checkpoint: %w", err)
+	}
+
+	return json.Marshal(backupData)
+}
+
+// collectHyperVConfigBackup creates a backup of Hyper-V configuration.
+func (h *Handler) collectHyperVConfigBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
+	if runtime.GOOS != "windows" {
+		return nil, fmt.Errorf("hyper-v backups are only supported on Windows")
+	}
+
+	backupData := make(map[string]interface{})
+	backupData["backup_type"] = "hyperv_config"
+	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	backupData["agent_uuid"] = h.cfg.GetUUID()
+
+	// Get all VMs configuration
+	getVMsCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
+		`Get-VM | Select-Object Name, State, Generation, ProcessorCount, MemoryStartup, MemoryMinimum, MemoryMaximum, Path | ConvertTo-Json -Depth 3`)
+	if vmsInfo, err := getVMsCmd.Output(); err == nil {
+		var vms interface{}
+		if json.Unmarshal(vmsInfo, &vms) == nil {
+			backupData["virtual_machines"] = vms
+		}
+	}
+
+	// Get virtual switches
+	getSwitchesCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
+		`Get-VMSwitch | ConvertTo-Json -Depth 3`)
+	if switchesInfo, err := getSwitchesCmd.Output(); err == nil {
+		var switches interface{}
+		if json.Unmarshal(switchesInfo, &switches) == nil {
+			backupData["virtual_switches"] = switches
+		}
+	}
+
+	// Get Hyper-V host settings
+	getHostCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
+		`Get-VMHost | ConvertTo-Json -Depth 3`)
+	if hostInfo, err := getHostCmd.Output(); err == nil {
+		var host interface{}
+		if json.Unmarshal(hostInfo, &host) == nil {
+			backupData["host_settings"] = host
+		}
+	}
+
+	// Get storage paths for each VM
+	if req.VMName != "" {
+		getStorageCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
+			fmt.Sprintf(`Get-VMHardDiskDrive -VMName '%s' | ConvertTo-Json -Depth 3`, req.VMName))
+		if storageInfo, err := getStorageCmd.Output(); err == nil {
+			var storage interface{}
+			if json.Unmarshal(storageInfo, &storage) == nil {
+				backupData["vm_storage"] = storage
+			}
+		}
+	}
+
+	return json.Marshal(backupData)
+}
+
+// createTarArchive creates a tar archive of a directory.
+func createTarArchive(srcDir string, buf *bytes.Buffer) error {
+	// On Windows, use PowerShell Compress-Archive
+	if runtime.GOOS == "windows" {
+		tempZip := filepath.Join(os.TempDir(), "backup_"+time.Now().Format("20060102150405")+".zip")
+		defer os.Remove(tempZip)
+
+		compressCmd := exec.Command("powershell", "-NoProfile", "-Command",
+			fmt.Sprintf(`Compress-Archive -Path '%s\*' -DestinationPath '%s' -Force`, srcDir, tempZip))
+		if err := compressCmd.Run(); err != nil {
+			return err
+		}
+
+		zipData, err := os.ReadFile(tempZip)
+		if err != nil {
+			return err
+		}
+		buf.Write(zipData)
+		return nil
+	}
+
+	// On Unix, use tar
+	tarCmd := exec.Command("tar", "-czf", "-", "-C", srcDir, ".")
+	tarCmd.Stdout = buf
+	return tarCmd.Run()
+}
+
+// =============================================================================
+// Docker Restore Functions
+// =============================================================================
+
+// restoreDockerContainer restores a Docker container from backup.
+func (h *Handler) restoreDockerContainer(ctx context.Context, req restoreBackupRequest, data []byte) error {
+	if !actions.IsDockerAvailable() {
+		return fmt.Errorf("docker is not available on this system")
+	}
+
+	var backupData map[string]interface{}
+	if err := json.Unmarshal(data, &backupData); err != nil {
+		return fmt.Errorf("failed to parse backup data: %w", err)
+	}
+
+	// Get exported container data
+	exportDataB64, ok := backupData["export_data"].(string)
+	if !ok {
+		return fmt.Errorf("no export_data found in backup")
+	}
+
+	exportData, err := base64.StdEncoding.DecodeString(exportDataB64)
+	if err != nil {
+		return fmt.Errorf("failed to decode export data: %w", err)
+	}
+
+	// Create temporary tar file
+	tmpFile, err := os.CreateTemp("", "container_restore_*.tar")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(exportData); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to write export data: %w", err)
+	}
+	tmpFile.Close()
+
+	// Import as new image
+	imageName := fmt.Sprintf("restored_%s:%s", req.ContainerName, time.Now().Format("20060102150405"))
+	if req.ContainerName == "" {
+		imageName = fmt.Sprintf("restored_container:%s", time.Now().Format("20060102150405"))
+	}
+
+	importCmd := exec.CommandContext(ctx, "docker", "import", tmpFile.Name(), imageName)
+	if output, err := importCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to import container: %w - %s", err, string(output))
+	}
+
+	h.logger.Info("container restored as image", "image", imageName)
+
+	// If container name specified, create container from image
+	if req.ContainerName != "" {
+		createCmd := exec.CommandContext(ctx, "docker", "create", "--name", req.ContainerName, imageName)
+		if output, err := createCmd.CombinedOutput(); err != nil {
+			h.logger.Warn("failed to create container from restored image", "error", err, "output", string(output))
+		} else {
+			h.logger.Info("container created from restored image", "name", req.ContainerName)
+		}
+	}
+
+	return nil
+}
+
+// restoreDockerVolume restores a Docker volume from backup.
+func (h *Handler) restoreDockerVolume(ctx context.Context, req restoreBackupRequest, data []byte) error {
+	if !actions.IsDockerAvailable() {
+		return fmt.Errorf("docker is not available on this system")
+	}
+
+	var backupData map[string]interface{}
+	if err := json.Unmarshal(data, &backupData); err != nil {
+		return fmt.Errorf("failed to parse backup data: %w", err)
+	}
+
+	// Get volume data
+	volumeDataB64, ok := backupData["volume_data"].(string)
+	if !ok {
+		return fmt.Errorf("no volume_data found in backup")
+	}
+
+	volumeData, err := base64.StdEncoding.DecodeString(volumeDataB64)
+	if err != nil {
+		return fmt.Errorf("failed to decode volume data: %w", err)
+	}
+
+	// Determine volume name
+	volumeName := req.VolumeName
+	if volumeName == "" {
+		if name, ok := backupData["volume_name"].(string); ok {
+			volumeName = name + "_restored"
+		} else {
+			volumeName = fmt.Sprintf("restored_volume_%s", time.Now().Format("20060102150405"))
+		}
+	}
+
+	// Create volume if it doesn't exist
+	createCmd := exec.CommandContext(ctx, "docker", "volume", "create", volumeName)
+	if output, err := createCmd.CombinedOutput(); err != nil {
+		h.logger.Warn("volume may already exist", "error", err, "output", string(output))
+	}
+
+	// Restore volume data using temporary container
+	restoreCmd := exec.CommandContext(ctx, "docker", "run", "--rm",
+		"-v", volumeName+":/data",
+		"-i", "alpine", "tar", "-xzf", "-", "-C", "/data")
+	restoreCmd.Stdin = bytes.NewReader(volumeData)
+
+	if output, err := restoreCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to restore volume data: %w - %s", err, string(output))
+	}
+
+	h.logger.Info("volume restored", "volume", volumeName)
+	return nil
+}
+
+// restoreDockerImage restores a Docker image from backup.
+func (h *Handler) restoreDockerImage(ctx context.Context, req restoreBackupRequest, data []byte) error {
+	if !actions.IsDockerAvailable() {
+		return fmt.Errorf("docker is not available on this system")
+	}
+
+	var backupData map[string]interface{}
+	if err := json.Unmarshal(data, &backupData); err != nil {
+		return fmt.Errorf("failed to parse backup data: %w", err)
+	}
+
+	// Get image data
+	imageDataB64, ok := backupData["image_data"].(string)
+	if !ok {
+		return fmt.Errorf("no image_data found in backup")
+	}
+
+	imageData, err := base64.StdEncoding.DecodeString(imageDataB64)
+	if err != nil {
+		return fmt.Errorf("failed to decode image data: %w", err)
+	}
+
+	// Load image using docker load
+	loadCmd := exec.CommandContext(ctx, "docker", "load")
+	loadCmd.Stdin = bytes.NewReader(imageData)
+
+	if output, err := loadCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to load image: %w - %s", err, string(output))
+	}
+
+	// Optionally retag
+	if req.ImageName != "" {
+		if origName, ok := backupData["image_name"].(string); ok && origName != "" {
+			tagCmd := exec.CommandContext(ctx, "docker", "tag", origName, req.ImageName)
+			if output, err := tagCmd.CombinedOutput(); err != nil {
+				h.logger.Warn("failed to retag image", "error", err, "output", string(output))
+			} else {
+				h.logger.Info("image retagged", "from", origName, "to", req.ImageName)
+			}
+		}
+	}
+
+	h.logger.Info("image restored")
+	return nil
+}
+
+// restoreDockerCompose restores a Docker Compose project from backup.
+func (h *Handler) restoreDockerCompose(ctx context.Context, req restoreBackupRequest, data []byte) error {
+	if !actions.IsDockerAvailable() {
+		return fmt.Errorf("docker is not available on this system")
+	}
+
+	var backupData map[string]interface{}
+	if err := json.Unmarshal(data, &backupData); err != nil {
+		return fmt.Errorf("failed to parse backup data: %w", err)
+	}
+
+	// Determine compose path
+	composePath := req.ComposePath
+	if composePath == "" {
+		if path, ok := backupData["compose_path"].(string); ok {
+			composePath = path
+		} else {
+			return fmt.Errorf("compose_path is required for docker_compose restore")
+		}
+	}
+
+	// Ensure directory exists
+	composeDir := filepath.Dir(composePath)
+	if err := os.MkdirAll(composeDir, 0755); err != nil {
+		return fmt.Errorf("failed to create compose directory: %w", err)
+	}
+
+	// Restore compose file
+	if composeFileB64, ok := backupData["compose_file"].(string); ok {
+		composeFile, err := base64.StdEncoding.DecodeString(composeFileB64)
+		if err != nil {
+			return fmt.Errorf("failed to decode compose file: %w", err)
+		}
+		if err := os.WriteFile(composePath, composeFile, 0644); err != nil {
+			return fmt.Errorf("failed to write compose file: %w", err)
+		}
+		h.logger.Info("compose file restored", "path", composePath)
+	}
+
+	// Restore .env file if present
+	if envFileB64, ok := backupData["env_file"].(string); ok {
+		envFile, err := base64.StdEncoding.DecodeString(envFileB64)
+		if err == nil {
+			envPath := filepath.Join(composeDir, ".env")
+			if err := os.WriteFile(envPath, envFile, 0600); err != nil {
+				h.logger.Warn("failed to write env file", "error", err)
+			}
+		}
+	}
+
+	// Restore volumes if requested
+	if req.RestoreVolumes {
+		if volumeBackups, ok := backupData["volume_backups"].(map[string]interface{}); ok {
+			for volumeName, volumeDataB64 := range volumeBackups {
+				if dataStr, ok := volumeDataB64.(string); ok {
+					volumeData, err := base64.StdEncoding.DecodeString(dataStr)
+					if err != nil {
+						h.logger.Warn("failed to decode volume data", "volume", volumeName, "error", err)
+						continue
+					}
+
+					// Create volume
+					createCmd := exec.CommandContext(ctx, "docker", "volume", "create", volumeName)
+					createCmd.Run()
+
+					// Restore volume data
+					restoreCmd := exec.CommandContext(ctx, "docker", "run", "--rm",
+						"-v", volumeName+":/data",
+						"-i", "alpine", "tar", "-xzf", "-", "-C", "/data")
+					restoreCmd.Stdin = bytes.NewReader(volumeData)
+					if output, err := restoreCmd.CombinedOutput(); err != nil {
+						h.logger.Warn("failed to restore volume", "volume", volumeName, "error", err, "output", string(output))
+					} else {
+						h.logger.Info("volume restored", "volume", volumeName)
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// =============================================================================
+// Proxmox Restore Functions
+// =============================================================================
+
+// restoreProxmoxConfig restores Proxmox configuration files.
+func (h *Handler) restoreProxmoxConfig(ctx context.Context, req restoreBackupRequest, data []byte) error {
+	if !proxmox.IsProxmoxHost() {
+		return fmt.Errorf("this system is not a Proxmox host")
+	}
+
+	var backupData map[string]interface{}
+	if err := json.Unmarshal(data, &backupData); err != nil {
+		return fmt.Errorf("failed to parse backup data: %w", err)
+	}
+
+	configFiles, ok := backupData["config_files"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("no config_files found in backup")
+	}
+
+	for path, contentB64 := range configFiles {
+		contentStr, ok := contentB64.(string)
+		if !ok {
+			continue
+		}
+
+		content, err := base64.StdEncoding.DecodeString(contentStr)
+		if err != nil {
+			h.logger.Warn("failed to decode config file", "path", path, "error", err)
+			continue
+		}
+
+		// Create backup of existing file
+		if _, err := os.Stat(path); err == nil {
+			backupPath := path + ".backup." + time.Now().Format("20060102150405")
+			if existingData, err := os.ReadFile(path); err == nil {
+				os.WriteFile(backupPath, existingData, 0600)
+				h.logger.Info("existing config backed up", "path", backupPath)
+			}
+		}
+
+		// Ensure directory exists
+		dir := filepath.Dir(path)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			h.logger.Warn("failed to create directory", "path", dir, "error", err)
+			continue
+		}
+
+		// Write restored config
+		if err := os.WriteFile(path, content, 0600); err != nil {
+			h.logger.Warn("failed to write config file", "path", path, "error", err)
+			continue
+		}
+
+		h.logger.Info("config file restored", "path", path)
+	}
+
+	return nil
+}
+
+// =============================================================================
+// Hyper-V Restore Functions
+// =============================================================================
+
+// restoreHyperVVM restores a Hyper-V VM from backup.
+func (h *Handler) restoreHyperVVM(ctx context.Context, req restoreBackupRequest, data []byte) error {
+	if runtime.GOOS != "windows" {
+		return fmt.Errorf("hyper-v restores are only supported on Windows")
+	}
+
+	var backupData map[string]interface{}
+	if err := json.Unmarshal(data, &backupData); err != nil {
+		return fmt.Errorf("failed to parse backup data: %w", err)
+	}
+
+	// Get export data
+	exportDataB64, ok := backupData["export_data"].(string)
+	if !ok {
+		return fmt.Errorf("no export_data found in backup")
+	}
+
+	exportData, err := base64.StdEncoding.DecodeString(exportDataB64)
+	if err != nil {
+		return fmt.Errorf("failed to decode export data: %w", err)
+	}
+
+	// Determine target path
+	targetPath := req.TargetPath
+	if targetPath == "" {
+		targetPath = filepath.Join(os.TempDir(), "hyperv_restore_"+time.Now().Format("20060102150405"))
+	}
+
+	// Create target directory
+	if err := os.MkdirAll(targetPath, 0755); err != nil {
+		return fmt.Errorf("failed to create target directory: %w", err)
+	}
+
+	// Extract the zip/tar archive
+	archivePath := filepath.Join(os.TempDir(), "vm_restore_"+time.Now().Format("20060102150405")+".zip")
+	if err := os.WriteFile(archivePath, exportData, 0644); err != nil {
+		return fmt.Errorf("failed to write archive: %w", err)
+	}
+	defer os.Remove(archivePath)
+
+	// Extract using PowerShell
+	extractScript := fmt.Sprintf(`
+		$ErrorActionPreference = 'Stop'
+		Expand-Archive -Path '%s' -DestinationPath '%s' -Force
+	`, archivePath, targetPath)
+
+	extractCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", extractScript)
+	if output, err := extractCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to extract archive: %w - %s", err, string(output))
+	}
+
+	h.logger.Info("VM export extracted", "path", targetPath)
+
+	// Import VM if requested
+	if req.RegisterVM {
+		vmName := req.VMName
+		if vmName == "" {
+			if name, ok := backupData["vm_name"].(string); ok {
+				vmName = name
+			}
+		}
+
+		// Find the VM configuration file
+		vmcxPattern := filepath.Join(targetPath, "**", "*.vmcx")
+		matches, _ := filepath.Glob(vmcxPattern)
+
+		if len(matches) > 0 {
+			importScript := fmt.Sprintf(`
+				$ErrorActionPreference = 'Stop'
+				$vmPath = '%s'
+				if (%t) {
+					# Import with new ID
+					Import-VM -Path $vmPath -GenerateNewId -Copy
+				} else {
+					# Import preserving ID
+					Import-VM -Path $vmPath
+				}
+			`, matches[0], req.GenerateNewID)
+
+			importCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", importScript)
+			if output, err := importCmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("failed to import VM: %w - %s", err, string(output))
+			}
+
+			h.logger.Info("VM imported", "name", vmName)
+		} else {
+			h.logger.Warn("no VMCX file found in export, manual import required")
+		}
+	}
+
+	return nil
 }
