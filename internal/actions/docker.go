@@ -13,20 +13,20 @@ import (
 
 // DockerContainer represents a Docker container.
 type DockerContainer struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	Image     string            `json:"image"`
-	ImageID   string            `json:"image_id"`
-	Command   string            `json:"command"`
-	Created   int64             `json:"created"`
-	CreatedAt string            `json:"created_at"`
-	State     string            `json:"state"`
-	Status    string            `json:"status"`
-	Ports     []DockerPort      `json:"ports"`
-	Labels    map[string]string `json:"labels"`
-	Networks  []string          `json:"networks"`
-	SizeRw    int64             `json:"size_rw,omitempty"`
-	SizeRootFs int64            `json:"size_root_fs,omitempty"`
+	ID         string            `json:"id"`
+	Name       string            `json:"name"`
+	Image      string            `json:"image"`
+	ImageID    string            `json:"image_id"`
+	Command    string            `json:"command"`
+	Created    int64             `json:"created"`
+	CreatedAt  string            `json:"created_at"`
+	State      string            `json:"state"`
+	Status     string            `json:"status"`
+	Ports      []DockerPort      `json:"ports"`
+	Labels     map[string]string `json:"labels"`
+	Networks   []string          `json:"networks"`
+	SizeRw     int64             `json:"size_rw,omitempty"`
+	SizeRootFs int64             `json:"size_root_fs,omitempty"`
 }
 
 // DockerPort represents a port mapping.

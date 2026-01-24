@@ -1087,11 +1087,11 @@ func (h *Handler) handleUpdateAgent(ctx context.Context, data json.RawMessage) (
 	}
 
 	return map[string]interface{}{
-		"status":       "updated",
-		"old_version":  result.OldVersion,
-		"new_version":  result.NewVersion,
-		"restart":      result.RestartNeeded,
-		"message":      "agent updated successfully",
+		"status":      "updated",
+		"old_version": result.OldVersion,
+		"new_version": result.NewVersion,
+		"restart":     result.RestartNeeded,
+		"message":     "agent updated successfully",
 	}, nil
 }
 
@@ -1324,9 +1324,9 @@ func (h *Handler) handleEnableTamperProtection(ctx context.Context, data json.Ra
 	)
 
 	return map[string]interface{}{
-		"status":           "enabled",
-		"watchdog":         h.cfg.IsWatchdogEnabled(),
-		"alert_enabled":    h.cfg.IsTamperAlertEnabled(),
+		"status":            "enabled",
+		"watchdog":          h.cfg.IsWatchdogEnabled(),
+		"alert_enabled":     h.cfg.IsTamperAlertEnabled(),
 		"uninstall_key_set": h.cfg.GetUninstallKeyHash() != "",
 	}, nil
 }
@@ -1819,8 +1819,8 @@ func (h *Handler) handleDockerRestartUnhealthy(ctx context.Context, data json.Ra
 }
 
 type dockerUpdateImagesRequest struct {
-	PullLatest          bool `json:"pull_latest"`
-	RecreateContainers  bool `json:"recreate_containers"`
+	PullLatest         bool `json:"pull_latest"`
+	RecreateContainers bool `json:"recreate_containers"`
 }
 
 func (h *Handler) handleDockerUpdateImages(ctx context.Context, data json.RawMessage) (interface{}, error) {
@@ -2079,16 +2079,16 @@ func (h *Handler) handleInstallWinget(ctx context.Context, data json.RawMessage)
 // Winget Policy Handler
 
 type wingetPolicyRequest struct {
-	ExecutionID            string   `json:"execution_id"`
-	PolicyID               string   `json:"policy_id"`
-	PolicyName             string   `json:"policy_name"`
-	FilterMode             string   `json:"filter_mode"`      // all, whitelist, blacklist
-	PackageFilters         []string `json:"package_filters"`  // Package IDs for filter
-	Reboot                 bool     `json:"reboot"`
-	TimeoutSeconds         int      `json:"timeout_seconds"`
-	MaxConcurrent          int      `json:"max_concurrent"`
-	RollbackEnabled        bool     `json:"rollback_enabled"`
-	ExcludeSystemComponents bool    `json:"exclude_system_components"`
+	ExecutionID             string   `json:"execution_id"`
+	PolicyID                string   `json:"policy_id"`
+	PolicyName              string   `json:"policy_name"`
+	FilterMode              string   `json:"filter_mode"`     // all, whitelist, blacklist
+	PackageFilters          []string `json:"package_filters"` // Package IDs for filter
+	Reboot                  bool     `json:"reboot"`
+	TimeoutSeconds          int      `json:"timeout_seconds"`
+	MaxConcurrent           int      `json:"max_concurrent"`
+	RollbackEnabled         bool     `json:"rollback_enabled"`
+	ExcludeSystemComponents bool     `json:"exclude_system_components"`
 }
 
 type wingetUpdateResult struct {
@@ -2298,16 +2298,16 @@ func (h *Handler) handleExecuteWingetPolicy(ctx context.Context, data json.RawMe
 
 // wingetInstallPolicyRequest represents a winget install policy request.
 type wingetInstallPolicyRequest struct {
-	ExecutionID     string                  `json:"execution_id"`
-	PolicyID        string                  `json:"policy_id"`
-	PolicyName      string                  `json:"policy_name"`
+	ExecutionID     string                   `json:"execution_id"`
+	PolicyID        string                   `json:"policy_id"`
+	PolicyName      string                   `json:"policy_name"`
 	Packages        []wingetPackageToInstall `json:"packages"`
-	InstallScope    string                  `json:"install_scope"`
-	Silent          bool                    `json:"silent"`
-	SkipIfInstalled bool                    `json:"skip_if_installed"`
-	Reboot          bool                    `json:"reboot"`
-	TimeoutSeconds  int                     `json:"timeout_seconds"`
-	MaxConcurrent   int                     `json:"max_concurrent"`
+	InstallScope    string                   `json:"install_scope"`
+	Silent          bool                     `json:"silent"`
+	SkipIfInstalled bool                     `json:"skip_if_installed"`
+	Reboot          bool                     `json:"reboot"`
+	TimeoutSeconds  int                      `json:"timeout_seconds"`
+	MaxConcurrent   int                      `json:"max_concurrent"`
 }
 
 type wingetPackageToInstall struct {

@@ -36,15 +36,15 @@ type LogPushCallback func(logs []LogEntry)
 
 // LogBuffer is a thread-safe circular buffer for recent log entries.
 type LogBuffer struct {
-	entries      []LogEntry
-	size         int
-	head         int // Next write position
-	count        int // Current number of entries
-	mu           sync.RWMutex
-	pushCallback LogPushCallback
-	errorCount   int           // Count of error/warn logs since last push
-	pushThreshold int          // Number of important logs before auto-push
-	lastPush     time.Time     // Time of last push
+	entries         []LogEntry
+	size            int
+	head            int // Next write position
+	count           int // Current number of entries
+	mu              sync.RWMutex
+	pushCallback    LogPushCallback
+	errorCount      int           // Count of error/warn logs since last push
+	pushThreshold   int           // Number of important logs before auto-push
+	lastPush        time.Time     // Time of last push
 	minPushInterval time.Duration // Minimum interval between pushes
 }
 
@@ -69,7 +69,7 @@ func NewLogBuffer(size int) *LogBuffer {
 		size:            size,
 		head:            0,
 		count:           0,
-		pushThreshold:   50, // Push after 50 error/warn logs
+		pushThreshold:   50,              // Push after 50 error/warn logs
 		minPushInterval: 5 * time.Minute, // Minimum 5 minutes between pushes
 	}
 }

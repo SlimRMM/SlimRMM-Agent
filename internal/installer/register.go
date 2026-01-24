@@ -42,23 +42,23 @@ var (
 // RegistrationRequest matches backend schema.
 // Includes optional token for auto-approval and existing_uuid for re-registration.
 type RegistrationRequest struct {
-	OS                    string `json:"os"`
-	Arch                  string `json:"arch"`
-	Hostname              string `json:"hostname"`
-	AgentVersion          string `json:"agent_version"`
-	Token                 string `json:"token,omitempty"`
-	ExistingUUID          string `json:"existing_uuid,omitempty"`
-	ReregistrationSecret  string `json:"reregistration_secret,omitempty"`
+	OS                   string `json:"os"`
+	Arch                 string `json:"arch"`
+	Hostname             string `json:"hostname"`
+	AgentVersion         string `json:"agent_version"`
+	Token                string `json:"token,omitempty"`
+	ExistingUUID         string `json:"existing_uuid,omitempty"`
+	ReregistrationSecret string `json:"reregistration_secret,omitempty"`
 }
 
 // RegistrationResponse is received from the server after initial registration.
 type RegistrationResponse struct {
-	UUID                  string `json:"uuid"`
-	Status                string `json:"status"`
-	RegistrationToken     string `json:"registration_token,omitempty"`
-	ReregistrationSecret  string `json:"reregistration_secret,omitempty"`
-	Message               string `json:"message,omitempty"`
-	Error                 string `json:"error,omitempty"`
+	UUID                 string `json:"uuid"`
+	Status               string `json:"status"`
+	RegistrationToken    string `json:"registration_token,omitempty"`
+	ReregistrationSecret string `json:"reregistration_secret,omitempty"`
+	Message              string `json:"message,omitempty"`
+	Error                string `json:"error,omitempty"`
 	// Legacy fields for direct registration (no approval workflow)
 	CACert     string `json:"ca_cert,omitempty"`
 	ClientCert string `json:"client_cert,omitempty"`

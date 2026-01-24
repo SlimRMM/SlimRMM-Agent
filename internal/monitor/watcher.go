@@ -374,12 +374,12 @@ func calculateServiceHash(services map[string]ServiceItem) string {
 
 // SyncState represents the current sync state for incremental updates.
 type SyncState struct {
-	Software   string            `json:"software_hash"`
-	Services   string            `json:"services_hash"`
-	Users      string            `json:"users_hash"`
-	Network    string            `json:"network_hash"`
-	Disks      string            `json:"disks_hash"`
-	LastSync   map[string]int64  `json:"last_sync"`
+	Software string           `json:"software_hash"`
+	Services string           `json:"services_hash"`
+	Users    string           `json:"users_hash"`
+	Network  string           `json:"network_hash"`
+	Disks    string           `json:"disks_hash"`
+	LastSync map[string]int64 `json:"last_sync"`
 }
 
 // NewSyncState creates a new sync state.

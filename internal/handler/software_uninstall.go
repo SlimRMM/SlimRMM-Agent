@@ -260,12 +260,12 @@ type uninstallSoftwareRequest struct {
 
 // uninstallMSIRequest represents an MSI uninstallation request.
 type uninstallMSIRequest struct {
-	UninstallationID string `json:"uninstallation_id"`
-	MSIProductCode   string `json:"msi_product_code"`
-	SoftwareName     string `json:"software_name,omitempty"`
-	CleanupMode      string `json:"cleanup_mode"`
+	UninstallationID string   `json:"uninstallation_id"`
+	MSIProductCode   string   `json:"msi_product_code"`
+	SoftwareName     string   `json:"software_name,omitempty"`
+	CleanupMode      string   `json:"cleanup_mode"`
 	CleanupPaths     []string `json:"cleanup_paths,omitempty"`
-	TimeoutSeconds   int    `json:"timeout_seconds,omitempty"`
+	TimeoutSeconds   int      `json:"timeout_seconds,omitempty"`
 }
 
 // uninstallPKGRequest represents a PKG uninstallation request.
@@ -279,11 +279,11 @@ type uninstallPKGRequest struct {
 
 // uninstallCaskRequest represents a Homebrew cask uninstallation request.
 type uninstallCaskRequest struct {
-	UninstallationID string                  `json:"uninstallation_id"`
-	CaskName         string                  `json:"cask_name"`
-	CleanupMode      string                  `json:"cleanup_mode"`
-	CaskCleanup      *models.CaskCleanup     `json:"cask_cleanup,omitempty"`
-	TimeoutSeconds   int                     `json:"timeout_seconds,omitempty"`
+	UninstallationID string              `json:"uninstallation_id"`
+	CaskName         string              `json:"cask_name"`
+	CleanupMode      string              `json:"cleanup_mode"`
+	CaskCleanup      *models.CaskCleanup `json:"cask_cleanup,omitempty"`
+	TimeoutSeconds   int                 `json:"timeout_seconds,omitempty"`
 }
 
 // uninstallDEBRequest represents a DEB uninstallation request.

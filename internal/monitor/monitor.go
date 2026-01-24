@@ -23,28 +23,28 @@ import (
 
 // Stats contains system statistics.
 type Stats struct {
-	Hostname     string     `json:"hostname"`
-	OS           string     `json:"os"`
-	Platform     string     `json:"platform"`
-	Kernel       string     `json:"kernel"`
-	Uptime       uint64     `json:"uptime"`
-	BootTime     uint64     `json:"boot_time"`
-	CPU          CPUStats   `json:"cpu"`
-	Memory       MemStats   `json:"memory"`
+	Hostname     string      `json:"hostname"`
+	OS           string      `json:"os"`
+	Platform     string      `json:"platform"`
+	Kernel       string      `json:"kernel"`
+	Uptime       uint64      `json:"uptime"`
+	BootTime     uint64      `json:"boot_time"`
+	CPU          CPUStats    `json:"cpu"`
+	Memory       MemStats    `json:"memory"`
 	Disk         []DiskStats `json:"disk"`
-	Network      []NetStats `json:"network"`
-	ExternalIP   string     `json:"external_ip,omitempty"`
-	Timezone     string     `json:"timezone,omitempty"`
-	ProcessCount int        `json:"process_count"`
-	Timestamp    time.Time  `json:"timestamp"`
+	Network      []NetStats  `json:"network"`
+	ExternalIP   string      `json:"external_ip,omitempty"`
+	Timezone     string      `json:"timezone,omitempty"`
+	ProcessCount int         `json:"process_count"`
+	Timestamp    time.Time   `json:"timestamp"`
 }
 
 // CPUStats contains CPU statistics.
 type CPUStats struct {
-	Cores       int       `json:"cores"`
-	ModelName   string    `json:"model_name"`
-	UsagePercent float64  `json:"usage_percent"`
-	LoadAvg     []float64 `json:"load_avg,omitempty"`
+	Cores        int       `json:"cores"`
+	ModelName    string    `json:"model_name"`
+	UsagePercent float64   `json:"usage_percent"`
+	LoadAvg      []float64 `json:"load_avg,omitempty"`
 }
 
 // MemStats contains memory statistics.
@@ -81,12 +81,12 @@ type NetStats struct {
 
 // Monitor provides system monitoring functionality.
 type Monitor struct {
-	externalIP      string
-	externalIPTime  time.Time
-	lastCPUPercent  float64
-	lastCPUTime     time.Time
-	cpuInitialized  bool
-	mu              sync.RWMutex
+	externalIP     string
+	externalIPTime time.Time
+	lastCPUPercent float64
+	lastCPUTime    time.Time
+	cpuInitialized bool
+	mu             sync.RWMutex
 }
 
 // New creates a new Monitor.
@@ -339,30 +339,30 @@ func FormatBytes(bytes uint64) string {
 func isVirtualFilesystem(fstype, mountpoint string) bool {
 	// Virtual/pseudo filesystem types to exclude
 	virtualFsTypes := map[string]bool{
-		"sysfs":       true,
-		"proc":        true,
-		"devpts":      true,
-		"securityfs":  true,
-		"cgroup":      true,
-		"cgroup2":     true,
-		"pstore":      true,
-		"debugfs":     true,
-		"hugetlbfs":   true,
-		"mqueue":      true,
-		"configfs":    true,
-		"fusectl":     true,
-		"binfmt_misc": true,
-		"autofs":      true,
-		"rpc_pipefs":  true,
-		"sunrpc":      true,
-		"nfsd":        true,
-		"tracefs":     true,
-		"efivarfs":    true,
-		"bpf":         true,
+		"sysfs":           true,
+		"proc":            true,
+		"devpts":          true,
+		"securityfs":      true,
+		"cgroup":          true,
+		"cgroup2":         true,
+		"pstore":          true,
+		"debugfs":         true,
+		"hugetlbfs":       true,
+		"mqueue":          true,
+		"configfs":        true,
+		"fusectl":         true,
+		"binfmt_misc":     true,
+		"autofs":          true,
+		"rpc_pipefs":      true,
+		"sunrpc":          true,
+		"nfsd":            true,
+		"tracefs":         true,
+		"efivarfs":        true,
+		"bpf":             true,
 		"fuse.gvfsd-fuse": true,
-		"fuse.portal": true,
-		"overlay":     true,
-		"nsfs":        true,
+		"fuse.portal":     true,
+		"overlay":         true,
+		"nsfs":            true,
 	}
 
 	if virtualFsTypes[fstype] {

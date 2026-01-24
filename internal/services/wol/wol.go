@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -183,7 +184,7 @@ func (s *Service) WakeWithOptions(mac string, port int, broadcastIP string) (*Wa
 
 // sendPacket sends a magic packet to the specified address and port.
 func (s *Service) sendPacket(packet *MagicPacket, broadcastIP string, port int) error {
-	addr := fmt.Sprintf("%s:%d", broadcastIP, port)
+	addr := net.JoinHostPort(broadcastIP, strconv.Itoa(port))
 
 	conn, err := net.Dial("udp", addr)
 	if err != nil {

@@ -78,15 +78,15 @@ type INPUT struct {
 
 // INPUT structure for keyboard
 type INPUT_KBD struct {
-	Type uint32
+	Type     uint32
 	_padding uint32
-	Ki KEYBDINPUT
-	_pad [8]byte // Ensure same size as INPUT
+	Ki       KEYBDINPUT
+	_pad     [8]byte // Ensure same size as INPUT
 }
 
 var (
-	user32            = windows.NewLazySystemDLL("user32.dll")
-	procSendInput     = user32.NewProc("SendInput")
+	user32        = windows.NewLazySystemDLL("user32.dll")
+	procSendInput = user32.NewProc("SendInput")
 )
 
 // Message types
@@ -154,11 +154,11 @@ type Monitor struct {
 
 // WingetUpdate represents an available winget update
 type WingetUpdate struct {
-	Name       string `json:"name"`
-	ID         string `json:"id"`
-	Version    string `json:"version"`
-	Available  string `json:"available"`
-	Source     string `json:"source"`
+	Name      string `json:"name"`
+	ID        string `json:"id"`
+	Version   string `json:"version"`
+	Available string `json:"available"`
+	Source    string `json:"source"`
 }
 
 // WingetScanResult contains the winget scan results
@@ -301,11 +301,11 @@ func createPipe(name string) (windows.Handle, error) {
 		pipePath,
 		windows.PIPE_ACCESS_DUPLEX,
 		windows.PIPE_TYPE_MESSAGE|windows.PIPE_READMODE_MESSAGE|windows.PIPE_WAIT,
-		1,                  // Max instances
-		maxMessageSize,     // Out buffer size
-		maxMessageSize,     // In buffer size
-		0,                  // Default timeout
-		nil,                // Security attributes
+		1,              // Max instances
+		maxMessageSize, // Out buffer size
+		maxMessageSize, // In buffer size
+		0,              // Default timeout
+		nil,            // Security attributes
 	)
 	if err != nil {
 		return 0, fmt.Errorf("CreateNamedPipe: %w", err)
@@ -671,7 +671,7 @@ func injectKey(key string, code string, down bool) {
 		input := INPUT_KBD{
 			Type: INPUT_KEYBOARD,
 			Ki: KEYBDINPUT{
-				WVk:     0, // Must be 0 for KEYEVENTF_UNICODE
+				WVk:     0,                // Must be 0 for KEYEVENTF_UNICODE
 				WScan:   uint16(runes[0]), // Unicode code point
 				DwFlags: flags,
 			},
@@ -694,7 +694,7 @@ func keyCodeToVK(code string) uint32 {
 		"MetaLeft":     win.VK_LWIN,  // Command on Mac
 		"MetaRight":    win.VK_RWIN,
 		// Space (often used with code)
-		"Space":        win.VK_SPACE,
+		"Space": win.VK_SPACE,
 	}
 
 	if vk, ok := codeMap[code]; ok {
@@ -710,26 +710,26 @@ func keyNameToVK(key string) uint32 {
 	// Special keys mapping - these need VK codes to work properly
 	keyMap := map[string]uint32{
 		// Navigation
-		"Escape":      win.VK_ESCAPE,
-		"Enter":       win.VK_RETURN,
-		"Tab":         win.VK_TAB,
-		"Backspace":   win.VK_BACK,
-		"Delete":      win.VK_DELETE,
-		"Insert":      win.VK_INSERT,
-		"Home":        win.VK_HOME,
-		"End":         win.VK_END,
-		"PageUp":      win.VK_PRIOR,
-		"PageDown":    win.VK_NEXT,
-		"ArrowLeft":   win.VK_LEFT,
-		"ArrowRight":  win.VK_RIGHT,
-		"ArrowUp":     win.VK_UP,
-		"ArrowDown":   win.VK_DOWN,
+		"Escape":     win.VK_ESCAPE,
+		"Enter":      win.VK_RETURN,
+		"Tab":        win.VK_TAB,
+		"Backspace":  win.VK_BACK,
+		"Delete":     win.VK_DELETE,
+		"Insert":     win.VK_INSERT,
+		"Home":       win.VK_HOME,
+		"End":        win.VK_END,
+		"PageUp":     win.VK_PRIOR,
+		"PageDown":   win.VK_NEXT,
+		"ArrowLeft":  win.VK_LEFT,
+		"ArrowRight": win.VK_RIGHT,
+		"ArrowUp":    win.VK_UP,
+		"ArrowDown":  win.VK_DOWN,
 		// Modifiers (generic)
-		"Control":      win.VK_CONTROL,
-		"Shift":        win.VK_SHIFT,
-		"Alt":          win.VK_MENU,
-		"AltGraph":     win.VK_RMENU,  // Right Alt (AltGr) for special chars on EU keyboards
-		"Meta":         win.VK_LWIN,   // Command key on Mac -> Windows key
+		"Control":  win.VK_CONTROL,
+		"Shift":    win.VK_SHIFT,
+		"Alt":      win.VK_MENU,
+		"AltGraph": win.VK_RMENU, // Right Alt (AltGr) for special chars on EU keyboards
+		"Meta":     win.VK_LWIN,  // Command key on Mac -> Windows key
 		// Modifiers (left/right specific - some browsers report these)
 		"ControlLeft":  win.VK_LCONTROL,
 		"ControlRight": win.VK_RCONTROL,
@@ -740,26 +740,26 @@ func keyNameToVK(key string) uint32 {
 		"MetaLeft":     win.VK_LWIN,
 		"MetaRight":    win.VK_RWIN,
 		// Lock keys
-		"CapsLock":    win.VK_CAPITAL,
-		"NumLock":     win.VK_NUMLOCK,
-		"ScrollLock":  win.VK_SCROLL,
+		"CapsLock":   win.VK_CAPITAL,
+		"NumLock":    win.VK_NUMLOCK,
+		"ScrollLock": win.VK_SCROLL,
 		// System keys
 		"PrintScreen": win.VK_SNAPSHOT,
 		"Pause":       win.VK_PAUSE,
 		"ContextMenu": win.VK_APPS,
 		// Function keys
-		"F1":          win.VK_F1,
-		"F2":          win.VK_F2,
-		"F3":          win.VK_F3,
-		"F4":          win.VK_F4,
-		"F5":          win.VK_F5,
-		"F6":          win.VK_F6,
-		"F7":          win.VK_F7,
-		"F8":          win.VK_F8,
-		"F9":          win.VK_F9,
-		"F10":         win.VK_F10,
-		"F11":         win.VK_F11,
-		"F12":         win.VK_F12,
+		"F1":  win.VK_F1,
+		"F2":  win.VK_F2,
+		"F3":  win.VK_F3,
+		"F4":  win.VK_F4,
+		"F5":  win.VK_F5,
+		"F6":  win.VK_F6,
+		"F7":  win.VK_F7,
+		"F8":  win.VK_F8,
+		"F9":  win.VK_F9,
+		"F10": win.VK_F10,
+		"F11": win.VK_F11,
+		"F12": win.VK_F12,
 	}
 
 	if vk, ok := keyMap[key]; ok {

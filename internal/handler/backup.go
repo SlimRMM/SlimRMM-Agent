@@ -44,11 +44,11 @@ const (
 // compressionLevelToGzip maps compression levels to gzip compression levels.
 // gzip levels: 1 (fastest) to 9 (best compression)
 var compressionLevelToGzip = map[CompressionLevel]int{
-	CompressionNone:     0,  // No compression
-	CompressionFast:     1,  // Fastest
-	CompressionBalanced: 5,  // Default
-	CompressionHigh:     7,  // Good balance
-	CompressionMaximum:  9,  // Best compression
+	CompressionNone:     0, // No compression
+	CompressionFast:     1, // Fastest
+	CompressionBalanced: 5, // Default
+	CompressionHigh:     7, // Good balance
+	CompressionMaximum:  9, // Best compression
 }
 
 type createBackupRequest struct {
@@ -74,10 +74,10 @@ type createBackupRequest struct {
 	IncludeRAM     bool   `json:"include_ram,omitempty"`
 
 	// Hyper-V-specific parameters
-	VMName              string `json:"vm_name,omitempty"`
-	CheckpointName      string `json:"checkpoint_name,omitempty"`
-	IncludeCheckpoints  bool   `json:"include_checkpoints,omitempty"`
-	UseVSS              bool   `json:"use_vss,omitempty"` // Volume Shadow Copy for consistent backup
+	VMName             string `json:"vm_name,omitempty"`
+	CheckpointName     string `json:"checkpoint_name,omitempty"`
+	IncludeCheckpoints bool   `json:"include_checkpoints,omitempty"`
+	UseVSS             bool   `json:"use_vss,omitempty"` // Volume Shadow Copy for consistent backup
 }
 
 type createBackupResponse struct {
@@ -101,11 +101,11 @@ type restoreBackupRequest struct {
 	EncryptIV   string `json:"encryption_iv,omitempty"`
 
 	// Docker-specific restore parameters
-	ContainerName   string `json:"container_name,omitempty"`   // New container name for restore
-	VolumeName      string `json:"volume_name,omitempty"`      // Volume name for restore
-	ImageName       string `json:"image_name,omitempty"`       // Image name/tag for restore
-	ComposePath     string `json:"compose_path,omitempty"`     // Compose file path for restore
-	RestoreVolumes  bool   `json:"restore_volumes,omitempty"`  // Restore compose volumes
+	ContainerName  string `json:"container_name,omitempty"`  // New container name for restore
+	VolumeName     string `json:"volume_name,omitempty"`     // Volume name for restore
+	ImageName      string `json:"image_name,omitempty"`      // Image name/tag for restore
+	ComposePath    string `json:"compose_path,omitempty"`    // Compose file path for restore
+	RestoreVolumes bool   `json:"restore_volumes,omitempty"` // Restore compose volumes
 
 	// Proxmox-specific restore parameters
 	VMID           uint64 `json:"vmid,omitempty"`
@@ -113,10 +113,10 @@ type restoreBackupRequest struct {
 	TargetNode     string `json:"target_node,omitempty"`
 
 	// Hyper-V-specific restore parameters
-	VMName           string `json:"vm_name,omitempty"`
-	TargetPath       string `json:"target_path,omitempty"`       // Path for restored VM
-	RegisterVM       bool   `json:"register_vm,omitempty"`       // Register VM after restore
-	GenerateNewID    bool   `json:"generate_new_id,omitempty"`   // Generate new VM ID
+	VMName        string `json:"vm_name,omitempty"`
+	TargetPath    string `json:"target_path,omitempty"`     // Path for restored VM
+	RegisterVM    bool   `json:"register_vm,omitempty"`     // Register VM after restore
+	GenerateNewID bool   `json:"generate_new_id,omitempty"` // Generate new VM ID
 }
 
 type restoreBackupResponse struct {
@@ -130,20 +130,20 @@ type getBackupStatusRequest struct {
 }
 
 type verifyBackupRequest struct {
-	BackupID          string `json:"backup_id"`
-	DownloadURL       string `json:"download_url"`
-	ExpectedSHA256    string `json:"expected_sha256"`
-	ExpectedSHA512    string `json:"expected_sha512"`
+	BackupID       string `json:"backup_id"`
+	DownloadURL    string `json:"download_url"`
+	ExpectedSHA256 string `json:"expected_sha256"`
+	ExpectedSHA512 string `json:"expected_sha512"`
 }
 
 type verifyBackupResponse struct {
-	BackupID      string `json:"backup_id"`
-	Valid         bool   `json:"valid"`
-	SHA256Match   bool   `json:"sha256_match"`
-	SHA512Match   bool   `json:"sha512_match"`
-	ActualSHA256  string `json:"actual_sha256"`
-	ActualSHA512  string `json:"actual_sha512"`
-	Error         string `json:"error,omitempty"`
+	BackupID     string `json:"backup_id"`
+	Valid        bool   `json:"valid"`
+	SHA256Match  bool   `json:"sha256_match"`
+	SHA512Match  bool   `json:"sha512_match"`
+	ActualSHA256 string `json:"actual_sha256"`
+	ActualSHA512 string `json:"actual_sha512"`
+	Error        string `json:"error,omitempty"`
 }
 
 // registerBackupHandlers registers backup-related action handlers.

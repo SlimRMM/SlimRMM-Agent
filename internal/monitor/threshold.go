@@ -40,14 +40,14 @@ type ThresholdAlert struct {
 
 // ThresholdConfig defines thresholds for monitoring.
 type ThresholdConfig struct {
-	CPUWarning       float64       // CPU % warning threshold (default 80)
-	CPUCritical      float64       // CPU % critical threshold (default 95)
-	MemoryWarning    float64       // Memory % warning threshold (default 85)
-	MemoryCritical   float64       // Memory % critical threshold (default 95)
-	DiskWarning      float64       // Disk % warning threshold (default 85)
-	DiskCritical     float64       // Disk % critical threshold (default 95)
-	SustainedMinutes int           // Minutes threshold must be exceeded (default 2)
-	CooldownMinutes  int           // Minutes between repeated alerts (default 5)
+	CPUWarning       float64 // CPU % warning threshold (default 80)
+	CPUCritical      float64 // CPU % critical threshold (default 95)
+	MemoryWarning    float64 // Memory % warning threshold (default 85)
+	MemoryCritical   float64 // Memory % critical threshold (default 95)
+	DiskWarning      float64 // Disk % warning threshold (default 85)
+	DiskCritical     float64 // Disk % critical threshold (default 95)
+	SustainedMinutes int     // Minutes threshold must be exceeded (default 2)
+	CooldownMinutes  int     // Minutes between repeated alerts (default 5)
 }
 
 // DefaultThresholdConfig returns sensible default thresholds.
@@ -233,9 +233,9 @@ func (m *ThresholdMonitor) getAlertMessage(metric MetricType, severity AlertSeve
 
 // GetCurrentState returns the current state of all monitored metrics.
 func (m *ThresholdMonitor) GetCurrentState() map[MetricType]struct {
-	Value     float64
-	Exceeded  bool
-	Duration  time.Duration
+	Value    float64
+	Exceeded bool
+	Duration time.Duration
 } {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

@@ -48,11 +48,11 @@ var (
 
 // QueryResult contains the result of an osquery query.
 type QueryResult struct {
-	Query    string          `json:"query"`
+	Query    string              `json:"query"`
 	Rows     []map[string]string `json:"rows"`
-	Count    int             `json:"count"`
-	Duration int64           `json:"duration_ms"`
-	Error    string          `json:"error,omitempty"`
+	Count    int                 `json:"count"`
+	Duration int64               `json:"duration_ms"`
+	Error    string              `json:"error,omitempty"`
 }
 
 // Client provides osquery functionality.
@@ -199,22 +199,22 @@ func findOsqueryBinary() string {
 	switch runtime.GOOS {
 	case "darwin":
 		paths = []string{
-			"/opt/osquery/bin",        // Official PKG installation
-			"/usr/local/bin",          // Homebrew installation
-			"/opt/homebrew/bin",       // Homebrew on Apple Silicon
+			"/opt/osquery/bin",  // Official PKG installation
+			"/usr/local/bin",    // Homebrew installation
+			"/opt/homebrew/bin", // Homebrew on Apple Silicon
 		}
 	case "linux":
 		paths = []string{
-			"/usr/bin",               // Package manager installation
-			"/usr/local/bin",         // Manual installation
-			"/opt/osquery/bin",       // Alternative installation
+			"/usr/bin",         // Package manager installation
+			"/usr/local/bin",   // Manual installation
+			"/opt/osquery/bin", // Alternative installation
 		}
 	case "windows":
 		// Only check official osquery installation paths
 		// Do NOT use exec.LookPath as other software (Level, etc.) may bundle osquery
 		paths = []string{
-			`C:\Program Files\osquery`,  // Official MSI installation
-			`C:\ProgramData\osquery`,    // Alternative location
+			`C:\Program Files\osquery`, // Official MSI installation
+			`C:\ProgramData\osquery`,   // Alternative location
 		}
 		names = []string{"osqueryi.exe", "osqueryd.exe"}
 	}

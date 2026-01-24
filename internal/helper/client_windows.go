@@ -28,15 +28,15 @@ const (
 
 // Message types - must match helper/main.go
 const (
-	MsgTypeCapture        = "capture"
-	MsgTypeFrame          = "frame"
-	MsgTypeInput          = "input"
-	MsgTypeMonitors       = "monitors"
-	MsgTypeMonitorList    = "monitor_list"
-	MsgTypePing           = "ping"
-	MsgTypePong           = "pong"
-	MsgTypeError          = "error"
-	MsgTypeQuit           = "quit"
+	MsgTypeCapture             = "capture"
+	MsgTypeFrame               = "frame"
+	MsgTypeInput               = "input"
+	MsgTypeMonitors            = "monitors"
+	MsgTypeMonitorList         = "monitor_list"
+	MsgTypePing                = "ping"
+	MsgTypePong                = "pong"
+	MsgTypeError               = "error"
+	MsgTypeQuit                = "quit"
 	MsgTypeWingetScan          = "winget_scan"
 	MsgTypeWingetResult        = "winget_result"
 	MsgTypeWingetUpgrade       = "winget_upgrade"
@@ -143,19 +143,19 @@ type WingetInstallResult struct {
 
 // Client manages communication with the helper process
 type Client struct {
-	pipe       windows.Handle
-	helperCmd  *exec.Cmd
-	sessionID  string
-	mu         sync.Mutex
-	connected  bool
+	pipe      windows.Handle
+	helperCmd *exec.Cmd
+	sessionID string
+	mu        sync.Mutex
+	connected bool
 }
 
 // Windows API for session management
 var (
-	kernel32                    = windows.NewLazySystemDLL("kernel32.dll")
-	wtsapi32                    = windows.NewLazySystemDLL("wtsapi32.dll")
-	userenv                     = windows.NewLazySystemDLL("userenv.dll")
-	advapi32                    = windows.NewLazySystemDLL("advapi32.dll")
+	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
+	wtsapi32 = windows.NewLazySystemDLL("wtsapi32.dll")
+	userenv  = windows.NewLazySystemDLL("userenv.dll")
+	advapi32 = windows.NewLazySystemDLL("advapi32.dll")
 
 	procWTSGetActiveConsoleSessionId = kernel32.NewProc("WTSGetActiveConsoleSessionId")
 	procWTSQueryUserToken            = wtsapi32.NewProc("WTSQueryUserToken")
@@ -168,17 +168,17 @@ var (
 
 // Windows constants
 const (
-	MAXIMUM_ALLOWED              = 0x02000000
-	TOKEN_DUPLICATE              = 0x0002
-	TOKEN_QUERY                  = 0x0008
-	TOKEN_ASSIGN_PRIMARY         = 0x0001
-	SecurityImpersonation        = 2
-	TokenPrimary                 = 1
-	CREATE_UNICODE_ENVIRONMENT   = 0x00000400
-	CREATE_NEW_CONSOLE           = 0x00000010
-	CREATE_NO_WINDOW             = 0x08000000
-	DETACHED_PROCESS             = 0x00000008
-	NORMAL_PRIORITY_CLASS        = 0x00000020
+	MAXIMUM_ALLOWED            = 0x02000000
+	TOKEN_DUPLICATE            = 0x0002
+	TOKEN_QUERY                = 0x0008
+	TOKEN_ASSIGN_PRIMARY       = 0x0001
+	SecurityImpersonation      = 2
+	TokenPrimary               = 1
+	CREATE_UNICODE_ENVIRONMENT = 0x00000400
+	CREATE_NEW_CONSOLE         = 0x00000010
+	CREATE_NO_WINDOW           = 0x08000000
+	DETACHED_PROCESS           = 0x00000008
+	NORMAL_PRIORITY_CLASS      = 0x00000020
 )
 
 // NewClient creates a new helper client
@@ -399,11 +399,11 @@ func (c *Client) connectToPipe() error {
 		pipe, err := windows.CreateFile(
 			pNamePtr,
 			windows.GENERIC_READ|windows.GENERIC_WRITE,
-			0,    // No sharing
-			nil,  // Security attributes
+			0,   // No sharing
+			nil, // Security attributes
 			windows.OPEN_EXISTING,
-			0,    // Flags
-			0,    // Template file
+			0, // Flags
+			0, // Template file
 		)
 		if err == nil {
 			c.pipe = pipe

@@ -48,16 +48,16 @@ const (
 	certCheckInterval = 24 * time.Hour   // Check certificates every 24 hours
 
 	// Connection constants
-	connectionTimeout  = 30 * time.Second
-	tcpKeepAlive       = 30 * time.Second
-	handshakeTimeout   = 15 * time.Second
-	wsEndpoint         = "/api/v1/ws/agent"
-	httpClientTimeout  = 30 * time.Second
+	connectionTimeout = 30 * time.Second
+	tcpKeepAlive      = 30 * time.Second
+	handshakeTimeout  = 15 * time.Second
+	wsEndpoint        = "/api/v1/ws/agent"
+	httpClientTimeout = 30 * time.Second
 
 	// Heartbeat configuration
-	fullHeartbeatInterval   = 10  // Full heartbeat every N heartbeats (~5 minutes)
-	configSaveInterval      = 10  // Save config every N heartbeats (~5 minutes)
-	wingetUpdateInterval    = 120 // Winget update check every N heartbeats (~60 minutes)
+	fullHeartbeatInterval = 10  // Full heartbeat every N heartbeats (~5 minutes)
+	configSaveInterval    = 10  // Save config every N heartbeats (~5 minutes)
+	wingetUpdateInterval  = 120 // Winget update check every N heartbeats (~60 minutes)
 )
 
 // actionToResponseAction maps request action names to their response action names.
@@ -90,15 +90,15 @@ type Response struct {
 
 // HeartbeatMessage is the format expected by the backend (Python-compatible).
 type HeartbeatMessage struct {
-	Action       string              `json:"action"`
-	Type         string              `json:"type,omitempty"`
-	AgentVersion string              `json:"agent_version"`
-	Stats        HeartbeatStats      `json:"stats"`
-	ExternalIP   string              `json:"external_ip,omitempty"`
-	SerialNumber string              `json:"serial_number,omitempty"`
-	Proxmox      *HeartbeatProxmox   `json:"proxmox,omitempty"`
-	HyperV       *HeartbeatHyperV    `json:"hyperv,omitempty"`
-	Winget       *HeartbeatWinget    `json:"winget,omitempty"`
+	Action       string            `json:"action"`
+	Type         string            `json:"type,omitempty"`
+	AgentVersion string            `json:"agent_version"`
+	Stats        HeartbeatStats    `json:"stats"`
+	ExternalIP   string            `json:"external_ip,omitempty"`
+	SerialNumber string            `json:"serial_number,omitempty"`
+	Proxmox      *HeartbeatProxmox `json:"proxmox,omitempty"`
+	HyperV       *HeartbeatHyperV  `json:"hyperv,omitempty"`
+	Winget       *HeartbeatWinget  `json:"winget,omitempty"`
 }
 
 // HeartbeatWinget contains Windows Package Manager (winget) information.
@@ -107,9 +107,9 @@ type HeartbeatWinget struct {
 	Version                     string `json:"version,omitempty"`
 	BinaryPath                  string `json:"binary_path,omitempty"`
 	SystemLevel                 bool   `json:"system_level"`
-	HelperAvailable             bool   `json:"helper_available"`                // Available via helper in user context
-	PowerShell7Available        bool   `json:"powershell7_available"`           // PowerShell 7 is installed
-	WinGetClientModuleAvailable bool   `json:"winget_client_module_available"`  // Microsoft.WinGet.Client module is available
+	HelperAvailable             bool   `json:"helper_available"`               // Available via helper in user context
+	PowerShell7Available        bool   `json:"powershell7_available"`          // PowerShell 7 is installed
+	WinGetClientModuleAvailable bool   `json:"winget_client_module_available"` // Microsoft.WinGet.Client module is available
 }
 
 // HeartbeatProxmox contains Proxmox host information.
@@ -224,13 +224,13 @@ type Handler struct {
 	wingetHelperAvailable bool
 
 	// Cached hardware serial number (doesn't change)
-	cachedSerialNumber     string
-	serialNumberFetched    bool
+	cachedSerialNumber  string
+	serialNumberFetched bool
 
 	// Security modules for multi-layered protection
-	rateLimiter      *ratelimit.ActionLimiter
-	antiReplay       *antireplay.Protector
-	auditLogger      *audit.Logger
+	rateLimiter *ratelimit.ActionLimiter
+	antiReplay  *antireplay.Protector
+	auditLogger *audit.Logger
 
 	// Self-healing watchdog for connection monitoring
 	selfHealingWatchdog SelfHealingWatchdog
@@ -260,10 +260,10 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 
 	// Initialize tamper protection
 	tamperConfig := tamper.Config{
-		Enabled:         cfg.IsTamperProtectionEnabled(),
+		Enabled:          cfg.IsTamperProtectionEnabled(),
 		UninstallKeyHash: cfg.GetUninstallKeyHash(),
-		WatchdogEnabled: cfg.IsWatchdogEnabled(),
-		AlertOnTamper:   cfg.IsTamperAlertEnabled(),
+		WatchdogEnabled:  cfg.IsWatchdogEnabled(),
+		AlertOnTamper:    cfg.IsTamperAlertEnabled(),
 	}
 	tamperProtection := tamper.New(tamperConfig, logger)
 
@@ -1369,19 +1369,19 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		// Compliance checks - policy_id, checks at root
 		"run_compliance_check": true,
 		// Software installation actions - all fields at root
-		"install_software":           true,
-		"download_and_install_msi":   true,
-		"download_and_install_pkg":   true,
-		"download_and_install_cask":  true,
-		"cancel_software_install":    true,
+		"install_software":          true,
+		"download_and_install_msi":  true,
+		"download_and_install_pkg":  true,
+		"download_and_install_cask": true,
+		"cancel_software_install":   true,
 		// Software uninstallation actions - all fields at root
-		"uninstall_software":         true,
-		"uninstall_msi":              true,
-		"uninstall_pkg":              true,
-		"uninstall_cask":             true,
-		"uninstall_deb":              true,
-		"uninstall_rpm":              true,
-		"cancel_software_uninstall":  true,
+		"uninstall_software":        true,
+		"uninstall_msi":             true,
+		"uninstall_pkg":             true,
+		"uninstall_cask":            true,
+		"uninstall_deb":             true,
+		"uninstall_rpm":             true,
+		"cancel_software_uninstall": true,
 	}
 	if rootLevelActions[msg.Action] {
 		handlerData = msg.Raw

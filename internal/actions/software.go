@@ -35,8 +35,8 @@ type Update struct {
 	Name       string `json:"name"`
 	Version    string `json:"version"`
 	CurrentVer string `json:"current_version,omitempty"`
-	KB         string `json:"kb,omitempty"`       // KB article number for Windows updates
-	Category   string `json:"category"`           // security, kernel, standard
+	KB         string `json:"kb,omitempty"` // KB article number for Windows updates
+	Category   string `json:"category"`     // security, kernel, standard
 	Size       int64  `json:"size,omitempty"`
 	Source     string `json:"source"`
 	Context    string `json:"context,omitempty"` // user or system (for winget packages)
@@ -1019,8 +1019,8 @@ func scanWingetViaHelper() ([]Update, bool) {
 			CurrentVer: u.Version,
 			Category:   "standard",
 			Source:     "winget",
-			KB:         u.ID,     // Store package ID in KB field
-			Context:    "user",   // User context packages
+			KB:         u.ID,   // Store package ID in KB field
+			Context:    "user", // User context packages
 		})
 	}
 

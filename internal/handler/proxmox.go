@@ -85,7 +85,7 @@ func (h *Handler) handleProxmoxResources(ctx context.Context, data json.RawMessa
 
 // proxmoxResourceRequest is used to get a specific resource.
 type proxmoxResourceRequest struct {
-	VMID uint64              `json:"vmid"`
+	VMID uint64               `json:"vmid"`
 	Type proxmox.ResourceType `json:"type,omitempty"`
 }
 
@@ -171,7 +171,7 @@ func CloseProxmoxClient() {
 func (h *Handler) handleProxmoxTokenStatus(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	if !proxmox.IsProxmoxHost() {
 		return map[string]interface{}{
-			"is_proxmox":     false,
+			"is_proxmox":       false,
 			"token_configured": false,
 		}, nil
 	}

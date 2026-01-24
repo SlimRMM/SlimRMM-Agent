@@ -19,8 +19,8 @@ func MountDMG(ctx context.Context, dmgPath string) (string, error) {
 
 	// hdiutil attach with -nobrowse to avoid Finder opening
 	cmd := exec.CommandContext(ctx, "hdiutil", "attach",
-		"-nobrowse",           // Don't show in Finder
-		"-readonly",           // Read-only mount
+		"-nobrowse",            // Don't show in Finder
+		"-readonly",            // Read-only mount
 		"-mountrandom", "/tmp", // Random mount point in /tmp
 		dmgPath,
 	)

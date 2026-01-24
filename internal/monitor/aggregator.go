@@ -65,7 +65,7 @@ type AggregatorConfig struct {
 // DefaultAggregatorConfig returns default aggregator configuration.
 func DefaultAggregatorConfig() AggregatorConfig {
 	return AggregatorConfig{
-		MaxSamples:  6,              // 6 samples at 30s = 3 minutes
+		MaxSamples:  6, // 6 samples at 30s = 3 minutes
 		FlushPeriod: 3 * time.Minute,
 	}
 }

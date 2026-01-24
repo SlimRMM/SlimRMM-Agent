@@ -21,14 +21,14 @@ import (
 
 // ZapStanza represents the parsed zap stanza from a Homebrew cask.
 type ZapStanza struct {
-	Trash     []string `json:"trash,omitempty"`
-	Delete    []string `json:"delete,omitempty"`
-	Launchctl []string `json:"launchctl,omitempty"`
-	Pkgutil   []string `json:"pkgutil,omitempty"`
-	Quit      []string `json:"quit,omitempty"`
+	Trash     []string      `json:"trash,omitempty"`
+	Delete    []string      `json:"delete,omitempty"`
+	Launchctl []string      `json:"launchctl,omitempty"`
+	Pkgutil   []string      `json:"pkgutil,omitempty"`
+	Quit      []string      `json:"quit,omitempty"`
 	Signal    []interface{} `json:"signal,omitempty"` // Can be string or [signal, bundleID]
-	Rmdir     []string `json:"rmdir,omitempty"`
-	Kext      []string `json:"kext,omitempty"`
+	Rmdir     []string      `json:"rmdir,omitempty"`
+	Kext      []string      `json:"kext,omitempty"`
 }
 
 // FetchCaskInfoFull fetches complete cask information including zap stanza.
