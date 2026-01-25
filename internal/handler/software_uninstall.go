@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/homebrew"
+	"github.com/slimrmm/slimrmm-agent/internal/security/audit"
 	"github.com/slimrmm/slimrmm-agent/internal/services/filesystem"
 	"github.com/slimrmm/slimrmm-agent/internal/services/models"
 	"github.com/slimrmm/slimrmm-agent/internal/services/registry"
@@ -105,6 +106,8 @@ type UninstallSnapshot struct {
 func (h *Handler) handleCreateUninstallSnapshot(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req CreateSnapshotRequest
 	if err := json.Unmarshal(data, &req); err != nil {
+		audit.GetLogger().LogSnapshot(ctx, audit.EventSnapshotCreate, "", "", false,
+			map[string]interface{}{"error_type": "parse_error"}, err)
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
@@ -131,6 +134,18 @@ func (h *Handler) handleCreateUninstallSnapshot(ctx context.Context, data json.R
 	case "deb", "rpm":
 		h.createLinuxSnapshot(ctx, req, snapshot)
 	}
+
+	// Audit log successful snapshot creation
+	audit.GetLogger().LogSnapshot(ctx, audit.EventSnapshotCreate, snapshot.ID, req.UninstallationID, true,
+		map[string]interface{}{
+			"installation_type": req.InstallationType,
+			"package_id":        req.PackageID,
+			"app_name":          req.AppName,
+			"include_config":    req.IncludeConfig,
+			"has_registry":      snapshot.RegistryBackup != "",
+			"has_app_bundle":    snapshot.AppBundlePath != "",
+			"config_files":      len(snapshot.ConfigFiles),
+		}, nil)
 
 	return map[string]interface{}{
 		"action":   "create_snapshot_result",

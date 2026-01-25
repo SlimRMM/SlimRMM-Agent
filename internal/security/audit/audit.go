@@ -65,13 +65,18 @@ const (
 	EventComplianceResult EventType = "compliance_result"
 
 	// Backup events
-	EventBackupStart          EventType = "backup_start"
-	EventBackupComplete       EventType = "backup_complete"
-	EventBackupFailed         EventType = "backup_failed"
-	EventBackupDatabaseStart  EventType = "backup_database_start"
+	EventBackupStart            EventType = "backup_start"
+	EventBackupComplete         EventType = "backup_complete"
+	EventBackupFailed           EventType = "backup_failed"
+	EventBackupDatabaseStart    EventType = "backup_database_start"
 	EventBackupDatabaseComplete EventType = "backup_database_complete"
-	EventBackupDatabaseFailed EventType = "backup_database_failed"
-	EventBackupPathAccess     EventType = "backup_path_access"
+	EventBackupDatabaseFailed   EventType = "backup_database_failed"
+	EventBackupPathAccess       EventType = "backup_path_access"
+
+	// Snapshot events
+	EventSnapshotCreate  EventType = "snapshot_create"
+	EventSnapshotRestore EventType = "snapshot_restore"
+	EventSnapshotDelete  EventType = "snapshot_delete"
 )
 
 // Severity represents the severity level of a security event.
@@ -516,6 +521,33 @@ func (l *Logger) LogBackupPathAccess(ctx context.Context, path string, operation
 		Path:      path,
 		Action:    operation,
 		Success:   success,
+	}
+
+	l.Log(ctx, event)
+}
+
+// LogSnapshot logs a snapshot operation (create/restore/delete).
+func (l *Logger) LogSnapshot(ctx context.Context, eventType EventType, snapshotID string, uninstallID string, success bool, details map[string]interface{}, err error) {
+	if details == nil {
+		details = make(map[string]interface{})
+	}
+	details["snapshot_id"] = snapshotID
+	details["uninstallation_id"] = uninstallID
+
+	severity := SeverityInfo
+	if !success {
+		severity = SeverityError
+	}
+
+	event := Event{
+		EventType: eventType,
+		Severity:  severity,
+		Source:    "uninstall",
+		Success:   success,
+		Details:   details,
+	}
+	if err != nil {
+		event.Error = err.Error()
 	}
 
 	l.Log(ctx, event)
