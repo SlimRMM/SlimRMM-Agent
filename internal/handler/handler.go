@@ -1101,12 +1101,17 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 		status := wingetClient.GetStatus()
 
 		// Auto-install winget if not available (trigger asynchronously every full heartbeat cycle)
+		// Uses parent context to support graceful cancellation during agent shutdown
 		if !status.Available && shouldRefresh {
-			go func() {
-				installCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			go func(parentCtx context.Context) {
+				installCtx, cancel := context.WithTimeout(parentCtx, 10*time.Minute)
 				defer cancel()
 				h.logger.Info("winget not available, attempting auto-installation")
 				if err := winget.EnsureInstalled(installCtx, h.logger); err != nil {
+					if parentCtx.Err() != nil {
+						h.logger.Debug("winget auto-installation cancelled due to shutdown")
+						return
+					}
 					h.logger.Warn("winget auto-installation failed during heartbeat",
 						"error", err)
 				} else {
@@ -1114,51 +1119,59 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 					h.logger.Info("cleaning up any per-user winget installations")
 					_ = winget.EnsureSystemOnly(installCtx, h.logger)
 				}
-			}()
+			}(ctx)
 		}
 
 		// Periodically clean up per-user winget installations (every 5 min)
 		// This ensures users who install winget from Microsoft Store don't end up with duplicate installations
 		if status.Available && shouldRefresh {
-			go func() {
-				cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			go func(parentCtx context.Context) {
+				cleanupCtx, cancel := context.WithTimeout(parentCtx, 2*time.Minute)
 				defer cancel()
 				_ = winget.EnsureSystemOnly(cleanupCtx, h.logger)
-			}()
+			}(ctx)
 		}
 
 		// Check for and install winget updates (every 60 min, tied to agent update interval)
 		shouldCheckWingetUpdate := h.heartbeatCount%wingetUpdateInterval == 0
 		if status.Available && shouldCheckWingetUpdate {
-			go func() {
-				updateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			go func(parentCtx context.Context) {
+				updateCtx, cancel := context.WithTimeout(parentCtx, 10*time.Minute)
 				defer cancel()
 				h.logger.Info("checking for winget updates (60-minute cycle)")
 				updated, err := winget.CheckAndUpdate(updateCtx, h.logger)
 				if err != nil {
+					if parentCtx.Err() != nil {
+						h.logger.Debug("winget update check cancelled due to shutdown")
+						return
+					}
 					h.logger.Warn("winget auto-update check failed", "error", err)
 				} else if updated {
 					h.logger.Info("winget was auto-updated to latest version")
 				}
-			}()
+			}(ctx)
 		}
 
 		// Bootstrap PowerShell 7 and WinGet.Client module (every 60 min, alongside winget updates)
 		// This ensures the optimal WinGet execution method is available
 		if shouldCheckWingetUpdate {
-			go func() {
-				bootstrapCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+			go func(parentCtx context.Context) {
+				bootstrapCtx, cancel := context.WithTimeout(parentCtx, 15*time.Minute)
 				defer cancel()
 				h.logger.Info("bootstrapping WinGet environment (PS7 + WinGet.Client module)")
 				changed, err := winget.BootstrapWinGetEnvironment(bootstrapCtx, h.logger)
 				if err != nil {
+					if parentCtx.Err() != nil {
+						h.logger.Debug("WinGet environment bootstrap cancelled due to shutdown")
+						return
+					}
 					h.logger.Warn("WinGet environment bootstrap failed", "error", err)
 				} else if changed {
 					h.logger.Info("WinGet environment was updated (PS7 or WinGet.Client module installed/updated)")
 					// Refresh winget status after bootstrap
 					wingetClient.Refresh()
 				}
-			}()
+			}(ctx)
 		}
 
 		wingetData := &HeartbeatWinget{
