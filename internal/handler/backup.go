@@ -27,6 +27,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/proxmox"
+	"github.com/slimrmm/slimrmm-agent/internal/security/audit"
 )
 
 // Backup request types
@@ -320,6 +321,12 @@ func (h *Handler) handleCreateAgentBackup(ctx context.Context, data json.RawMess
 		"encrypt", req.Encrypt,
 	)
 
+	// Audit log backup start
+	startTime := time.Now()
+	audit.GetLogger().LogBackupStart(ctx, req.BackupType, req.BackupID, map[string]interface{}{
+		"encrypt": req.Encrypt,
+	})
+
 	// Collect data based on backup type (use extended function for virtualization types)
 	var backupData []byte
 	var err error
@@ -329,6 +336,7 @@ func (h *Handler) handleCreateAgentBackup(ctx context.Context, data json.RawMess
 		backupData, err = h.collectBackupData(ctx, req.BackupType)
 	}
 	if err != nil {
+		audit.GetLogger().LogBackupFailed(ctx, req.BackupType, req.BackupID, err, nil)
 		return createBackupResponse{
 			BackupID: req.BackupID,
 			Status:   "failed",
@@ -361,6 +369,9 @@ func (h *Handler) handleCreateAgentBackup(ctx context.Context, data json.RawMess
 		var compressedBuf bytes.Buffer
 		gzWriter, err := gzip.NewWriterLevel(&compressedBuf, gzipLevel)
 		if err != nil {
+			audit.GetLogger().LogBackupFailed(ctx, req.BackupType, req.BackupID, err, map[string]interface{}{
+				"phase": "compression_init",
+			})
 			return createBackupResponse{
 				BackupID: req.BackupID,
 				Status:   "failed",
@@ -369,6 +380,9 @@ func (h *Handler) handleCreateAgentBackup(ctx context.Context, data json.RawMess
 		}
 		if _, err := gzWriter.Write(backupData); err != nil {
 			gzWriter.Close()
+			audit.GetLogger().LogBackupFailed(ctx, req.BackupType, req.BackupID, err, map[string]interface{}{
+				"phase": "compression",
+			})
 			return createBackupResponse{
 				BackupID: req.BackupID,
 				Status:   "failed",
@@ -393,6 +407,9 @@ func (h *Handler) handleCreateAgentBackup(ctx context.Context, data json.RawMess
 	if req.Encrypt && req.EncryptKey != "" {
 		encryptedData, iv, err := h.encryptData(compressedData, req.EncryptKey)
 		if err != nil {
+			audit.GetLogger().LogBackupFailed(ctx, req.BackupType, req.BackupID, err, map[string]interface{}{
+				"phase": "encryption",
+			})
 			return createBackupResponse{
 				BackupID: req.BackupID,
 				Status:   "failed",
@@ -407,12 +424,22 @@ func (h *Handler) handleCreateAgentBackup(ctx context.Context, data json.RawMess
 
 	// Upload to pre-signed URL
 	if err := h.uploadBackupData(ctx, req.UploadURL, finalData); err != nil {
+		audit.GetLogger().LogBackupFailed(ctx, req.BackupType, req.BackupID, err, map[string]interface{}{
+			"phase": "upload",
+		})
 		return createBackupResponse{
 			BackupID: req.BackupID,
 			Status:   "failed",
 			Error:    fmt.Sprintf("upload failed: %v", err),
 		}, nil
 	}
+
+	// Audit log backup completion
+	audit.GetLogger().LogBackupComplete(ctx, req.BackupType, req.BackupID, time.Since(startTime), map[string]interface{}{
+		"original_size":   originalSize,
+		"compressed_size": compressedSize,
+		"encrypted":       req.Encrypt,
+	})
 
 	h.logger.Info("agent backup created successfully",
 		"backup_id", req.BackupID,
@@ -2529,6 +2556,11 @@ func (h *Handler) handleBackupPaths(ctx context.Context, data json.RawMessage) (
 		"exclude_patterns", len(req.ExcludePatterns),
 	)
 
+	// Audit log path access for each path being backed up
+	for _, path := range req.Paths {
+		audit.GetLogger().LogBackupPathAccess(ctx, path, "backup_read", true)
+	}
+
 	// Create tar.gz archive
 	var buf bytes.Buffer
 	gzWriter := gzip.NewWriter(&buf)
@@ -3363,6 +3395,20 @@ func (h *Handler) collectPostgreSQLBackup(ctx context.Context, req createBackupR
 		"data_only", params.DataOnly,
 	)
 
+	// Audit log database backup start
+	pgStartTime := time.Now()
+	audit.GetLogger().Log(ctx, audit.Event{
+		EventType: audit.EventBackupDatabaseStart,
+		Severity:  audit.SeverityInfo,
+		Source:    "backup",
+		Success:   true,
+		Details: map[string]interface{}{
+			"database_type": "postgresql",
+			"database":      params.DatabaseName,
+			"host":          params.Host,
+		},
+	})
+
 	// Create command
 	cmd := exec.CommandContext(ctx, "pg_dump", args...)
 
@@ -3380,8 +3426,12 @@ func (h *Handler) collectPostgreSQLBackup(ctx context.Context, req createBackupR
 			"error", err,
 			"stderr", stderr.String(),
 		)
+		audit.GetLogger().LogDatabaseBackup(ctx, false, "postgresql", params.DatabaseName, time.Since(pgStartTime), err)
 		return nil, fmt.Errorf("pg_dump failed: %w - %s", err, stderr.String())
 	}
+
+	// Audit log database backup success
+	audit.GetLogger().LogDatabaseBackup(ctx, true, "postgresql", params.DatabaseName, time.Since(pgStartTime), nil)
 
 	// Build backup metadata
 	backupData := make(map[string]interface{})
@@ -3450,6 +3500,25 @@ func (h *Handler) collectMySQLBackup(ctx context.Context, req createBackupReques
 		"single_transaction", params.SingleTransaction,
 	)
 
+	// Audit log database backup start
+	mysqlStartTime := time.Now()
+	dbName := params.DatabaseName
+	if params.AllDatabases {
+		dbName = "*"
+	}
+	audit.GetLogger().Log(ctx, audit.Event{
+		EventType: audit.EventBackupDatabaseStart,
+		Severity:  audit.SeverityInfo,
+		Source:    "backup",
+		Success:   true,
+		Details: map[string]interface{}{
+			"database_type": "mysql",
+			"database":      dbName,
+			"host":          params.Host,
+			"all_databases": params.AllDatabases,
+		},
+	})
+
 	// Create command
 	cmd := exec.CommandContext(ctx, "mysqldump", args...)
 
@@ -3467,8 +3536,12 @@ func (h *Handler) collectMySQLBackup(ctx context.Context, req createBackupReques
 			"error", err,
 			"stderr", stderr.String(),
 		)
+		audit.GetLogger().LogDatabaseBackup(ctx, false, "mysql", dbName, time.Since(mysqlStartTime), err)
 		return nil, fmt.Errorf("mysqldump failed: %w - %s", err, stderr.String())
 	}
+
+	// Audit log database backup success
+	audit.GetLogger().LogDatabaseBackup(ctx, true, "mysql", dbName, time.Since(mysqlStartTime), nil)
 
 	// Build backup metadata
 	backupData := make(map[string]interface{})

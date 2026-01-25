@@ -63,6 +63,15 @@ const (
 	// Compliance events
 	EventComplianceCheck  EventType = "compliance_check"
 	EventComplianceResult EventType = "compliance_result"
+
+	// Backup events
+	EventBackupStart          EventType = "backup_start"
+	EventBackupComplete       EventType = "backup_complete"
+	EventBackupFailed         EventType = "backup_failed"
+	EventBackupDatabaseStart  EventType = "backup_database_start"
+	EventBackupDatabaseComplete EventType = "backup_database_complete"
+	EventBackupDatabaseFailed EventType = "backup_database_failed"
+	EventBackupPathAccess     EventType = "backup_path_access"
 )
 
 // Severity represents the severity level of a security event.
@@ -408,4 +417,106 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// LogBackupStart logs the start of a backup operation.
+func (l *Logger) LogBackupStart(ctx context.Context, backupType string, backupID string, details map[string]interface{}) {
+	if details == nil {
+		details = make(map[string]interface{})
+	}
+	details["backup_type"] = backupType
+	details["backup_id"] = backupID
+
+	event := Event{
+		EventType: EventBackupStart,
+		Severity:  SeverityInfo,
+		Source:    "backup",
+		Success:   true,
+		Details:   details,
+	}
+
+	l.Log(ctx, event)
+}
+
+// LogBackupComplete logs successful completion of a backup operation.
+func (l *Logger) LogBackupComplete(ctx context.Context, backupType string, backupID string, duration time.Duration, details map[string]interface{}) {
+	if details == nil {
+		details = make(map[string]interface{})
+	}
+	details["backup_type"] = backupType
+	details["backup_id"] = backupID
+
+	event := Event{
+		EventType: EventBackupComplete,
+		Severity:  SeverityInfo,
+		Source:    "backup",
+		Success:   true,
+		Duration:  duration,
+		Details:   details,
+	}
+
+	l.Log(ctx, event)
+}
+
+// LogBackupFailed logs a failed backup operation.
+func (l *Logger) LogBackupFailed(ctx context.Context, backupType string, backupID string, err error, details map[string]interface{}) {
+	if details == nil {
+		details = make(map[string]interface{})
+	}
+	details["backup_type"] = backupType
+	details["backup_id"] = backupID
+
+	event := Event{
+		EventType: EventBackupFailed,
+		Severity:  SeverityError,
+		Source:    "backup",
+		Success:   false,
+		Details:   details,
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+
+	l.Log(ctx, event)
+}
+
+// LogDatabaseBackup logs a database backup operation.
+func (l *Logger) LogDatabaseBackup(ctx context.Context, success bool, dbType string, database string, duration time.Duration, err error) {
+	eventType := EventBackupDatabaseComplete
+	severity := SeverityInfo
+	if !success {
+		eventType = EventBackupDatabaseFailed
+		severity = SeverityError
+	}
+
+	event := Event{
+		EventType: eventType,
+		Severity:  severity,
+		Source:    "backup",
+		Success:   success,
+		Duration:  duration,
+		Details: map[string]interface{}{
+			"database_type": dbType,
+			"database":      database,
+		},
+	}
+	if err != nil {
+		event.Error = err.Error()
+	}
+
+	l.Log(ctx, event)
+}
+
+// LogBackupPathAccess logs access to a backup path for security auditing.
+func (l *Logger) LogBackupPathAccess(ctx context.Context, path string, operation string, success bool) {
+	event := Event{
+		EventType: EventBackupPathAccess,
+		Severity:  SeverityInfo,
+		Source:    "backup",
+		Path:      path,
+		Action:    operation,
+		Success:   success,
+	}
+
+	l.Log(ctx, event)
 }
