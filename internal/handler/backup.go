@@ -186,6 +186,39 @@ func isValidDBUsername(username string) bool {
 	return true
 }
 
+// getMinimalDBEnv returns a minimal, filtered environment for database commands.
+// This prevents leaking sensitive environment variables to external processes.
+// Only includes essential variables needed for database commands to function.
+func getMinimalDBEnv(additionalVars ...string) []string {
+	// Essential environment variables for database commands
+	allowedVars := []string{
+		"PATH",       // Required to find executables
+		"HOME",       // Required for config files (.pgpass, .my.cnf)
+		"USER",       // User identification
+		"LANG",       // Locale settings for proper encoding
+		"LC_ALL",     // Locale override
+		"LC_CTYPE",   // Character classification
+		"TZ",         // Timezone for timestamps
+		"TMPDIR",     // Temporary directory for dumps
+		"TEMP",       // Windows temp directory
+		"TMP",        // Alternative temp directory
+	}
+
+	env := make([]string, 0, len(allowedVars)+len(additionalVars))
+
+	// Copy only allowed variables from current environment
+	for _, key := range allowedVars {
+		if val := os.Getenv(key); val != "" {
+			env = append(env, key+"="+val)
+		}
+	}
+
+	// Add any additional variables (e.g., PGPASSWORD, MYSQL_PWD)
+	env = append(env, additionalVars...)
+
+	return env
+}
+
 type createBackupRequest struct {
 	BackupID         string           `json:"backup_id"`
 	BackupType       string           `json:"backup_type"` // config, logs, system_state, software_inventory, compliance_results, docker_*, proxmox_*, hyperv_*, files_and_folders
@@ -3474,9 +3507,11 @@ func (h *Handler) collectPostgreSQLBackup(ctx context.Context, req createBackupR
 	// Create command
 	cmd := exec.CommandContext(ctx, "pg_dump", args...)
 
-	// Set password via environment variable (secure way to pass password to pg_dump)
+	// Set minimal environment with password (prevents leaking sensitive env vars)
 	if params.Password != "" {
-		cmd.Env = append(os.Environ(), "PGPASSWORD="+params.Password)
+		cmd.Env = getMinimalDBEnv("PGPASSWORD=" + params.Password)
+	} else {
+		cmd.Env = getMinimalDBEnv()
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -3593,9 +3628,11 @@ func (h *Handler) collectMySQLBackup(ctx context.Context, req createBackupReques
 	// Create command
 	cmd := exec.CommandContext(ctx, "mysqldump", args...)
 
-	// Set password via environment variable (secure way to pass password to mysqldump)
+	// Set minimal environment with password (prevents leaking sensitive env vars)
 	if params.Password != "" {
-		cmd.Env = append(os.Environ(), "MYSQL_PWD="+params.Password)
+		cmd.Env = getMinimalDBEnv("MYSQL_PWD=" + params.Password)
+	} else {
+		cmd.Env = getMinimalDBEnv()
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -3708,10 +3745,12 @@ func (h *Handler) testPostgreSQLConnection(ctx context.Context, req testDatabase
 	}
 	args = append(args, dbName)
 
-	// Create command
+	// Create command with minimal environment (prevents leaking sensitive env vars)
 	cmd := exec.CommandContext(ctx, "psql", args...)
 	if req.Password != "" {
-		cmd.Env = append(os.Environ(), "PGPASSWORD="+req.Password)
+		cmd.Env = getMinimalDBEnv("PGPASSWORD=" + req.Password)
+	} else {
+		cmd.Env = getMinimalDBEnv()
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -3763,7 +3802,9 @@ func (h *Handler) getPostgreSQLDatabases(ctx context.Context, req testDatabaseCo
 
 	cmd := exec.CommandContext(ctx, "psql", args...)
 	if req.Password != "" {
-		cmd.Env = append(os.Environ(), "PGPASSWORD="+req.Password)
+		cmd.Env = getMinimalDBEnv("PGPASSWORD=" + req.Password)
+	} else {
+		cmd.Env = getMinimalDBEnv()
 	}
 
 	var stdout bytes.Buffer
@@ -3810,9 +3851,11 @@ func (h *Handler) testMySQLConnection(ctx context.Context, req testDatabaseConne
 	// Create command
 	cmd := exec.CommandContext(ctx, "mysql", args...)
 
-	// Set password via environment variable (secure way to pass password to mysql)
+	// Set minimal environment with password (prevents leaking sensitive env vars)
 	if req.Password != "" {
-		cmd.Env = append(os.Environ(), "MYSQL_PWD="+req.Password)
+		cmd.Env = getMinimalDBEnv("MYSQL_PWD=" + req.Password)
+	} else {
+		cmd.Env = getMinimalDBEnv()
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -3862,9 +3905,11 @@ func (h *Handler) getMySQLDatabases(ctx context.Context, req testDatabaseConnect
 
 	cmd := exec.CommandContext(ctx, "mysql", args...)
 
-	// Set password via environment variable (secure way to pass password to mysql)
+	// Set minimal environment with password (prevents leaking sensitive env vars)
 	if req.Password != "" {
-		cmd.Env = append(os.Environ(), "MYSQL_PWD="+req.Password)
+		cmd.Env = getMinimalDBEnv("MYSQL_PWD=" + req.Password)
+	} else {
+		cmd.Env = getMinimalDBEnv()
 	}
 
 	var stdout bytes.Buffer
