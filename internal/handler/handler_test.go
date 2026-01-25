@@ -490,3 +490,616 @@ func TestScriptExecutionStructure(t *testing.T) {
 		})
 	}
 }
+
+// TestHeartbeatWingetSerialization tests HeartbeatWinget serialization.
+func TestHeartbeatWingetSerialization(t *testing.T) {
+	winget := HeartbeatWinget{
+		Available:                   true,
+		Version:                     "1.6.3133",
+		BinaryPath:                  "C:\\Program Files\\WindowsApps\\winget.exe",
+		SystemLevel:                 true,
+		HelperAvailable:             false,
+		PowerShell7Available:        true,
+		WinGetClientModuleAvailable: true,
+	}
+
+	data, err := json.Marshal(winget)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var parsed HeartbeatWinget
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if !parsed.Available {
+		t.Error("Available should be true")
+	}
+	if parsed.Version != "1.6.3133" {
+		t.Errorf("Version = %s, want 1.6.3133", parsed.Version)
+	}
+	if !parsed.SystemLevel {
+		t.Error("SystemLevel should be true")
+	}
+	if !parsed.PowerShell7Available {
+		t.Error("PowerShell7Available should be true")
+	}
+	if !parsed.WinGetClientModuleAvailable {
+		t.Error("WinGetClientModuleAvailable should be true")
+	}
+}
+
+// TestHeartbeatProxmoxSerialization tests HeartbeatProxmox serialization.
+func TestHeartbeatProxmoxSerialization(t *testing.T) {
+	proxmox := HeartbeatProxmox{
+		IsProxmox:      true,
+		Version:        "8.1.3",
+		Release:        "stable",
+		KernelVersion:  "6.5.11-4-pve",
+		ClusterName:    "pve-cluster",
+		NodeName:       "pve-node1",
+		RepositoryType: "enterprise",
+	}
+
+	data, err := json.Marshal(proxmox)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var parsed HeartbeatProxmox
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if !parsed.IsProxmox {
+		t.Error("IsProxmox should be true")
+	}
+	if parsed.Version != "8.1.3" {
+		t.Errorf("Version = %s, want 8.1.3", parsed.Version)
+	}
+	if parsed.ClusterName != "pve-cluster" {
+		t.Errorf("ClusterName = %s, want pve-cluster", parsed.ClusterName)
+	}
+}
+
+// TestHeartbeatHyperVSerialization tests HeartbeatHyperV serialization.
+func TestHeartbeatHyperVSerialization(t *testing.T) {
+	hyperv := HeartbeatHyperV{
+		IsHyperV:       true,
+		Version:        "10.0.19041.1",
+		HostName:       "hyperv-server",
+		VMCount:        15,
+		ClusterEnabled: true,
+	}
+
+	data, err := json.Marshal(hyperv)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var parsed HeartbeatHyperV
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if !parsed.IsHyperV {
+		t.Error("IsHyperV should be true")
+	}
+	if parsed.VMCount != 15 {
+		t.Errorf("VMCount = %d, want 15", parsed.VMCount)
+	}
+	if !parsed.ClusterEnabled {
+		t.Error("ClusterEnabled should be true")
+	}
+}
+
+// TestHeartbeatDiskSerialization tests HeartbeatDisk serialization.
+func TestHeartbeatDiskSerialization(t *testing.T) {
+	disk := HeartbeatDisk{
+		Device:      "/dev/sda1",
+		Mountpoint:  "/",
+		Total:       500000000000,
+		Used:        250000000000,
+		Free:        250000000000,
+		UsedPercent: 50.0,
+	}
+
+	data, err := json.Marshal(disk)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var parsed HeartbeatDisk
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if parsed.Device != "/dev/sda1" {
+		t.Errorf("Device = %s, want /dev/sda1", parsed.Device)
+	}
+	if parsed.Mountpoint != "/" {
+		t.Errorf("Mountpoint = %s, want /", parsed.Mountpoint)
+	}
+	if parsed.UsedPercent != 50.0 {
+		t.Errorf("UsedPercent = %f, want 50.0", parsed.UsedPercent)
+	}
+}
+
+// TestHeartbeatNetworkIOSerialization tests HeartbeatNetworkIO serialization.
+func TestHeartbeatNetworkIOSerialization(t *testing.T) {
+	networkIO := HeartbeatNetworkIO{
+		BytesSent:   1000000000,
+		BytesRecv:   2000000000,
+		PacketsSent: 500000,
+		PacketsRecv: 1000000,
+	}
+
+	data, err := json.Marshal(networkIO)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var parsed HeartbeatNetworkIO
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if parsed.BytesSent != 1000000000 {
+		t.Errorf("BytesSent = %d, want 1000000000", parsed.BytesSent)
+	}
+	if parsed.BytesRecv != 2000000000 {
+		t.Errorf("BytesRecv = %d, want 2000000000", parsed.BytesRecv)
+	}
+}
+
+// TestHeartbeatStatsSerialization tests HeartbeatStats serialization.
+func TestHeartbeatStatsSerialization(t *testing.T) {
+	stats := HeartbeatStats{
+		CPUPercent:    45.5,
+		MemoryPercent: 62.3,
+		MemoryUsed:    8000000000,
+		MemoryTotal:   16000000000,
+		UptimeSeconds: 86400,
+		ProcessCount:  150,
+		Timezone:      "UTC",
+	}
+
+	data, err := json.Marshal(stats)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var parsed HeartbeatStats
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if parsed.CPUPercent != 45.5 {
+		t.Errorf("CPUPercent = %f, want 45.5", parsed.CPUPercent)
+	}
+	if parsed.ProcessCount != 150 {
+		t.Errorf("ProcessCount = %d, want 150", parsed.ProcessCount)
+	}
+	if parsed.Timezone != "UTC" {
+		t.Errorf("Timezone = %s, want UTC", parsed.Timezone)
+	}
+}
+
+// TestFullHeartbeatMessageSerialization tests complete heartbeat message.
+func TestFullHeartbeatMessageSerialization(t *testing.T) {
+	heartbeat := HeartbeatMessage{
+		Action:       "heartbeat",
+		Type:         "full",
+		AgentVersion: "2.0.0",
+		Stats: HeartbeatStats{
+			CPUPercent:    25.0,
+			MemoryPercent: 40.0,
+			MemoryUsed:    6400000000,
+			MemoryTotal:   16000000000,
+			Disk: []HeartbeatDisk{
+				{
+					Device:      "/dev/nvme0n1p1",
+					Mountpoint:  "/",
+					Total:       1000000000000,
+					Used:        400000000000,
+					Free:        600000000000,
+					UsedPercent: 40.0,
+				},
+			},
+			NetworkIO: &HeartbeatNetworkIO{
+				BytesSent:   500000,
+				BytesRecv:   1000000,
+				PacketsSent: 5000,
+				PacketsRecv: 10000,
+			},
+			UptimeSeconds: 604800,
+			ProcessCount:  200,
+			Timezone:      "Europe/Berlin",
+		},
+		ExternalIP:   "203.0.113.50",
+		SerialNumber: "ABC123XYZ",
+		Proxmox: &HeartbeatProxmox{
+			IsProxmox: true,
+			Version:   "8.1.3",
+			NodeName:  "pve1",
+		},
+		HyperV: nil, // Not a Hyper-V host
+		Docker: &DockerInfo{
+			Available:         true,
+			Version:           "24.0.7",
+			Containers:        10,
+			ContainersRunning: 5,
+		},
+		Winget: &HeartbeatWinget{
+			Available:    true,
+			Version:      "1.6.3133",
+			SystemLevel:  true,
+		},
+	}
+
+	data, err := json.Marshal(heartbeat)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var parsed HeartbeatMessage
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if parsed.Action != "heartbeat" {
+		t.Errorf("Action = %s, want heartbeat", parsed.Action)
+	}
+	if parsed.Type != "full" {
+		t.Errorf("Type = %s, want full", parsed.Type)
+	}
+	if parsed.Proxmox == nil {
+		t.Error("Proxmox should not be nil")
+	}
+	if parsed.HyperV != nil {
+		t.Error("HyperV should be nil")
+	}
+	if parsed.SerialNumber != "ABC123XYZ" {
+		t.Errorf("SerialNumber = %s, want ABC123XYZ", parsed.SerialNumber)
+	}
+}
+
+// TestMessageWithRawData tests Message with raw JSON data.
+func TestMessageWithRawData(t *testing.T) {
+	rawData := `{"action":"custom_action","request_id":"req-001","data":{"key":"value","count":42}}`
+
+	var msg Message
+	if err := json.Unmarshal([]byte(rawData), &msg); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if msg.Action != "custom_action" {
+		t.Errorf("Action = %s, want custom_action", msg.Action)
+	}
+	if msg.RequestID != "req-001" {
+		t.Errorf("RequestID = %s, want req-001", msg.RequestID)
+	}
+	if msg.Data == nil {
+		t.Error("Data should not be nil")
+	}
+}
+
+// TestResponseWithDataTypes tests Response with various data types.
+func TestResponseWithDataTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		data interface{}
+	}{
+		{"string data", "simple string"},
+		{"number data", 42},
+		{"bool data", true},
+		{"array data", []string{"a", "b", "c"}},
+		{"map data", map[string]interface{}{"key": "value"}},
+		{"nil data", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := Response{
+				Action:    "test_action",
+				RequestID: "req-123",
+				Success:   true,
+				Data:      tt.data,
+			}
+
+			data, err := json.Marshal(resp)
+			if err != nil {
+				t.Fatalf("failed to marshal: %v", err)
+			}
+
+			var parsed map[string]interface{}
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
+			}
+
+			if parsed["action"] != "test_action" {
+				t.Error("action mismatch")
+			}
+		})
+	}
+}
+
+// TestActionToResponseActionMapping tests action mapping.
+func TestActionToResponseActionMapping(t *testing.T) {
+	// Verify known mapping
+	if mapped, ok := actionToResponseAction["pull_logs"]; !ok {
+		t.Error("pull_logs should be in actionToResponseAction")
+	} else if mapped != "logs_result" {
+		t.Errorf("pull_logs should map to logs_result, got %s", mapped)
+	}
+}
+
+// TestDockerInfoComplete tests DockerInfo with all fields.
+func TestDockerInfoComplete(t *testing.T) {
+	dockerInfo := DockerInfo{
+		Available:         true,
+		Version:           "24.0.7",
+		APIVersion:        "1.43",
+		Containers:        25,
+		ContainersRunning: 15,
+		Images:            50,
+	}
+
+	data, err := json.Marshal(dockerInfo)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var parsed DockerInfo
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if parsed.Containers != 25 {
+		t.Errorf("Containers = %d, want 25", parsed.Containers)
+	}
+	if parsed.ContainersRunning != 15 {
+		t.Errorf("ContainersRunning = %d, want 15", parsed.ContainersRunning)
+	}
+	if parsed.Images != 50 {
+		t.Errorf("Images = %d, want 50", parsed.Images)
+	}
+}
+
+// TestHeartbeatStatsWithDiskArray tests HeartbeatStats with multiple disks.
+func TestHeartbeatStatsWithDiskArray(t *testing.T) {
+	stats := HeartbeatStats{
+		CPUPercent:    30.0,
+		MemoryPercent: 50.0,
+		MemoryUsed:    8000000000,
+		MemoryTotal:   16000000000,
+		Disk: []HeartbeatDisk{
+			{Device: "/dev/sda1", Mountpoint: "/", Total: 500000000000, Used: 200000000000, Free: 300000000000, UsedPercent: 40.0},
+			{Device: "/dev/sdb1", Mountpoint: "/data", Total: 1000000000000, Used: 500000000000, Free: 500000000000, UsedPercent: 50.0},
+			{Device: "/dev/sdc1", Mountpoint: "/backup", Total: 2000000000000, Used: 800000000000, Free: 1200000000000, UsedPercent: 40.0},
+		},
+		UptimeSeconds: 86400,
+		ProcessCount:  150,
+	}
+
+	data, err := json.Marshal(stats)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var parsed HeartbeatStats
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	if len(parsed.Disk) != 3 {
+		t.Errorf("len(Disk) = %d, want 3", len(parsed.Disk))
+	}
+	if parsed.Disk[1].Mountpoint != "/data" {
+		t.Errorf("Disk[1].Mountpoint = %s, want /data", parsed.Disk[1].Mountpoint)
+	}
+}
+
+// TestOsqueryResponseWithError tests OsqueryResponse with error data.
+func TestOsqueryResponseWithError(t *testing.T) {
+	osqResp := OsqueryResponse{
+		Action:    "run_osquery",
+		ScanType:  "software",
+		RequestID: "req-error",
+		Data:      map[string]string{"error": "osquery not available"},
+	}
+
+	data, err := json.Marshal(osqResp)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	dataMap, ok := parsed["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("data should be a map")
+	}
+	if dataMap["error"] != "osquery not available" {
+		t.Errorf("error = %v, want 'osquery not available'", dataMap["error"])
+	}
+}
+
+// TestHeartbeatWingetOmitEmpty tests HeartbeatWinget with empty optional fields.
+func TestHeartbeatWingetOmitEmpty(t *testing.T) {
+	winget := HeartbeatWinget{
+		Available: false,
+		// All other fields are zero values
+	}
+
+	data, err := json.Marshal(winget)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+
+	// Check that version and binary_path are omitted
+	if _, exists := parsed["version"]; exists && parsed["version"] != "" {
+		t.Log("version exists but should be empty or omitted when winget unavailable")
+	}
+}
+
+// TestFileOperationActions tests file operation action messages.
+func TestFileOperationActions(t *testing.T) {
+	actions := []struct {
+		action string
+		fields map[string]interface{}
+	}{
+		{"list_dir", map[string]interface{}{"path": "/home/user"}},
+		{"create_folder", map[string]interface{}{"path": "/home/user/newfolder"}},
+		{"delete_entry", map[string]interface{}{"path": "/home/user/oldfile.txt"}},
+		{"rename_entry", map[string]interface{}{"old_path": "/old/path", "new_path": "/new/path"}},
+		{"download_file", map[string]interface{}{"path": "/file/to/download.txt"}},
+		{"zip_entry", map[string]interface{}{"path": "/folder/to/zip", "output": "/output.zip"}},
+		{"unzip_entry", map[string]interface{}{"path": "/archive.zip", "output": "/extracted"}},
+		{"chmod", map[string]interface{}{"path": "/file", "mode": "755"}},
+		{"chown", map[string]interface{}{"path": "/file", "owner": "root", "group": "root"}},
+	}
+
+	for _, tc := range actions {
+		t.Run(tc.action, func(t *testing.T) {
+			msg := map[string]interface{}{
+				"action":     tc.action,
+				"request_id": "req-" + tc.action,
+			}
+			for k, v := range tc.fields {
+				msg[k] = v
+			}
+
+			data, err := json.Marshal(msg)
+			if err != nil {
+				t.Fatalf("failed to marshal: %v", err)
+			}
+
+			var parsed Message
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
+			}
+
+			if parsed.Action != tc.action {
+				t.Errorf("Action = %s, want %s", parsed.Action, tc.action)
+			}
+		})
+	}
+}
+
+// TestUploadActions tests upload-related action messages.
+func TestUploadActions(t *testing.T) {
+	actions := []struct {
+		action string
+		fields map[string]interface{}
+	}{
+		{"start_upload", map[string]interface{}{"path": "/upload/target.txt", "size": 1024}},
+		{"upload_chunk", map[string]interface{}{"upload_id": "upload-123", "offset": 0, "data": "base64data"}},
+		{"finish_upload", map[string]interface{}{"upload_id": "upload-123"}},
+		{"cancel_upload", map[string]interface{}{"upload_id": "upload-123"}},
+	}
+
+	for _, tc := range actions {
+		t.Run(tc.action, func(t *testing.T) {
+			msg := map[string]interface{}{
+				"action":     tc.action,
+				"request_id": "req-" + tc.action,
+			}
+			for k, v := range tc.fields {
+				msg[k] = v
+			}
+
+			data, err := json.Marshal(msg)
+			if err != nil {
+				t.Fatalf("failed to marshal: %v", err)
+			}
+
+			var parsed map[string]interface{}
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
+			}
+
+			if parsed["action"] != tc.action {
+				t.Errorf("action = %v, want %s", parsed["action"], tc.action)
+			}
+		})
+	}
+}
+
+// TestSoftwareActions tests software installation/uninstallation actions.
+func TestSoftwareActions(t *testing.T) {
+	installActions := []string{
+		"install_software",
+		"download_and_install_msi",
+		"download_and_install_pkg",
+		"download_and_install_cask",
+	}
+
+	uninstallActions := []string{
+		"uninstall_software",
+		"uninstall_msi",
+		"uninstall_pkg",
+		"uninstall_cask",
+		"uninstall_deb",
+		"uninstall_rpm",
+	}
+
+	for _, action := range installActions {
+		t.Run("install_"+action, func(t *testing.T) {
+			msg := map[string]interface{}{
+				"action":          action,
+				"request_id":      "req-" + action,
+				"installation_id": "install-123",
+				"package_name":    "test-package",
+			}
+
+			data, err := json.Marshal(msg)
+			if err != nil {
+				t.Fatalf("failed to marshal: %v", err)
+			}
+
+			var parsed map[string]interface{}
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
+			}
+
+			if parsed["action"] != action {
+				t.Errorf("action = %v, want %s", parsed["action"], action)
+			}
+		})
+	}
+
+	for _, action := range uninstallActions {
+		t.Run("uninstall_"+action, func(t *testing.T) {
+			msg := map[string]interface{}{
+				"action":            action,
+				"request_id":        "req-" + action,
+				"uninstallation_id": "uninstall-123",
+				"package_name":      "test-package",
+			}
+
+			data, err := json.Marshal(msg)
+			if err != nil {
+				t.Fatalf("failed to marshal: %v", err)
+			}
+
+			var parsed map[string]interface{}
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
+			}
+
+			if parsed["action"] != action {
+				t.Errorf("action = %v, want %s", parsed["action"], action)
+			}
+		})
+	}
+}

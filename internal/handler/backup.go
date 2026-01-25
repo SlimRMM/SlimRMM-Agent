@@ -25,9 +25,11 @@ import (
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
+	"github.com/slimrmm/slimrmm-agent/internal/i18n"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/proxmox"
 	"github.com/slimrmm/slimrmm-agent/internal/security/audit"
+	"github.com/slimrmm/slimrmm-agent/internal/services/backup"
 )
 
 // Backup request types
@@ -296,6 +298,111 @@ type createBackupResponse struct {
 	Error             string `json:"error,omitempty"`
 }
 
+// createBackupViaOrchestrator creates a backup using the injected backup orchestrator service.
+// This method is used for backup types that have registered collectors (Docker, Agent, System, etc.).
+// Returns nil, nil if the backup type is not handled by the orchestrator.
+func (h *Handler) createBackupViaOrchestrator(ctx context.Context, req createBackupRequest) (*createBackupResponse, error) {
+	// Map backup type string to BackupType enum
+	backupType := backup.BackupType(req.BackupType)
+
+	// Check if we have a collector for this backup type
+	if _, ok := h.collectorRegistry.Get(backupType); !ok {
+		return nil, nil // Not handled by orchestrator
+	}
+
+	// Build collector config
+	collectorConfig := backup.CollectorConfig{
+		BackupType:      backupType,
+		AgentUUID:       h.cfg.GetUUID(),
+		ContainerID:     req.ContainerID,
+		VolumeName:      req.VolumeName,
+		ImageName:       req.ImageName,
+		ComposePath:     req.ComposePath,
+		Paths:           req.IncludePaths,
+		ExcludePatterns: req.ExcludePatterns,
+	}
+
+	// Add PostgreSQL-specific parameters
+	if req.PostgreSQL != nil {
+		collectorConfig.DatabaseType = "postgresql"
+		collectorConfig.ConnectionType = req.PostgreSQL.ConnectionType
+		collectorConfig.Host = req.PostgreSQL.Host
+		collectorConfig.Port = req.PostgreSQL.Port
+		collectorConfig.SocketPath = req.PostgreSQL.SocketPath
+		collectorConfig.Username = req.PostgreSQL.Username
+		collectorConfig.Password = req.PostgreSQL.Password
+		collectorConfig.DatabaseName = req.PostgreSQL.DatabaseName
+		collectorConfig.SchemaOnly = req.PostgreSQL.SchemaOnly
+		collectorConfig.DataOnly = req.PostgreSQL.DataOnly
+	}
+
+	// Add MySQL-specific parameters
+	if req.MySQL != nil {
+		collectorConfig.DatabaseType = "mysql"
+		collectorConfig.ConnectionType = req.MySQL.ConnectionType
+		collectorConfig.Host = req.MySQL.Host
+		collectorConfig.Port = req.MySQL.Port
+		collectorConfig.SocketPath = req.MySQL.SocketPath
+		collectorConfig.Username = req.MySQL.Username
+		collectorConfig.Password = req.MySQL.Password
+		collectorConfig.DatabaseName = req.MySQL.DatabaseName
+		collectorConfig.AllDatabases = req.MySQL.AllDatabases
+	}
+
+	// Map compression level
+	compressionLevel := backup.CompressionBalanced
+	switch req.CompressionLevel {
+	case CompressionNone:
+		compressionLevel = backup.CompressionNone
+	case CompressionFast:
+		compressionLevel = backup.CompressionFast
+	case CompressionHigh:
+		compressionLevel = backup.CompressionHigh
+	case CompressionMaximum:
+		compressionLevel = backup.CompressionMaximum
+	}
+
+	// Build backup request
+	backupReq := backup.BackupRequest{
+		BackupID:   req.BackupID,
+		BackupType: backupType,
+		UploadURL:  req.UploadURL,
+		Encrypt:    req.Encrypt,
+		EncryptKey: req.EncryptKey,
+		Config:     collectorConfig,
+	}
+
+	// Set compression level
+	h.backupOrchestrator.SetCompressionLevel(compressionLevel)
+
+	// Create progress reporter
+	progress := backup.NewWebSocketProgressReporter(req.BackupID, func(msg map[string]interface{}) {
+		h.SendRaw(msg)
+	})
+
+	// Execute backup via orchestrator
+	result, err := h.backupOrchestrator.CreateBackup(ctx, backupReq, progress)
+	if err != nil {
+		return &createBackupResponse{
+			BackupID: req.BackupID,
+			Status:   "failed",
+			Error:    err.Error(),
+		}, nil
+	}
+
+	return &createBackupResponse{
+		BackupID:          result.BackupID,
+		Status:            result.Status,
+		SizeBytes:         result.SizeBytes,
+		CompressedBytes:   result.CompressedBytes,
+		ContentHashSHA256: result.ContentHashSHA256,
+		ContentHashSHA512: result.ContentHashSHA512,
+		Encrypted:         result.Encrypted,
+		EncryptionIV:      result.EncryptionIV,
+		Error:             result.Error,
+	}, nil
+}
+
 type restoreBackupRequest struct {
 	BackupID      string `json:"backup_id"`
 	RestoreJobID  string `json:"restore_job_id,omitempty"` // For progress tracking
@@ -398,7 +505,7 @@ func (h *Handler) registerBackupHandlers() {
 func (h *Handler) handleCreateAgentBackup(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req createBackupRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	h.logger.Info("creating agent backup",
@@ -413,6 +520,22 @@ func (h *Handler) handleCreateAgentBackup(ctx context.Context, data json.RawMess
 		"encrypt": req.Encrypt,
 	})
 
+	// Try to use the orchestrator for supported backup types (MVC pattern)
+	if response, err := h.createBackupViaOrchestrator(ctx, req); response != nil {
+		// Audit log completion
+		if response.Status == "completed" {
+			audit.GetLogger().LogBackupComplete(ctx, req.BackupType, req.BackupID, time.Since(startTime), map[string]interface{}{
+				"original_size":   response.SizeBytes,
+				"compressed_size": response.CompressedBytes,
+				"encrypted":       response.Encrypted,
+			})
+		} else {
+			audit.GetLogger().LogBackupFailed(ctx, req.BackupType, req.BackupID, fmt.Errorf("%s", response.Error), nil)
+		}
+		return response, err
+	}
+
+	// Fall back to legacy implementation for unsupported backup types
 	// Collect data based on backup type (use extended function for virtualization types)
 	var backupData []byte
 	var err error
@@ -562,7 +685,7 @@ func (h *Handler) collectBackupData(ctx context.Context, backupType string) ([]b
 	case "full":
 		return h.collectFullBackupData(ctx)
 	default:
-		return nil, fmt.Errorf("unknown backup type: %s", backupType)
+		return nil, fmt.Errorf(i18n.MsgUnknownBackupType, backupType)
 	}
 }
 
@@ -618,7 +741,7 @@ func (h *Handler) collectBackupDataWithRequest(ctx context.Context, req createBa
 		return h.collectMySQLBackup(ctx, req)
 
 	default:
-		return nil, fmt.Errorf("unknown backup type: %s", req.BackupType)
+		return nil, fmt.Errorf(i18n.MsgUnknownBackupType, req.BackupType)
 	}
 }
 
@@ -934,7 +1057,7 @@ func (h *Handler) uploadBackupData(ctx context.Context, uploadURL string, data [
 func (h *Handler) handleRestoreAgentBackup(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req restoreBackupRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	h.logger.Info("restoring agent backup",
@@ -1263,7 +1386,7 @@ func (h *Handler) restoreBackupDataWithRequestProgress(ctx context.Context, req 
 		return nil
 
 	default:
-		return fmt.Errorf("unknown backup type: %s", req.BackupType)
+		return fmt.Errorf(i18n.MsgUnknownBackupType, req.BackupType)
 	}
 }
 
@@ -1329,7 +1452,7 @@ func (h *Handler) restoreBackupData(backupType string, data []byte) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("unknown backup type: %s", backupType)
+		return fmt.Errorf(i18n.MsgUnknownBackupType, backupType)
 	}
 }
 
@@ -1373,7 +1496,7 @@ func (h *Handler) restoreBackupDataWithRequest(ctx context.Context, req restoreB
 		return nil
 
 	default:
-		return fmt.Errorf("unknown backup type: %s", req.BackupType)
+		return fmt.Errorf(i18n.MsgUnknownBackupType, req.BackupType)
 	}
 }
 
@@ -1440,7 +1563,7 @@ func (h *Handler) restoreComplianceData(data []byte) error {
 func (h *Handler) handleGetBackupStatus(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req getBackupStatusRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	// For now, we don't track in-progress backups
@@ -1456,7 +1579,7 @@ func (h *Handler) handleGetBackupStatus(ctx context.Context, data json.RawMessag
 func (h *Handler) handleVerifyAgentBackup(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req verifyBackupRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	h.logger.Info("verifying agent backup",
@@ -1528,7 +1651,7 @@ func isVirtualizationBackup(backupType string) bool {
 // collectDockerContainerBackup creates a backup of a Docker container.
 func (h *Handler) collectDockerContainerBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
 	if !actions.IsDockerAvailable() {
-		return nil, fmt.Errorf("docker is not available on this system")
+		return nil, fmt.Errorf(i18n.MsgDockerNotAvailable)
 	}
 
 	if req.ContainerID == "" {
@@ -1610,7 +1733,7 @@ func (h *Handler) collectDockerContainerBackup(ctx context.Context, req createBa
 // collectDockerVolumeBackup creates a backup of a Docker volume.
 func (h *Handler) collectDockerVolumeBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
 	if !actions.IsDockerAvailable() {
-		return nil, fmt.Errorf("docker is not available on this system")
+		return nil, fmt.Errorf(i18n.MsgDockerNotAvailable)
 	}
 
 	if req.VolumeName == "" {
@@ -1654,7 +1777,7 @@ func (h *Handler) collectDockerVolumeBackup(ctx context.Context, req createBacku
 // collectDockerImageBackup creates a backup of a Docker image.
 func (h *Handler) collectDockerImageBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
 	if !actions.IsDockerAvailable() {
-		return nil, fmt.Errorf("docker is not available on this system")
+		return nil, fmt.Errorf(i18n.MsgDockerNotAvailable)
 	}
 
 	if req.ImageName == "" {
@@ -1695,7 +1818,7 @@ func (h *Handler) collectDockerImageBackup(ctx context.Context, req createBackup
 // collectDockerComposeBackup creates a backup of a Docker Compose project.
 func (h *Handler) collectDockerComposeBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
 	if !actions.IsDockerAvailable() {
-		return nil, fmt.Errorf("docker is not available on this system")
+		return nil, fmt.Errorf(i18n.MsgDockerNotAvailable)
 	}
 
 	if req.ComposePath == "" {
@@ -2199,7 +2322,7 @@ func createTarArchive(ctx context.Context, srcDir string, buf *bytes.Buffer) err
 // restoreDockerContainer restores a Docker container from backup.
 func (h *Handler) restoreDockerContainer(ctx context.Context, req restoreBackupRequest, data []byte) error {
 	if !actions.IsDockerAvailable() {
-		return fmt.Errorf("docker is not available on this system")
+		return fmt.Errorf(i18n.MsgDockerNotAvailable)
 	}
 
 	var backupData map[string]interface{}
@@ -2260,7 +2383,7 @@ func (h *Handler) restoreDockerContainer(ctx context.Context, req restoreBackupR
 // restoreDockerVolume restores a Docker volume from backup.
 func (h *Handler) restoreDockerVolume(ctx context.Context, req restoreBackupRequest, data []byte) error {
 	if !actions.IsDockerAvailable() {
-		return fmt.Errorf("docker is not available on this system")
+		return fmt.Errorf(i18n.MsgDockerNotAvailable)
 	}
 
 	var backupData map[string]interface{}
@@ -2312,7 +2435,7 @@ func (h *Handler) restoreDockerVolume(ctx context.Context, req restoreBackupRequ
 // restoreDockerImage restores a Docker image from backup.
 func (h *Handler) restoreDockerImage(ctx context.Context, req restoreBackupRequest, data []byte) error {
 	if !actions.IsDockerAvailable() {
-		return fmt.Errorf("docker is not available on this system")
+		return fmt.Errorf(i18n.MsgDockerNotAvailable)
 	}
 
 	var backupData map[string]interface{}
@@ -2358,7 +2481,7 @@ func (h *Handler) restoreDockerImage(ctx context.Context, req restoreBackupReque
 // restoreDockerCompose restores a Docker Compose project from backup.
 func (h *Handler) restoreDockerCompose(ctx context.Context, req restoreBackupRequest, data []byte) error {
 	if !actions.IsDockerAvailable() {
-		return fmt.Errorf("docker is not available on this system")
+		return fmt.Errorf(i18n.MsgDockerNotAvailable)
 	}
 
 	var backupData map[string]interface{}
@@ -2629,7 +2752,7 @@ type backupPathsResponse struct {
 func (h *Handler) handleBackupPaths(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req backupPathsRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if len(req.Paths) == 0 {
@@ -3092,197 +3215,57 @@ func (h *Handler) restoreFilesAndFolders(ctx context.Context, req restoreBackupR
 
 // restoreFilesAndFoldersWithProgress restores files with detailed progress reporting.
 func (h *Handler) restoreFilesAndFoldersWithProgress(ctx context.Context, req restoreBackupRequest, data []byte, restoreCtx *restoreContext) error {
-	// Parse the backup data
-	var backupData map[string]interface{}
-	if err := json.Unmarshal(data, &backupData); err != nil {
-		return fmt.Errorf("failed to parse backup data: %w", err)
-	}
-
-	// Get file count from metadata for progress calculation
-	if totalFiles, ok := backupData["total_files"].(float64); ok {
-		restoreCtx.totalFiles = int(totalFiles)
-	}
-	if totalSize, ok := backupData["total_size"].(float64); ok {
-		restoreCtx.totalSize = int64(totalSize)
-	}
-
-	// Get the archive data
-	archiveDataB64, ok := backupData["archive_data"].(string)
-	if !ok {
-		return fmt.Errorf("no archive_data found in backup")
-	}
-
-	archiveData, err := base64.StdEncoding.DecodeString(archiveDataB64)
+	// Parse the backup data using helper
+	meta, err := parseFilesBackupData(data)
 	if err != nil {
-		return fmt.Errorf("failed to decode archive data: %w", err)
+		return err
 	}
 
-	// Determine target directory
-	targetDir := req.RestoreTarget
-	if targetDir == "" {
-		targetDir = filepath.Join(os.TempDir(), "restore_"+time.Now().Format("20060102150405"))
-	}
+	// Update restore context with metadata
+	restoreCtx.totalFiles = meta.TotalFiles
+	restoreCtx.totalSize = meta.TotalSize
 
-	// Create target directory
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return fmt.Errorf("failed to create target directory: %w", err)
+	// Prepare target directory using helper
+	targetDir, err := prepareRestoreTarget(req.RestoreTarget)
+	if err != nil {
+		return err
 	}
 
 	restoreCtx.reportProgress("restoring", 55, fmt.Sprintf("Restoring to %s", targetDir), "info")
 
-	// Build a set of paths to restore (if selective restore)
-	restorePathSet := make(map[string]bool)
-	selectiveRestore := len(req.RestorePaths) > 0
-	for _, p := range req.RestorePaths {
-		restorePathSet[filepath.ToSlash(p)] = true
+	// Configure and run archive restoration
+	archiveConfig := tarArchiveRestoreConfig{
+		TargetDir:         targetDir,
+		PreserveStructure: req.PreserveStructure,
+		OverwriteFiles:    req.OverwriteFiles,
+		RestorePaths:      req.RestorePaths,
+		Logger:            h.logger,
+		ProgressInterval:  500 * time.Millisecond,
+		ProgressCallback: func(progress restoreArchiveProgress) {
+			pct := 50
+			if restoreCtx.totalFiles > 0 {
+				pct = 50 + (progress.RestoredFiles * 45 / restoreCtx.totalFiles)
+			} else if restoreCtx.totalSize > 0 {
+				pct = 50 + int(progress.RestoredSize*45/restoreCtx.totalSize)
+			}
+			restoreCtx.reportProgress("restoring", pct,
+				fmt.Sprintf("Restored %d files (%s)",
+					progress.RestoredFiles,
+					formatBytes(progress.RestoredSize)),
+				"info")
+		},
 	}
 
-	// Open gzip reader
-	gzReader, err := gzip.NewReader(bytes.NewReader(archiveData))
+	progress, err := restoreTarArchive(meta.ArchiveData, archiveConfig)
 	if err != nil {
-		return fmt.Errorf("failed to open gzip reader: %w", err)
+		return err
 	}
-	defer gzReader.Close()
 
-	// Open tar reader
-	tarReader := tar.NewReader(gzReader)
-
-	// Track progress
-	lastProgressUpdate := time.Now()
-	progressInterval := 500 * time.Millisecond
-
-	for {
-		header, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("failed to read tar header: %w", err)
-		}
-
-		// Check if this file should be restored (selective restore)
-		if selectiveRestore {
-			shouldRestore := false
-			normalizedName := filepath.ToSlash(header.Name)
-
-			for restorePath := range restorePathSet {
-				if normalizedName == restorePath ||
-					strings.HasPrefix(normalizedName, restorePath+"/") ||
-					strings.HasPrefix(restorePath, normalizedName+"/") {
-					shouldRestore = true
-					break
-				}
-			}
-
-			if !shouldRestore {
-				restoreCtx.skippedFiles++
-				continue
-			}
-		}
-
-		// Determine target path
-		var targetPath string
-		if req.PreserveStructure {
-			targetPath = filepath.Join(targetDir, header.Name)
-		} else {
-			targetPath = filepath.Join(targetDir, filepath.Base(header.Name))
-		}
-
-		// Validate path is within target directory (prevent path traversal attacks)
-		if !isPathSafe(targetDir, targetPath) {
-			h.logger.Warn("skipping file with unsafe path", "path", header.Name, "target", targetPath)
-			restoreCtx.skippedFiles++
-			continue
-		}
-
-		// Create parent directories
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-			h.logger.Warn("failed to create directory", "path", filepath.Dir(targetPath), "error", err)
-			restoreCtx.failedFiles++
-			continue
-		}
-
-		// Check if file exists and overwrite setting
-		if _, err := os.Stat(targetPath); err == nil {
-			if !req.OverwriteFiles {
-				restoreCtx.skippedFiles++
-				continue
-			}
-		}
-
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
-				h.logger.Warn("failed to create directory", "path", targetPath, "error", err)
-				restoreCtx.failedFiles++
-			}
-
-		case tar.TypeReg:
-			file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
-			if err != nil {
-				h.logger.Warn("failed to create file", "path", targetPath, "error", err)
-				restoreCtx.failedFiles++
-				continue
-			}
-
-			written, err := io.Copy(file, tarReader)
-			file.Close()
-			if err != nil {
-				h.logger.Warn("failed to write file", "path", targetPath, "error", err)
-				restoreCtx.failedFiles++
-				continue
-			}
-
-			restoreCtx.restoredFiles++
-			restoreCtx.restoredSize += written
-
-			// Set modification time
-			os.Chtimes(targetPath, header.AccessTime, header.ModTime)
-
-			// Report progress periodically
-			if time.Since(lastProgressUpdate) > progressInterval {
-				progress := 50
-				if restoreCtx.totalFiles > 0 {
-					progress = 50 + (restoreCtx.restoredFiles * 45 / restoreCtx.totalFiles)
-				} else if restoreCtx.totalSize > 0 {
-					progress = 50 + int(restoreCtx.restoredSize*45/restoreCtx.totalSize)
-				}
-				restoreCtx.reportProgress("restoring", progress,
-					fmt.Sprintf("Restored %d files (%s)",
-						restoreCtx.restoredFiles,
-						formatBytes(restoreCtx.restoredSize)),
-					"info")
-				lastProgressUpdate = time.Now()
-			}
-
-		case tar.TypeSymlink:
-			// Validate symlink target doesn't escape the restore directory
-			if !isSymlinkSafe(targetDir, targetPath, header.Linkname) {
-				h.logger.Warn("skipping symlink with unsafe target", "path", targetPath, "target", header.Linkname)
-				restoreCtx.skippedFiles++
-				continue
-			}
-			if err := os.Symlink(header.Linkname, targetPath); err != nil {
-				h.logger.Warn("failed to create symlink", "path", targetPath, "error", err)
-				restoreCtx.failedFiles++
-				continue
-			}
-			// Post-creation verification: read back symlink and verify target
-			// This mitigates TOCTOU race conditions by detecting tampering
-			actualTarget, err := os.Readlink(targetPath)
-			if err != nil || actualTarget != header.Linkname {
-				h.logger.Warn("symlink verification failed, removing",
-					"path", targetPath,
-					"expected", header.Linkname,
-					"actual", actualTarget,
-				)
-				os.Remove(targetPath)
-				restoreCtx.failedFiles++
-				continue
-			}
-			restoreCtx.restoredFiles++
-		}
-	}
+	// Update restore context with final results
+	restoreCtx.restoredFiles = progress.RestoredFiles
+	restoreCtx.skippedFiles = progress.SkippedFiles
+	restoreCtx.failedFiles = progress.FailedFiles
+	restoreCtx.restoredSize = progress.RestoredSize
 
 	// Final progress update
 	restoreCtx.reportProgress("restoring", 95,
@@ -3345,7 +3328,7 @@ type listBackupContentsResponse struct {
 func (h *Handler) handleListBackupContents(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req listBackupContentsRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	h.logger.Info("listing backup contents", "backup_id", req.BackupID)

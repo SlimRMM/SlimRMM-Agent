@@ -15,6 +15,7 @@ import (
 
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
 	"github.com/slimrmm/slimrmm-agent/internal/helper"
+	"github.com/slimrmm/slimrmm-agent/internal/i18n"
 	"github.com/slimrmm/slimrmm-agent/internal/logging"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/security/archive"
@@ -180,7 +181,7 @@ type customCommandRequest struct {
 func (h *Handler) handleCustomCommand(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req customCommandRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	timeout := time.Duration(req.Timeout) * time.Second
@@ -202,7 +203,7 @@ type executeScriptRequest struct {
 func (h *Handler) handleExecuteScript(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req executeScriptRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	timeout := time.Duration(req.TimeoutSeconds) * time.Second
@@ -260,7 +261,7 @@ type listDirRequest struct {
 func (h *Handler) handleListDir(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req listDirRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	return actions.ListDirectory(req.Path)
@@ -274,7 +275,7 @@ type createFolderRequest struct {
 func (h *Handler) handleCreateFolder(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req createFolderRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.CreateFolder(req.Path, 0755); err != nil {
@@ -292,7 +293,7 @@ type deleteEntryRequest struct {
 func (h *Handler) handleDeleteEntry(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req deleteEntryRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.DeleteEntry(req.Path, req.Recursive); err != nil {
@@ -310,7 +311,7 @@ type renameEntryRequest struct {
 func (h *Handler) handleRenameEntry(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req renameEntryRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.RenameEntry(req.OldPath, req.NewPath); err != nil {
@@ -328,7 +329,7 @@ type chmodRequest struct {
 func (h *Handler) handleChmod(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req chmodRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.Chmod(req.Path, req.Mode); err != nil {
@@ -347,7 +348,7 @@ type chownRequest struct {
 func (h *Handler) handleChown(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req chownRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.Chown(req.Path, req.Owner, req.Group); err != nil {
@@ -369,7 +370,7 @@ type zipEntryRequest struct {
 func (h *Handler) handleZipEntry(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req zipEntryRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	// Support both frontend (path/output) and agent (source_path/output_path) formats
@@ -404,7 +405,7 @@ type unzipEntryRequest struct {
 func (h *Handler) handleUnzipEntry(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req unzipEntryRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	// Support both frontend (path/output) and agent (source_path/output_path) formats
@@ -453,7 +454,7 @@ type runOsqueryRequest struct {
 func (h *Handler) handleRunOsquery(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req runOsqueryRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	h.logger.Info("received osquery request", "scan_type", req.ScanType, "query_len", len(req.Query))
@@ -534,7 +535,7 @@ type startUploadRequest struct {
 func (h *Handler) handleStartUpload(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req startUploadRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := h.uploadManager.StartUpload(req.SessionID, req.Path, req.TotalSize); err != nil {
@@ -559,7 +560,7 @@ type uploadChunkRequest struct {
 func (h *Handler) handleUploadChunk(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req uploadChunkRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	chunkData, err := base64.StdEncoding.DecodeString(req.Data)
@@ -626,7 +627,7 @@ type finishUploadRequest struct {
 func (h *Handler) handleFinishUpload(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req finishUploadRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	return h.uploadManager.FinishUpload(req.SessionID)
@@ -639,7 +640,7 @@ type cancelUploadRequest struct {
 func (h *Handler) handleCancelUpload(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req cancelUploadRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := h.uploadManager.CancelUpload(req.SessionID); err != nil {
@@ -658,7 +659,7 @@ type downloadFileRequest struct {
 func (h *Handler) handleDownloadFile(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req downloadFileRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	result, err := actions.DownloadFile(req.Path, req.Offset, req.Limit)
@@ -686,7 +687,7 @@ type downloadChunkRequest struct {
 func (h *Handler) handleDownloadChunk(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req downloadChunkRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	chunkData, err := actions.DownloadChunk(req.Path, req.ChunkIndex)
@@ -709,7 +710,7 @@ type downloadURLRequest struct {
 func (h *Handler) handleDownloadURL(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req downloadURLRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	return actions.DownloadURL(req.URL, req.DestPath)
@@ -725,7 +726,7 @@ type systemControlRequest struct {
 func (h *Handler) handleRestart(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req systemControlRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.RestartSystem(ctx, req.Force, req.Delay); err != nil {
@@ -738,7 +739,7 @@ func (h *Handler) handleRestart(ctx context.Context, data json.RawMessage) (inte
 func (h *Handler) handleShutdown(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req systemControlRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.ShutdownSystem(ctx, req.Force, req.Delay); err != nil {
@@ -779,7 +780,7 @@ type executePatchesRequest struct {
 func (h *Handler) handleExecutePatches(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req executePatchesRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	startedAt := time.Now()
@@ -828,7 +829,7 @@ const defaultTerminalID = "default"
 func (h *Handler) handleStartTerminal(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req startTerminalRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	// Use default terminal ID if not provided (frontend compatibility)
@@ -908,7 +909,7 @@ func (h *Handler) handleTerminalInput(ctx context.Context, data json.RawMessage)
 	var req terminalInputRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		h.logger.Error("failed to unmarshal terminal input", "error", err)
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	// Use default terminal ID if not provided (frontend compatibility)
@@ -958,7 +959,7 @@ type terminalOutputRequest struct {
 func (h *Handler) handleTerminalOutput(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req terminalOutputRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	maxBytes := req.MaxBytes
@@ -988,7 +989,7 @@ type resizeTerminalRequest struct {
 func (h *Handler) handleResizeTerminal(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req resizeTerminalRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	// Use default terminal ID if not provided
@@ -1016,7 +1017,7 @@ type stopTerminalRequest struct {
 func (h *Handler) handleStopTerminal(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req stopTerminalRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	// Use default terminal ID if not provided
@@ -1044,7 +1045,7 @@ type updateAgentRequest struct {
 func (h *Handler) handleUpdateAgent(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req updateAgentRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	// Check for available updates
@@ -1170,7 +1171,7 @@ type serviceActionRequest struct {
 func (h *Handler) handleStartService(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req serviceActionRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if req.Name == "" {
@@ -1193,7 +1194,7 @@ func (h *Handler) handleStartService(ctx context.Context, data json.RawMessage) 
 func (h *Handler) handleStopService(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req serviceActionRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if req.Name == "" {
@@ -1216,7 +1217,7 @@ func (h *Handler) handleStopService(ctx context.Context, data json.RawMessage) (
 func (h *Handler) handleRestartService(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req serviceActionRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if req.Name == "" {
@@ -1244,7 +1245,7 @@ type setServiceStartTypeRequest struct {
 func (h *Handler) handleSetServiceStartType(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req setServiceStartTypeRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if req.Name == "" {
@@ -1278,7 +1279,7 @@ type enableTamperProtectionRequest struct {
 func (h *Handler) handleEnableTamperProtection(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req enableTamperProtectionRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	h.logger.Info("enabling tamper protection",
@@ -1338,7 +1339,7 @@ type disableTamperProtectionRequest struct {
 func (h *Handler) handleDisableTamperProtection(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req disableTamperProtectionRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	h.logger.Info("attempting to disable tamper protection",
@@ -1391,7 +1392,7 @@ type setUninstallKeyRequest struct {
 func (h *Handler) handleSetUninstallKey(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req setUninstallKeyRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	hadPreviousKey := h.cfg.GetUninstallKeyHash() != ""
@@ -1504,7 +1505,7 @@ type dockerListContainersRequest struct {
 func (h *Handler) handleDockerListContainers(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerListContainersRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	return actions.ListDockerContainers(ctx, req.All)
@@ -1518,7 +1519,7 @@ type dockerContainerActionRequest struct {
 func (h *Handler) handleDockerContainerAction(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerContainerActionRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.DockerContainerAction(ctx, req.ContainerID, req.Action); err != nil {
@@ -1536,7 +1537,7 @@ type dockerRemoveContainerRequest struct {
 func (h *Handler) handleDockerRemoveContainer(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerRemoveContainerRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.RemoveDockerContainer(ctx, req.ContainerID, req.Force); err != nil {
@@ -1555,7 +1556,7 @@ type dockerContainerLogsRequest struct {
 func (h *Handler) handleDockerContainerLogs(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerContainerLogsRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	return actions.GetDockerContainerLogs(ctx, req.ContainerID, req.Tail, req.Timestamps)
@@ -1568,7 +1569,7 @@ type dockerContainerStatsRequest struct {
 func (h *Handler) handleDockerContainerStats(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerContainerStatsRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	return actions.GetDockerContainerStats(ctx, req.ContainerID)
@@ -1581,7 +1582,7 @@ type dockerInspectContainerRequest struct {
 func (h *Handler) handleDockerInspectContainer(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerInspectContainerRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	return actions.InspectDockerContainer(ctx, req.ContainerID)
@@ -1596,7 +1597,7 @@ type dockerExecRequest struct {
 func (h *Handler) handleDockerExec(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerExecRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	timeout := time.Duration(req.Timeout) * time.Second
@@ -1619,7 +1620,7 @@ type dockerRemoveImageRequest struct {
 func (h *Handler) handleDockerRemoveImage(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerRemoveImageRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.RemoveDockerImage(ctx, req.ImageID, req.Force); err != nil {
@@ -1636,7 +1637,7 @@ type dockerPullImageRequest struct {
 func (h *Handler) handleDockerPullImage(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerPullImageRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.PullDockerImage(ctx, req.ImageName); err != nil {
@@ -1658,7 +1659,7 @@ type dockerRemoveVolumeRequest struct {
 func (h *Handler) handleDockerRemoveVolume(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerRemoveVolumeRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.RemoveDockerVolume(ctx, req.VolumeName, req.Force); err != nil {
@@ -1680,7 +1681,7 @@ type dockerComposeActionRequest struct {
 func (h *Handler) handleDockerComposeAction(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerComposeActionRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if err := actions.DockerComposeAction(ctx, req.ProjectPath, req.Action); err != nil {
@@ -1701,7 +1702,7 @@ type dockerPolicyExecuteRequest struct {
 func (h *Handler) handleDockerPolicyExecute(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerPolicyExecuteRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	action := ""
@@ -1778,7 +1779,7 @@ type dockerPruneRequest struct {
 func (h *Handler) handleDockerPruneImages(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerPruneRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 	return actions.PruneDockerImages(ctx, req.DanglingOnly, req.OlderThanHours)
 }
@@ -1794,7 +1795,7 @@ func (h *Handler) handleDockerPruneNetworks(ctx context.Context, data json.RawMe
 func (h *Handler) handleDockerPruneAll(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerPruneRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 	return actions.PruneDockerSystem(ctx, req.DanglingOnly, req.OlderThanHours)
 }
@@ -1807,7 +1808,7 @@ type dockerRestartUnhealthyRequest struct {
 func (h *Handler) handleDockerRestartUnhealthy(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerRestartUnhealthyRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 	if req.Timeout == 0 {
 		req.Timeout = 30
@@ -1826,7 +1827,7 @@ type dockerUpdateImagesRequest struct {
 func (h *Handler) handleDockerUpdateImages(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req dockerUpdateImagesRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 	return actions.UpdateDockerImages(ctx, req.PullLatest, req.RecreateContainers)
 }
@@ -2104,13 +2105,13 @@ func (h *Handler) handleExecuteWingetPolicy(ctx context.Context, data json.RawMe
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status": "failed",
-			"error":  "winget is only available on Windows",
+			"error":  i18n.MsgWingetWindowsOnly,
 		}, nil
 	}
 
 	var req wingetPolicyRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	h.logger.Info("executing winget policy",
@@ -2119,21 +2120,21 @@ func (h *Handler) handleExecuteWingetPolicy(ctx context.Context, data json.RawMe
 		"filter_mode", req.FilterMode,
 	)
 
-	// Check if winget is available
-	client := winget.GetDefault()
-	if !client.IsAvailable() {
+	// Check if winget is available (use injected service)
+	if !h.wingetUpgradeService.IsAvailable() {
 		response := map[string]interface{}{
 			"action":       "winget_policy_result",
 			"execution_id": req.ExecutionID,
 			"policy_id":    req.PolicyID,
 			"status":       "failed",
-			"error":        "winget is not available on this system",
+			"error":        i18n.MsgWingetNotAvailable,
 		}
 		h.SendRaw(response)
 		return response, nil
 	}
 
-	startedAt := time.Now()
+	// Create policy context
+	policyCtx := newWingetPolicyContext(req.ExecutionID, req.PolicyID, h.wingetUpgradeService.GetBinaryPath(), h)
 
 	// Set timeout
 	timeout := time.Duration(req.TimeoutSeconds) * time.Second
@@ -2147,140 +2148,30 @@ func (h *Handler) handleExecuteWingetPolicy(ctx context.Context, data json.RawMe
 	updateList, err := actions.GetAvailableUpdates(ctx)
 	if err != nil {
 		h.logger.Error("failed to get available updates", "error", err)
-		response := map[string]interface{}{
-			"action":       "winget_policy_result",
-			"execution_id": req.ExecutionID,
-			"policy_id":    req.PolicyID,
-			"status":       "failed",
-			"error":        fmt.Sprintf("failed to get updates: %v", err),
-			"started_at":   startedAt.UTC().Format(time.RFC3339),
-			"completed_at": time.Now().UTC().Format(time.RFC3339),
-		}
+		response := policyCtx.buildErrorResponse(fmt.Sprintf("failed to get updates: %v", err))
 		h.SendRaw(response)
 		return response, nil
 	}
 
-	// Filter updates to only winget updates
-	var wingetUpdates []actions.Update
-	for _, u := range updateList.Updates {
-		if u.Source == "winget" {
-			wingetUpdates = append(wingetUpdates, u)
-		}
-	}
-
-	// Apply filter mode
-	var updatesToProcess []actions.Update
-	switch req.FilterMode {
-	case "whitelist":
-		// Only update packages in the filter list
-		filterSet := make(map[string]bool)
-		for _, id := range req.PackageFilters {
-			filterSet[strings.ToLower(id)] = true
-		}
-		for _, u := range wingetUpdates {
-			if filterSet[strings.ToLower(u.KB)] { // KB contains package ID for winget
-				updatesToProcess = append(updatesToProcess, u)
-			}
-		}
-	case "blacklist":
-		// Update all packages except those in the filter list
-		filterSet := make(map[string]bool)
-		for _, id := range req.PackageFilters {
-			filterSet[strings.ToLower(id)] = true
-		}
-		for _, u := range wingetUpdates {
-			if !filterSet[strings.ToLower(u.KB)] {
-				updatesToProcess = append(updatesToProcess, u)
-			}
-		}
-	default: // "all"
-		updatesToProcess = wingetUpdates
-	}
+	// Filter updates to only winget updates and apply filter mode
+	wingetUpdates := filterWingetUpdates(updateList.Updates)
+	updatesToProcess := applyWingetFilterMode(wingetUpdates, req.FilterMode, req.PackageFilters)
 
 	if len(updatesToProcess) == 0 {
 		h.logger.Info("no updates to process after filtering")
-		response := map[string]interface{}{
-			"action":         "winget_policy_result",
-			"execution_id":   req.ExecutionID,
-			"policy_id":      req.PolicyID,
-			"status":         "completed",
-			"total_packages": 0,
-			"succeeded":      0,
-			"failed":         0,
-			"results":        []wingetUpdateResult{},
-			"started_at":     startedAt.UTC().Format(time.RFC3339),
-			"completed_at":   time.Now().UTC().Format(time.RFC3339),
-			"duration_ms":    time.Since(startedAt).Milliseconds(),
-		}
+		response := policyCtx.buildEmptyResponse()
 		h.SendRaw(response)
 		return response, nil
 	}
 
 	// Execute updates
-	var results []wingetUpdateResult
-	var succeeded, failed int
-	wingetPath := client.GetBinaryPath()
+	result := policyCtx.executeWingetPolicyUpdates(ctx, updatesToProcess)
 
-	for i, update := range updatesToProcess {
-		// Send progress
-		h.SendRaw(map[string]interface{}{
-			"action":          "winget_policy_progress",
-			"execution_id":    req.ExecutionID,
-			"policy_id":       req.PolicyID,
-			"current_package": update.Name,
-			"current_index":   i + 1,
-			"total_packages":  len(updatesToProcess),
-		})
-
-		// Execute winget upgrade for this package
-		result := h.executeWingetUpgrade(ctx, wingetPath, update)
-		results = append(results, result)
-
-		if result.Status == "success" {
-			succeeded++
-		} else {
-			failed++
-		}
-
-		// Send progress with result
-		h.SendRaw(map[string]interface{}{
-			"action":          "winget_policy_progress",
-			"execution_id":    req.ExecutionID,
-			"policy_id":       req.PolicyID,
-			"current_package": update.Name,
-			"current_index":   i + 1,
-			"total_packages":  len(updatesToProcess),
-			"package_status":  result.Status,
-		})
-	}
-
-	completedAt := time.Now()
-	durationMs := completedAt.Sub(startedAt).Milliseconds()
-
-	// Determine overall status
-	status := "completed"
-	if failed > 0 && succeeded == 0 {
-		status = "failed"
-	} else if failed > 0 {
-		status = "partial"
-	}
-
-	response := map[string]interface{}{
-		"action":         "winget_policy_result",
-		"execution_id":   req.ExecutionID,
-		"policy_id":      req.PolicyID,
-		"status":         status,
-		"total_packages": len(updatesToProcess),
-		"succeeded":      succeeded,
-		"failed":         failed,
-		"results":        results,
-		"started_at":     startedAt.UTC().Format(time.RFC3339),
-		"completed_at":   completedAt.UTC().Format(time.RFC3339),
-		"duration_ms":    durationMs,
-	}
+	// Build final response
+	response := policyCtx.buildFinalResponse(result.Results, result.Succeeded, result.Failed)
 
 	// Handle reboot if requested
-	if req.Reboot && succeeded > 0 {
+	if req.Reboot && result.Succeeded > 0 {
 		response["reboot_scheduled"] = true
 		h.ScheduleReboot("winget policy execution")
 	}
@@ -2288,9 +2179,9 @@ func (h *Handler) handleExecuteWingetPolicy(ctx context.Context, data json.RawMe
 	h.SendRaw(response)
 	h.logger.Info("winget policy execution completed",
 		"execution_id", req.ExecutionID,
-		"status", status,
-		"succeeded", succeeded,
-		"failed", failed,
+		"status", response["status"],
+		"succeeded", result.Succeeded,
+		"failed", result.Failed,
 	)
 
 	return response, nil
@@ -2330,13 +2221,13 @@ func (h *Handler) handleExecuteWingetInstallPolicy(ctx context.Context, data jso
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status": "failed",
-			"error":  "winget is only available on Windows",
+			"error":  i18n.MsgWingetWindowsOnly,
 		}, nil
 	}
 
 	var req wingetInstallPolicyRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	h.logger.Info("executing winget install policy",
@@ -2354,7 +2245,7 @@ func (h *Handler) handleExecuteWingetInstallPolicy(ctx context.Context, data jso
 			"execution_id": req.ExecutionID,
 			"policy_id":    req.PolicyID,
 			"status":       "failed",
-			"error":        "winget is not available on this system",
+			"error":        i18n.MsgWingetNotAvailable,
 		}
 		h.SendRaw(response)
 		return response, nil
@@ -2525,57 +2416,19 @@ func (h *Handler) handleExecuteWingetInstallPolicy(ctx context.Context, data jso
 	return response, nil
 }
 
-// executeWingetUpgrade runs winget upgrade for a single package using the winget client.
+// executeWingetUpgrade runs winget upgrade for a single package using the injected upgrade service.
 func (h *Handler) executeWingetUpgrade(ctx context.Context, _ string, update actions.Update) wingetUpdateResult {
-	result := wingetUpdateResult{
-		PackageID:   update.KB, // KB contains the package ID for winget updates
-		PackageName: update.Name,
-		OldVersion:  update.CurrentVer,
-		NewVersion:  update.Version,
-	}
+	// Use the injected WingetUpgradeService
+	serviceResult := h.wingetUpgradeService.UpgradePackage(ctx, update)
 
-	client := winget.GetDefault()
-	if !client.IsAvailable() {
-		result.Status = "failed"
-		result.Error = "winget not available"
-		return result
+	return wingetUpdateResult{
+		PackageID:   serviceResult.PackageID,
+		PackageName: serviceResult.PackageName,
+		OldVersion:  serviceResult.OldVersion,
+		NewVersion:  serviceResult.NewVersion,
+		Status:      serviceResult.Status,
+		Error:       serviceResult.Error,
 	}
-
-	// Run winget upgrade via service
-	upgradeResult, err := client.UpgradePackage(ctx, update.KB)
-	if err != nil {
-		result.Status = "failed"
-		result.Error = fmt.Sprintf("upgrade failed: %v", err)
-		h.logger.Error("winget upgrade failed",
-			"package", update.KB,
-			"error", err,
-		)
-		return result
-	}
-
-	if upgradeResult.Success {
-		if upgradeResult.Error == "already up to date" {
-			result.Status = "skipped"
-			result.Error = "already up to date"
-		} else {
-			result.Status = "success"
-			h.logger.Info("winget upgrade succeeded",
-				"package", update.KB,
-				"old_version", update.CurrentVer,
-				"new_version", update.Version,
-			)
-		}
-	} else {
-		result.Status = "failed"
-		result.Error = fmt.Sprintf("upgrade failed: %s - %s", upgradeResult.Error, upgradeResult.Output)
-		h.logger.Error("winget upgrade failed",
-			"package", update.KB,
-			"error", upgradeResult.Error,
-			"output", upgradeResult.Output,
-		)
-	}
-
-	return result
 }
 
 // Manual Winget Update Handlers
@@ -2603,13 +2456,13 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status": "failed",
-			"error":  "winget is only available on Windows",
+			"error":  i18n.MsgWingetWindowsOnly,
 		}, nil
 	}
 
 	var req wingetManualUpdateRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	h.logger.Info("executing winget single package update",
@@ -2617,117 +2470,90 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 		"package_id", req.PackageID,
 	)
 
-	// Check if winget is available
-	wingetClient := winget.GetDefault()
-	if !wingetClient.IsAvailable() {
+	// Check if winget is available (use injected service)
+	if !h.wingetUpgradeService.IsAvailable() {
 		response := map[string]interface{}{
 			"action":       "winget_update_result",
 			"execution_id": req.ExecutionID,
 			"status":       "failed",
-			"error":        "winget is not available on this system",
+			"error":        i18n.MsgWingetNotAvailable,
 		}
 		h.SendRaw(response)
 		return response, nil
 	}
 
-	startedAt := time.Now()
-	wingetPath := wingetClient.GetBinaryPath()
+	// Create update context
+	updateCtx := newWingetUpdateContext(req.ExecutionID, req.PackageID, req.PackageName, h.wingetUpgradeService.GetBinaryPath(), h)
 
 	// First try user context via helper (for per-user installed packages)
-	h.logger.Info("trying winget update in user context first", "package_id", req.PackageID)
-	h.SendRaw(map[string]interface{}{
-		"action":       "winget_update_output",
-		"execution_id": req.ExecutionID,
-		"output":       "Trying user context...\n",
-	})
-
-	helperClient, helperErr := helper.GetManager().Acquire()
-	if helperErr == nil {
-		defer helper.GetManager().Release()
-
-		result, err := helperClient.UpgradeWingetPackage(wingetPath, req.PackageID)
-		if err == nil && result != nil {
-			// Check if user context succeeded
-			if result.Success {
-				h.SendRaw(map[string]interface{}{
-					"action":       "winget_update_output",
-					"execution_id": req.ExecutionID,
-					"output":       result.Output,
-				})
-
-				response := map[string]interface{}{
-					"action":       "winget_update_result",
-					"execution_id": req.ExecutionID,
-					"status":       "completed",
-					"package_id":   req.PackageID,
-					"package_name": req.PackageName,
-					"output":       result.Output,
-					"context":      "user",
-					"started_at":   startedAt.UTC().Format(time.RFC3339),
-					"completed_at": time.Now().UTC().Format(time.RFC3339),
-					"duration_ms":  time.Since(startedAt).Milliseconds(),
-				}
-
-				if req.Reboot {
-					response["reboot_scheduled"] = true
-					h.ScheduleReboot("winget update")
-				}
-
-				h.SendRaw(response)
-				h.logger.Info("winget update completed via user context",
-					"execution_id", req.ExecutionID,
-					"package_id", req.PackageID,
-				)
-
-				// Trigger a rescan of available updates so the frontend can refresh the list
-				go h.triggerUpdatesRescan(ctx)
-
-				return response, nil
-			}
-
-			// Check for "no installed package" error - means we should try system context
-			if winget.IsPackageNotFound(result.ExitCode) ||
-				strings.Contains(strings.ToLower(result.Output), "no installed package") {
-				h.logger.Info("package not found in user context, trying system context", "package_id", req.PackageID)
-				h.SendRaw(map[string]interface{}{
-					"action":       "winget_update_output",
-					"execution_id": req.ExecutionID,
-					"output":       "Not found in user context, trying system context...\n",
-				})
-			} else {
-				// User context failed for other reason
-				response := map[string]interface{}{
-					"action":       "winget_update_result",
-					"execution_id": req.ExecutionID,
-					"status":       "failed",
-					"package_id":   req.PackageID,
-					"package_name": req.PackageName,
-					"output":       result.Output,
-					"error":        result.Error,
-					"context":      "user",
-					"started_at":   startedAt.UTC().Format(time.RFC3339),
-					"completed_at": time.Now().UTC().Format(time.RFC3339),
-					"duration_ms":  time.Since(startedAt).Milliseconds(),
-				}
-				// Include winget log if available
-				if result.WingetLog != "" {
-					response["winget_log"] = result.WingetLog
-					h.logger.Info("winget log retrieved", "log_length", len(result.WingetLog))
-				}
-				h.SendRaw(response)
-				h.logger.Error("winget update failed in user context",
-					"execution_id", req.ExecutionID,
-					"package_id", req.PackageID,
-					"error", result.Error,
-				)
-				return response, nil
-			}
-		}
-	} else {
-		h.logger.Debug("helper not available, trying system context directly", "error", helperErr)
+	if response := h.tryWingetUserContextUpdate(ctx, req, updateCtx); response != nil {
+		return response, nil
 	}
 
 	// Fall back to system context (original behavior)
+	return h.runWingetSystemContextUpdate(ctx, req, updateCtx)
+}
+
+// tryWingetUserContextUpdate attempts winget update in user context via helper.
+// Returns response if update completed (success or failure), nil to try system context.
+func (h *Handler) tryWingetUserContextUpdate(ctx context.Context, req wingetManualUpdateRequest, updateCtx *wingetUpdateContext) map[string]interface{} {
+	h.logger.Info("trying winget update in user context first", "package_id", req.PackageID)
+	updateCtx.sendOutput("Trying user context...\n")
+
+	helperClient, helperErr := helper.GetManager().Acquire()
+	if helperErr != nil {
+		h.logger.Debug("helper not available, trying system context directly", "error", helperErr)
+		return nil
+	}
+	defer helper.GetManager().Release()
+
+	result, err := helperClient.UpgradeWingetPackage(updateCtx.WingetPath, req.PackageID)
+	if err != nil || result == nil {
+		return nil // Fall back to system context
+	}
+
+	// Check if user context succeeded
+	if result.Success {
+		updateCtx.sendOutput(result.Output)
+		response := updateCtx.buildSuccessResponse("user", result.Output)
+		if req.Reboot {
+			response["reboot_scheduled"] = true
+			h.ScheduleReboot("winget update")
+		}
+		h.SendRaw(response)
+		h.logger.Info("winget update completed via user context",
+			"execution_id", req.ExecutionID,
+			"package_id", req.PackageID,
+		)
+		go h.triggerUpdatesRescan(ctx)
+		return response
+	}
+
+	// Check for "no installed package" error - means we should try system context
+	if winget.IsPackageNotFound(result.ExitCode) ||
+		strings.Contains(strings.ToLower(result.Output), "no installed package") {
+		h.logger.Info("package not found in user context, trying system context", "package_id", req.PackageID)
+		updateCtx.sendOutput("Not found in user context, trying system context...\n")
+		return nil // Fall back to system context
+	}
+
+	// User context failed for other reason
+	response := updateCtx.buildFailedResponse("user", result.Output, "", result.Error)
+	if result.WingetLog != "" {
+		response["winget_log"] = result.WingetLog
+		h.logger.Info("winget log retrieved", "log_length", len(result.WingetLog))
+	}
+	h.SendRaw(response)
+	h.logger.Error("winget update failed in user context",
+		"execution_id", req.ExecutionID,
+		"package_id", req.PackageID,
+		"error", result.Error,
+	)
+	return response
+}
+
+// runWingetSystemContextUpdate runs winget update in system context.
+func (h *Handler) runWingetSystemContextUpdate(ctx context.Context, req wingetManualUpdateRequest, updateCtx *wingetUpdateContext) (map[string]interface{}, error) {
 	h.logger.Info("trying winget update in system context", "package_id", req.PackageID)
 
 	// Set timeout
@@ -2739,7 +2565,7 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 	defer cancel()
 
 	// Run winget upgrade in system context
-	cmd := exec.CommandContext(ctx, wingetPath, "upgrade",
+	cmd := exec.CommandContext(ctx, updateCtx.WingetPath, "upgrade",
 		"--id", req.PackageID,
 		"--accept-source-agreements",
 		"--accept-package-agreements",
@@ -2755,18 +2581,7 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 	var errorBuffer strings.Builder
 
 	if err := cmd.Start(); err != nil {
-		response := map[string]interface{}{
-			"action":       "winget_update_result",
-			"execution_id": req.ExecutionID,
-			"status":       "failed",
-			"package_id":   req.PackageID,
-			"package_name": req.PackageName,
-			"error":        fmt.Sprintf("failed to start winget: %v", err),
-			"context":      "system",
-			"started_at":   startedAt.UTC().Format(time.RFC3339),
-			"completed_at": time.Now().UTC().Format(time.RFC3339),
-			"duration_ms":  time.Since(startedAt).Milliseconds(),
-		}
+		response := updateCtx.buildFailedResponse("system", "", "", fmt.Sprintf("failed to start winget: %v", err))
 		h.SendRaw(response)
 		return response, nil
 	}
@@ -2779,11 +2594,7 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 			if n > 0 {
 				chunk := string(buf[:n])
 				outputBuffer.WriteString(chunk)
-				h.SendRaw(map[string]interface{}{
-					"action":       "winget_update_output",
-					"execution_id": req.ExecutionID,
-					"output":       chunk,
-				})
+				updateCtx.sendOutput(chunk)
 			}
 			if err != nil {
 				break
@@ -2799,11 +2610,7 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 			if n > 0 {
 				chunk := string(buf[:n])
 				errorBuffer.WriteString(chunk)
-				h.SendRaw(map[string]interface{}{
-					"action":       "winget_update_output",
-					"execution_id": req.ExecutionID,
-					"output":       chunk,
-				})
+				updateCtx.sendOutput(chunk)
 			}
 			if err != nil {
 				break
@@ -2812,44 +2619,9 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 	}()
 
 	err := cmd.Wait()
-	completedAt := time.Now()
-	durationMs := completedAt.Sub(startedAt).Milliseconds()
+	status, errorMsg := h.evaluateWingetExitStatus(err)
 
-	status := "completed"
-	errorMsg := ""
-
-	if err != nil {
-		// Check for specific exit codes
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode := exitErr.ExitCode()
-			// 0x8A150011 = No applicable upgrade found (already up to date)
-			if exitCode == 0x8A150011 || exitCode == -1978335215 {
-				status = "completed"
-				errorMsg = "already up to date"
-			} else {
-				status = "failed"
-				errorMsg = fmt.Sprintf("upgrade failed with exit code %d: %v", exitCode, err)
-			}
-		} else {
-			status = "failed"
-			errorMsg = fmt.Sprintf("upgrade failed: %v", err)
-		}
-	}
-
-	response := map[string]interface{}{
-		"action":       "winget_update_result",
-		"execution_id": req.ExecutionID,
-		"status":       status,
-		"package_id":   req.PackageID,
-		"package_name": req.PackageName,
-		"output":       outputBuffer.String(),
-		"error_output": errorBuffer.String(),
-		"error":        errorMsg,
-		"context":      "system", // System context fallback
-		"started_at":   startedAt.UTC().Format(time.RFC3339),
-		"completed_at": completedAt.UTC().Format(time.RFC3339),
-		"duration_ms":  durationMs,
-	}
+	response := updateCtx.buildResponse(status, "system", outputBuffer.String(), errorBuffer.String(), errorMsg)
 
 	// Handle reboot if requested and successful
 	if req.Reboot && status == "completed" {
@@ -2875,10 +2647,28 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 		)
 	}
 
-	// Trigger a rescan of available updates so the frontend can refresh the list
 	go h.triggerUpdatesRescan(ctx)
 
 	return response, nil
+}
+
+// evaluateWingetExitStatus evaluates the exit status of a winget command.
+func (h *Handler) evaluateWingetExitStatus(err error) (status string, errorMsg string) {
+	if err == nil {
+		return "completed", ""
+	}
+
+	// Check for specific exit codes
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		exitCode := exitErr.ExitCode()
+		// 0x8A150011 = No applicable upgrade found (already up to date)
+		if exitCode == 0x8A150011 || exitCode == -1978335215 {
+			return "completed", "already up to date"
+		}
+		return "failed", fmt.Sprintf("upgrade failed with exit code %d: %v", exitCode, err)
+	}
+
+	return "failed", fmt.Sprintf("upgrade failed: %v", err)
 }
 
 // handleExecuteWingetUpdates handles bulk winget update.
@@ -2886,13 +2676,13 @@ func (h *Handler) handleExecuteWingetUpdates(ctx context.Context, data json.RawM
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status": "failed",
-			"error":  "winget is only available on Windows",
+			"error":  i18n.MsgWingetWindowsOnly,
 		}, nil
 	}
 
 	var req wingetManualUpdatesRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	h.logger.Info("executing winget bulk update",
@@ -2900,14 +2690,13 @@ func (h *Handler) handleExecuteWingetUpdates(ctx context.Context, data json.RawM
 		"package_count", len(req.PackageIDs),
 	)
 
-	// Check if winget is available
-	client := winget.GetDefault()
-	if !client.IsAvailable() {
+	// Check if winget is available (use injected service)
+	if !h.wingetUpgradeService.IsAvailable() {
 		response := map[string]interface{}{
 			"action":       "winget_updates_result",
 			"execution_id": req.ExecutionID,
 			"status":       "failed",
-			"error":        "winget is not available on this system",
+			"error":        i18n.MsgWingetNotAvailable,
 		}
 		h.SendRaw(response)
 		return response, nil
@@ -2923,7 +2712,7 @@ func (h *Handler) handleExecuteWingetUpdates(ctx context.Context, data json.RawM
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	wingetPath := client.GetBinaryPath()
+	wingetPath := h.wingetUpgradeService.GetBinaryPath()
 
 	// Determine packages to update
 	var packagesToUpdate []string
@@ -3200,7 +2989,7 @@ type wakeOnLANRequest struct {
 func (h *Handler) handleWakeOnLAN(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req wakeOnLANRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("invalid request: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
 	if req.MACAddress == "" {

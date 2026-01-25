@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"runtime"
 	"sync"
 	"time"
 
@@ -27,11 +26,13 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/security/audit"
 	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/security/ratelimit"
+	"github.com/slimrmm/slimrmm-agent/internal/services/backup"
 	"github.com/slimrmm/slimrmm-agent/internal/services/compliance"
 	"github.com/slimrmm/slimrmm-agent/internal/services/models"
 	"github.com/slimrmm/slimrmm-agent/internal/services/process"
 	"github.com/slimrmm/slimrmm-agent/internal/services/software"
 	"github.com/slimrmm/slimrmm-agent/internal/services/validation"
+	wingetservice "github.com/slimrmm/slimrmm-agent/internal/services/winget"
 	"github.com/slimrmm/slimrmm-agent/internal/tamper"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
@@ -248,6 +249,15 @@ type Handler struct {
 
 	// Process service for process management operations
 	processService *process.DefaultProcessService
+
+	// Backup services for backup orchestration
+	backupOrchestrator  *backup.Orchestrator
+	restoreOrchestrator *backup.RestoreOrchestrator
+	collectorRegistry   *backup.CollectorRegistry
+	restorerRegistry    *backup.RestorerRegistry
+
+	// Winget upgrade service for package upgrades
+	wingetUpgradeService *wingetservice.UpgradeService
 }
 
 // SelfHealingWatchdog is the interface for the self-healing watchdog.
@@ -304,6 +314,60 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	// Initialize process service for process management
 	processService := process.NewServices(logger)
 
+	// Initialize backup orchestration services
+	collectorRegistry := backup.NewCollectorRegistry()
+	restorerRegistry := backup.NewRestorerRegistry()
+
+	// Register Docker collectors
+	dockerDeps := backup.NewDefaultDockerDeps()
+	backupLogger := backup.NewSlogLogger(logger)
+	collectorRegistry.Register(backup.NewDockerContainerCollector(dockerDeps, backupLogger))
+	collectorRegistry.Register(backup.NewDockerVolumeCollector(dockerDeps, backupLogger))
+	collectorRegistry.Register(backup.NewDockerImageCollector(dockerDeps, backupLogger))
+	collectorRegistry.Register(backup.NewDockerComposeCollector(backupLogger))
+
+	// Register Agent collectors
+	agentPaths := backup.AgentPaths{
+		ConfigFile: paths.ConfigFile,
+		CACert:     paths.CACert,
+		ClientCert: paths.ClientCert,
+		LogDir:     paths.LogDir,
+		DataDir:    paths.BaseDir,
+	}
+	configWrapper := backup.NewConfigWrapper(cfg)
+	osqueryWrapper := backup.NewOsqueryWrapper()
+	collectorRegistry.Register(backup.NewAgentConfigCollector(agentPaths, configWrapper))
+	collectorRegistry.Register(backup.NewAgentLogsCollector(agentPaths, configWrapper, backupLogger))
+	collectorRegistry.Register(backup.NewSystemStateCollector(configWrapper, osqueryWrapper))
+	collectorRegistry.Register(backup.NewSoftwareInventoryCollector(configWrapper, osqueryWrapper))
+	// ComplianceCache path is in the data directory
+	collectorRegistry.Register(backup.NewComplianceResultsCollector(configWrapper, ""))
+
+	// Register Files and Folders collector
+	collectorRegistry.Register(backup.NewFilesAndFoldersCollector(configWrapper, backupLogger))
+
+	// Register Database collectors
+	collectorRegistry.Register(backup.NewPostgreSQLCollector())
+	collectorRegistry.Register(backup.NewMySQLCollector())
+
+	// Register Restorers
+	restorerRegistry.Register(backup.NewDockerContainerRestorer(dockerDeps, backupLogger))
+	restorerRegistry.Register(backup.NewDockerVolumeRestorer(dockerDeps, backupLogger))
+	restorerRegistry.Register(backup.NewDockerImageRestorer(dockerDeps, backupLogger))
+	restorerRegistry.Register(backup.NewFilesAndFoldersRestorer(backupLogger))
+	restorerRegistry.Register(backup.NewAgentConfigRestorer(agentPaths, backupLogger))
+	restorerRegistry.Register(backup.NewAgentLogsRestorer(agentPaths, backupLogger))
+
+	backupOrchestrator := backup.NewOrchestrator(collectorRegistry, backup.OrchestratorConfig{
+		Logger: logger,
+	})
+	restoreOrchestrator := backup.NewRestoreOrchestrator(restorerRegistry, backup.OrchestratorConfig{
+		Logger: logger,
+	})
+
+	// Initialize winget upgrade service
+	wingetUpgradeService := wingetservice.NewUpgradeService(logger)
+
 	h := &Handler{
 		cfg:               cfg,
 		paths:             paths,
@@ -324,9 +388,14 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		antiReplay:        antiReplay,
 		auditLogger:       auditLogger,
 		softwareServices:  softwareServices,
-		validationService: validationService,
-		complianceService: complianceService,
-		processService:    processService,
+		validationService:    validationService,
+		complianceService:    complianceService,
+		processService:       processService,
+		backupOrchestrator:   backupOrchestrator,
+		restoreOrchestrator:  restoreOrchestrator,
+		collectorRegistry:    collectorRegistry,
+		restorerRegistry:     restorerRegistry,
+		wingetUpgradeService: wingetUpgradeService,
 	}
 
 	h.registerHandlers()
@@ -985,241 +1054,26 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 		return
 	}
 
-	// Convert disk stats
-	diskStats := make([]HeartbeatDisk, 0, len(stats.Disk))
-	for _, d := range stats.Disk {
-		diskStats = append(diskStats, HeartbeatDisk{
-			Device:      d.Device,
-			Mountpoint:  d.Mountpoint,
-			Total:       d.Total,
-			Used:        d.Used,
-			Free:        d.Free,
-			UsedPercent: d.UsedPercent,
-		})
-	}
+	// Build base heartbeat message
+	heartbeat := h.buildBaseHeartbeat(ctx, stats)
 
-	// Aggregate network I/O
-	var totalBytesSent, totalBytesRecv, totalPacketsSent, totalPacketsRecv uint64
-	for _, n := range stats.Network {
-		totalBytesSent += n.BytesSent
-		totalBytesRecv += n.BytesRecv
-		totalPacketsSent += n.PacketsSent
-		totalPacketsRecv += n.PacketsRecv
-	}
+	// Add platform-specific info (delta-based)
+	h.addProxmoxInfo(ctx, &heartbeat)
+	h.addHyperVInfo(ctx, &heartbeat)
+	h.addDockerInfo(ctx, &heartbeat)
+	h.addWingetInfo(ctx, &heartbeat)
 
-	// Format heartbeat in the structure expected by the backend (Python-compatible)
-	heartbeat := HeartbeatMessage{
-		Action:       "heartbeat",
-		Type:         "full",
-		AgentVersion: version.Version,
-		Stats: HeartbeatStats{
-			CPUPercent:    stats.CPU.UsagePercent,
-			MemoryPercent: stats.Memory.UsedPercent,
-			MemoryUsed:    stats.Memory.Used,
-			MemoryTotal:   stats.Memory.Total,
-			Disk:          diskStats,
-			NetworkIO: &HeartbeatNetworkIO{
-				BytesSent:   totalBytesSent,
-				BytesRecv:   totalBytesRecv,
-				PacketsSent: totalPacketsSent,
-				PacketsRecv: totalPacketsRecv,
-			},
-			UptimeSeconds: stats.Uptime,
-			ProcessCount:  stats.ProcessCount,
-			Timezone:      stats.Timezone,
-		},
-		ExternalIP:   stats.ExternalIP,
-		SerialNumber: h.getSerialNumber(ctx),
-	}
-
-	// Add Proxmox info if this is a Proxmox host - delta-based (only send if changed)
-	// Thread-safe access to lastProxmoxHash
-	if proxmoxInfo := GetProxmoxInfo(ctx); proxmoxInfo != nil {
-		proxmoxData := &HeartbeatProxmox{
-			IsProxmox:      proxmoxInfo.IsProxmox,
-			Version:        proxmoxInfo.Version,
-			Release:        proxmoxInfo.Release,
-			KernelVersion:  proxmoxInfo.KernelVersion,
-			ClusterName:    proxmoxInfo.ClusterName,
-			NodeName:       proxmoxInfo.NodeName,
-			RepositoryType: proxmoxInfo.RepositoryType,
-		}
-		currentHash := hashStruct(proxmoxData)
-		h.mu.Lock()
-		if currentHash != h.lastProxmoxHash {
-			heartbeat.Proxmox = proxmoxData
-			h.lastProxmoxHash = currentHash
-			h.logger.Debug("proxmox info changed, including in heartbeat")
-		}
-		h.mu.Unlock()
-		// If unchanged, omit Proxmox field entirely to save bandwidth
-	}
-
-	// Add Hyper-V info if this is a Hyper-V host - delta-based (only send if changed)
-	if hypervInfo := GetHyperVInfo(ctx); hypervInfo != nil {
-		hypervData := &HeartbeatHyperV{
-			IsHyperV:       hypervInfo.IsHyperV,
-			Version:        hypervInfo.Version,
-			HostName:       hypervInfo.HostName,
-			VMCount:        hypervInfo.VMCount,
-			ClusterEnabled: hypervInfo.ClusterEnabled,
-		}
-		currentHash := hashStruct(hypervData)
-		h.mu.Lock()
-		if currentHash != h.lastHyperVHash {
-			heartbeat.HyperV = hypervData
-			h.lastHyperVHash = currentHash
-			h.logger.Debug("hyperv info changed, including in heartbeat")
-		}
-		h.mu.Unlock()
-	}
-
-	// Add Docker info if Docker is available - delta-based (only send if changed)
-	if dockerInfo := GetDockerInfo(ctx); dockerInfo != nil {
-		currentHash := hashStruct(dockerInfo)
-		h.mu.Lock()
-		if currentHash != h.lastDockerHash {
-			heartbeat.Docker = dockerInfo
-			h.lastDockerHash = currentHash
-			h.logger.Debug("docker info changed, including in heartbeat")
-		}
-		h.mu.Unlock()
-	}
-
-	// Add winget info on Windows - always include on full heartbeats
-	// Auto-install winget if not available (runs asynchronously)
-	if runtime.GOOS == "windows" {
-		wingetClient := winget.GetDefault()
-		// Periodically refresh winget detection to reduce CPU overhead
-		h.mu.RLock()
-		shouldRefresh := h.heartbeatCount%fullHeartbeatInterval == 0
-		helperAvailable := h.wingetHelperAvailable
-		h.mu.RUnlock()
-		if shouldRefresh {
-			wingetClient.Refresh()
-		}
-		status := wingetClient.GetStatus()
-
-		// Auto-install winget if not available (trigger asynchronously every full heartbeat cycle)
-		// Uses parent context to support graceful cancellation during agent shutdown
-		if !status.Available && shouldRefresh {
-			go func(parentCtx context.Context) {
-				installCtx, cancel := context.WithTimeout(parentCtx, 10*time.Minute)
-				defer cancel()
-				h.logger.Info("winget not available, attempting auto-installation")
-				if err := winget.EnsureInstalled(installCtx, h.logger); err != nil {
-					if parentCtx.Err() != nil {
-						h.logger.Debug("winget auto-installation cancelled due to shutdown")
-						return
-					}
-					h.logger.Warn("winget auto-installation failed during heartbeat",
-						"error", err)
-				} else {
-					// After successful installation, ensure only system-wide version exists
-					h.logger.Info("cleaning up any per-user winget installations")
-					_ = winget.EnsureSystemOnly(installCtx, h.logger)
-				}
-			}(ctx)
-		}
-
-		// Periodically clean up per-user winget installations (every 5 min)
-		// This ensures users who install winget from Microsoft Store don't end up with duplicate installations
-		if status.Available && shouldRefresh {
-			go func(parentCtx context.Context) {
-				cleanupCtx, cancel := context.WithTimeout(parentCtx, 2*time.Minute)
-				defer cancel()
-				_ = winget.EnsureSystemOnly(cleanupCtx, h.logger)
-			}(ctx)
-		}
-
-		// Check for and install winget updates (every 60 min, tied to agent update interval)
-		shouldCheckWingetUpdate := h.heartbeatCount%wingetUpdateInterval == 0
-		if status.Available && shouldCheckWingetUpdate {
-			go func(parentCtx context.Context) {
-				updateCtx, cancel := context.WithTimeout(parentCtx, 10*time.Minute)
-				defer cancel()
-				h.logger.Info("checking for winget updates (60-minute cycle)")
-				updated, err := winget.CheckAndUpdate(updateCtx, h.logger)
-				if err != nil {
-					if parentCtx.Err() != nil {
-						h.logger.Debug("winget update check cancelled due to shutdown")
-						return
-					}
-					h.logger.Warn("winget auto-update check failed", "error", err)
-				} else if updated {
-					h.logger.Info("winget was auto-updated to latest version")
-				}
-			}(ctx)
-		}
-
-		// Bootstrap PowerShell 7 and WinGet.Client module (every 60 min, alongside winget updates)
-		// This ensures the optimal WinGet execution method is available
-		if shouldCheckWingetUpdate {
-			go func(parentCtx context.Context) {
-				bootstrapCtx, cancel := context.WithTimeout(parentCtx, 15*time.Minute)
-				defer cancel()
-				h.logger.Info("bootstrapping WinGet environment (PS7 + WinGet.Client module)")
-				changed, err := winget.BootstrapWinGetEnvironment(bootstrapCtx, h.logger)
-				if err != nil {
-					if parentCtx.Err() != nil {
-						h.logger.Debug("WinGet environment bootstrap cancelled due to shutdown")
-						return
-					}
-					h.logger.Warn("WinGet environment bootstrap failed", "error", err)
-				} else if changed {
-					h.logger.Info("WinGet environment was updated (PS7 or WinGet.Client module installed/updated)")
-					// Refresh winget status after bootstrap
-					wingetClient.Refresh()
-				}
-			}(ctx)
-		}
-
-		wingetData := &HeartbeatWinget{
-			Available:                   status.Available,
-			Version:                     status.Version,
-			BinaryPath:                  status.BinaryPath,
-			SystemLevel:                 status.SystemLevel,
-			HelperAvailable:             helperAvailable,
-			PowerShell7Available:        status.PowerShell7Available,
-			WinGetClientModuleAvailable: status.WinGetClientModuleAvailable,
-		}
-		// Always include winget data on full heartbeats so backend can trigger auto-install
-		heartbeat.Winget = wingetData
-		// Update hash for tracking changes (used elsewhere)
-		currentHash := hashStruct(wingetData)
-		h.mu.Lock()
-		if currentHash != h.lastWingetHash {
-			h.lastWingetHash = currentHash
-			h.logger.Debug("winget status changed",
-				"available", status.Available,
-				"version", status.Version,
-				"binary_path", status.BinaryPath,
-				"system_level", status.SystemLevel,
-			)
-		}
-		h.mu.Unlock()
-	}
-
+	// Send heartbeat
 	h.SendRaw(heartbeat)
 
-	// Check thresholds and send proactive alerts if needed
-	// This runs alongside every heartbeat to detect critical conditions early
+	// Check thresholds and send proactive alerts
 	h.thresholdMonitor.Update(stats)
 
-	// Update last heartbeat time in config
+	// Update last heartbeat time
 	h.cfg.SetLastHeartbeat(time.Now().UTC().Format(time.RFC3339))
 
-	// Periodically save config to persist LastHeartbeat
-	// Thread-safe access to heartbeatCount
-	h.mu.Lock()
-	h.heartbeatCount++
-	shouldSave := h.heartbeatCount >= configSaveInterval
-	if shouldSave {
-		h.heartbeatCount = 0
-	}
-	h.mu.Unlock()
-
-	if shouldSave {
+	// Periodically save config
+	if h.incrementHeartbeatCount() {
 		if err := h.cfg.Save(); err != nil {
 			h.logger.Warn("failed to save config with heartbeat", "error", err)
 		}

@@ -8,13 +8,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/homebrew"
+	agenthttp "github.com/slimrmm/slimrmm-agent/internal/http"
 	"github.com/slimrmm/slimrmm-agent/internal/services/filesystem"
 	"github.com/slimrmm/slimrmm-agent/internal/services/models"
 )
@@ -265,6 +265,7 @@ func (h *Handler) handleDownloadAndInstallMSI(ctx context.Context, data json.Raw
 }
 
 // downloadFile downloads a file from URL to the specified path.
+// Uses the internal HTTP client for proper abstraction.
 func (h *Handler) downloadFile(ctx context.Context, url, token, destPath, installationID string) error {
 	h.logger.Info("starting file download",
 		"installation_id", installationID,
@@ -272,85 +273,35 @@ func (h *Handler) downloadFile(ctx context.Context, url, token, destPath, instal
 		"dest", destPath,
 	)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		h.logger.Info("failed to create download request", "error", err)
-		return fmt.Errorf("failed to create request: %w", err)
+	// Create progress callback that sends WebSocket updates
+	progressCallback := func(progress int, bytesTransferred, totalBytes int64) {
+		h.SendRaw(map[string]interface{}{
+			"action":           "software_install_progress",
+			"installation_id":  installationID,
+			"status":           "downloading",
+			"progress_percent": progress,
+		})
+	}
+
+	// Build download options
+	opts := []agenthttp.DownloadOption{
+		agenthttp.WithDownloadTimeout(10 * time.Minute),
+		agenthttp.WithDownloadProgress(progressCallback, 10),
 	}
 
 	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+		opts = append(opts, agenthttp.WithAuthToken(token))
 	}
 
-	client := &http.Client{
-		Timeout: 10 * time.Minute,
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		h.logger.Info("download request failed", "error", err)
+	// Use HTTP client for download
+	client := agenthttp.GetDefault()
+	if err := client.DownloadToFile(ctx, url, destPath, opts...); err != nil {
+		h.logger.Info("download failed", "error", err)
 		return fmt.Errorf("failed to download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	h.logger.Info("download response received",
-		"installation_id", installationID,
-		"status_code", resp.StatusCode,
-		"content_length", resp.ContentLength,
-	)
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status: %d", resp.StatusCode)
-	}
-
-	// Create destination file using filesystem service
-	fs := filesystem.GetDefault()
-	out, err := fs.CreateFile(destPath)
-	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
-	}
-	defer out.Close()
-
-	// Copy with progress
-	totalSize := resp.ContentLength
-	var downloaded int64
-	lastProgress := 0
-
-	buf := make([]byte, 32*1024) // 32KB buffer
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			_, writeErr := out.Write(buf[:n])
-			if writeErr != nil {
-				return fmt.Errorf("failed to write file: %w", writeErr)
-			}
-			downloaded += int64(n)
-
-			// Send progress updates every 10%
-			if totalSize > 0 {
-				progress := int(float64(downloaded) / float64(totalSize) * 100)
-				if progress >= lastProgress+10 {
-					lastProgress = progress
-					h.SendRaw(map[string]interface{}{
-						"action":           "software_install_progress",
-						"installation_id":  installationID,
-						"status":           "downloading",
-						"progress_percent": progress,
-					})
-				}
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("failed to read response: %w", err)
-		}
 	}
 
 	h.logger.Info("download completed",
 		"installation_id", installationID,
-		"bytes_downloaded", downloaded,
 	)
 
 	return nil
