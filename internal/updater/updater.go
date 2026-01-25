@@ -1219,7 +1219,7 @@ func (u *Updater) logError(message, details string) {
 	logPath := filepath.Join(u.dataDir, "log", "update.log")
 	os.MkdirAll(filepath.Dir(logPath), 0755)
 
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return
 	}

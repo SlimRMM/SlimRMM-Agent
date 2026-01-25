@@ -98,8 +98,8 @@ while ($true) {
 	slimrmmDir := filepath.Join(programFiles, "SlimRMM")
 	watchdogPath := filepath.Join(slimrmmDir, "watchdog.ps1")
 
-	// Write watchdog script
-	if err := os.WriteFile(watchdogPath, []byte(watchdogScript), 0644); err != nil {
+	// Write watchdog script with restrictive permissions
+	if err := os.WriteFile(watchdogPath, []byte(watchdogScript), 0600); err != nil {
 		return fmt.Errorf("failed to write watchdog script: %w", err)
 	}
 

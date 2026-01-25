@@ -18,7 +18,7 @@ import (
 const (
 	logFilePrefix    = "agent-"
 	logFileSuffix    = ".log"
-	logFileMode      = 0644
+	logFileMode      = 0600
 	logDirMode       = 0755
 	maxLogFiles      = 3
 	uploadedFileName = ".uploaded_logs.json"
