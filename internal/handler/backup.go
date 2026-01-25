@@ -3063,6 +3063,19 @@ func (h *Handler) restoreFilesAndFolders(ctx context.Context, req restoreBackupR
 			}
 			if err := os.Symlink(header.Linkname, targetPath); err != nil {
 				h.logger.Warn("failed to create symlink", "path", targetPath, "error", err)
+				continue
+			}
+			// Post-creation verification: read back symlink and verify target
+			// This mitigates TOCTOU race conditions by detecting tampering
+			actualTarget, err := os.Readlink(targetPath)
+			if err != nil || actualTarget != header.Linkname {
+				h.logger.Warn("symlink verification failed, removing",
+					"path", targetPath,
+					"expected", header.Linkname,
+					"actual", actualTarget,
+				)
+				os.Remove(targetPath)
+				continue
 			}
 		}
 	}
@@ -3252,9 +3265,22 @@ func (h *Handler) restoreFilesAndFoldersWithProgress(ctx context.Context, req re
 			if err := os.Symlink(header.Linkname, targetPath); err != nil {
 				h.logger.Warn("failed to create symlink", "path", targetPath, "error", err)
 				restoreCtx.failedFiles++
-			} else {
-				restoreCtx.restoredFiles++
+				continue
 			}
+			// Post-creation verification: read back symlink and verify target
+			// This mitigates TOCTOU race conditions by detecting tampering
+			actualTarget, err := os.Readlink(targetPath)
+			if err != nil || actualTarget != header.Linkname {
+				h.logger.Warn("symlink verification failed, removing",
+					"path", targetPath,
+					"expected", header.Linkname,
+					"actual", actualTarget,
+				)
+				os.Remove(targetPath)
+				restoreCtx.failedFiles++
+				continue
+			}
+			restoreCtx.restoredFiles++
 		}
 	}
 
