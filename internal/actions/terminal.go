@@ -23,6 +23,7 @@ type Terminal struct {
 	cmd        *exec.Cmd
 	pty        *os.File
 	done       chan struct{}
+	cancel     context.CancelFunc // For graceful goroutine shutdown
 	mu         sync.RWMutex
 	running    bool
 	outputChan chan []byte
@@ -73,22 +74,36 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 		return nil, fmt.Errorf("starting PTY: %w", err)
 	}
 
+	// Create context for goroutine cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Ensure PTY is closed if we fail after this point
+	success := false
+	defer func() {
+		if !success {
+			cancel()
+			ptmx.Close()
+			cmd.Process.Kill()
+		}
+	}()
+
 	term := &Terminal{
 		ID:         id,
 		cmd:        cmd,
 		pty:        ptmx,
 		done:       make(chan struct{}),
+		cancel:     cancel,
 		running:    true,
 		outputChan: make(chan []byte, 4096), // 4096 * 4KB = 16MB buffer for large file outputs
 		rows:       24,
 		cols:       80,
 	}
 
-	// Set initial size
-	term.Resize(24, 80)
+	// Set initial size (ignore error - terminal will still work with default size)
+	_ = term.Resize(24, 80)
 
-	// Start output reader goroutine
-	go term.readOutput()
+	// Start output reader goroutine with context
+	go term.readOutputWithContext(ctx)
 
 	// Wait for process to exit
 	go func() {
@@ -96,19 +111,29 @@ func (m *TerminalManager) StartTerminal(id string) (*Terminal, error) {
 		term.mu.Lock()
 		term.running = false
 		term.mu.Unlock()
+		cancel() // Signal goroutines to stop
 		close(term.done)
 		close(term.outputChan)
 	}()
 
 	m.terminals[id] = term
+	success = true // Prevent cleanup in defer
 	return term, nil
 }
 
 // readOutput reads from PTY and sends to output channel.
+// Deprecated: Use readOutputWithContext instead.
 func (t *Terminal) readOutput() {
+	t.readOutputWithContext(context.Background())
+}
+
+// readOutputWithContext reads from PTY and sends to output channel with context cancellation.
+func (t *Terminal) readOutputWithContext(ctx context.Context) {
 	buf := make([]byte, 4096)
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-t.done:
 			return
 		default:
@@ -129,6 +154,8 @@ func (t *Terminal) readOutput() {
 
 			select {
 			case t.outputChan <- data:
+			case <-ctx.Done():
+				return
 			case <-t.done:
 				return
 			default:
@@ -255,6 +282,10 @@ func (m *TerminalManager) StopTerminal(id string) error {
 
 	term.mu.Lock()
 	if term.running {
+		// Cancel context to signal goroutines to stop
+		if term.cancel != nil {
+			term.cancel()
+		}
 		term.pty.Close()
 		term.cmd.Process.Kill()
 	}
@@ -262,6 +293,25 @@ func (m *TerminalManager) StopTerminal(id string) error {
 
 	delete(m.terminals, id)
 	return nil
+}
+
+// StopAll stops all terminal sessions (for graceful shutdown).
+func (m *TerminalManager) StopAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for id, term := range m.terminals {
+		term.mu.Lock()
+		if term.running {
+			if term.cancel != nil {
+				term.cancel()
+			}
+			term.pty.Close()
+			term.cmd.Process.Kill()
+		}
+		term.mu.Unlock()
+		delete(m.terminals, id)
+	}
 }
 
 // IsRunning checks if a terminal is running.
