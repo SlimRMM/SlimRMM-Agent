@@ -133,6 +133,59 @@ func isValidDatabaseName(name string) bool {
 	return true
 }
 
+// isValidSocketPath validates a Unix socket path to prevent command injection.
+// Allowed: alphanumeric, underscores, hyphens, dots, and forward slashes.
+func isValidSocketPath(path string) bool {
+	if path == "" || len(path) > 256 {
+		return false
+	}
+	// Must start with / for Unix sockets
+	if path[0] != '/' {
+		return false
+	}
+	// Check for path traversal attempts
+	if strings.Contains(path, "..") {
+		return false
+	}
+	for _, r := range path {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == '/') {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidDBHost validates a database host to prevent command injection.
+// Allowed: alphanumeric, hyphens, dots, colons (for IPv6), and square brackets.
+func isValidDBHost(host string) bool {
+	if host == "" || len(host) > 255 {
+		return false
+	}
+	for _, r := range host {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '.' || r == ':' || r == '[' || r == ']') {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidDBUsername validates a database username to prevent command injection.
+// Allowed: alphanumeric, underscores, hyphens, and dots.
+func isValidDBUsername(username string) bool {
+	if username == "" || len(username) > 64 {
+		return false
+	}
+	for _, r := range username {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
 type createBackupRequest struct {
 	BackupID         string           `json:"backup_id"`
 	BackupType       string           `json:"backup_type"` // config, logs, system_state, software_inventory, compliance_results, docker_*, proxmox_*, hyperv_*, files_and_folders
@@ -3352,9 +3405,18 @@ func (h *Handler) collectPostgreSQLBackup(ctx context.Context, req createBackupR
 
 	params := req.PostgreSQL
 
-	// Validate database name if provided to prevent command injection
+	// Validate all input parameters to prevent command injection
 	if params.DatabaseName != "" && !isValidDatabaseName(params.DatabaseName) {
 		return nil, fmt.Errorf("invalid database name: contains disallowed characters")
+	}
+	if params.SocketPath != "" && !isValidSocketPath(params.SocketPath) {
+		return nil, fmt.Errorf("invalid socket path: contains disallowed characters or path traversal")
+	}
+	if params.Host != "" && !isValidDBHost(params.Host) {
+		return nil, fmt.Errorf("invalid host: contains disallowed characters")
+	}
+	if params.Username != "" && !isValidDBUsername(params.Username) {
+		return nil, fmt.Errorf("invalid username: contains disallowed characters")
 	}
 
 	// Build pg_dump command arguments
@@ -3458,9 +3520,18 @@ func (h *Handler) collectMySQLBackup(ctx context.Context, req createBackupReques
 
 	params := req.MySQL
 
-	// Validate database name if provided to prevent command injection
+	// Validate all input parameters to prevent command injection
 	if params.DatabaseName != "" && !isValidDatabaseName(params.DatabaseName) {
 		return nil, fmt.Errorf("invalid database name: contains disallowed characters")
+	}
+	if params.SocketPath != "" && !isValidSocketPath(params.SocketPath) {
+		return nil, fmt.Errorf("invalid socket path: contains disallowed characters or path traversal")
+	}
+	if params.Host != "" && !isValidDBHost(params.Host) {
+		return nil, fmt.Errorf("invalid host: contains disallowed characters")
+	}
+	if params.Username != "" && !isValidDBUsername(params.Username) {
+		return nil, fmt.Errorf("invalid username: contains disallowed characters")
 	}
 
 	// Build mysqldump command arguments
