@@ -91,16 +91,17 @@ type Response struct {
 
 // HeartbeatMessage is the format expected by the backend (Python-compatible).
 type HeartbeatMessage struct {
-	Action       string            `json:"action"`
-	Type         string            `json:"type,omitempty"`
-	AgentVersion string            `json:"agent_version"`
-	Stats        HeartbeatStats    `json:"stats"`
-	ExternalIP   string            `json:"external_ip,omitempty"`
-	SerialNumber string            `json:"serial_number,omitempty"`
-	Proxmox      *HeartbeatProxmox `json:"proxmox,omitempty"`
-	HyperV       *HeartbeatHyperV  `json:"hyperv,omitempty"`
-	Docker       *DockerInfo       `json:"docker,omitempty"`
-	Winget       *HeartbeatWinget  `json:"winget,omitempty"`
+	Action             string                     `json:"action"`
+	Type               string                     `json:"type,omitempty"`
+	AgentVersion       string                     `json:"agent_version"`
+	Stats              HeartbeatStats             `json:"stats"`
+	ExternalIP         string                     `json:"external_ip,omitempty"`
+	SerialNumber       string                     `json:"serial_number,omitempty"`
+	Proxmox            *HeartbeatProxmox          `json:"proxmox,omitempty"`
+	HyperV             *HeartbeatHyperV           `json:"hyperv,omitempty"`
+	Docker             *DockerInfo                `json:"docker,omitempty"`
+	Winget             *HeartbeatWinget           `json:"winget,omitempty"`
+	BackupCapabilities *backup.BackupCapabilities `json:"backup_capabilities,omitempty"`
 }
 
 // HeartbeatWinget contains Windows Package Manager (winget) information.
@@ -251,10 +252,13 @@ type Handler struct {
 	processService *process.DefaultProcessService
 
 	// Backup services for backup orchestration
-	backupOrchestrator  *backup.Orchestrator
-	restoreOrchestrator *backup.RestoreOrchestrator
-	collectorRegistry   *backup.CollectorRegistry
-	restorerRegistry    *backup.RestorerRegistry
+	backupOrchestrator   *backup.Orchestrator
+	restoreOrchestrator  *backup.RestoreOrchestrator
+	collectorRegistry    *backup.CollectorRegistry
+	restorerRegistry     *backup.RestorerRegistry
+	capabilityDetector   *backup.CapabilityDetector
+	lastBackupCapsHash   string
+	cachedBackupCaps     *backup.BackupCapabilities
 
 	// Winget upgrade service for package upgrades
 	wingetUpgradeService *wingetservice.UpgradeService
@@ -365,6 +369,9 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		Logger: logger,
 	})
 
+	// Initialize backup capability detector
+	capabilityDetector := backup.NewCapabilityDetector(collectorRegistry)
+
 	// Initialize winget upgrade service
 	wingetUpgradeService := wingetservice.NewUpgradeService(logger)
 
@@ -395,6 +402,7 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		restoreOrchestrator:  restoreOrchestrator,
 		collectorRegistry:    collectorRegistry,
 		restorerRegistry:     restorerRegistry,
+		capabilityDetector:   capabilityDetector,
 		wingetUpgradeService: wingetUpgradeService,
 	}
 
@@ -1062,6 +1070,7 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 	h.addHyperVInfo(ctx, &heartbeat)
 	h.addDockerInfo(ctx, &heartbeat)
 	h.addWingetInfo(ctx, &heartbeat)
+	h.addBackupCapabilities(ctx, &heartbeat)
 
 	// Send heartbeat
 	h.SendRaw(heartbeat)

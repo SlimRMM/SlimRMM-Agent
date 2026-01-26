@@ -137,6 +137,42 @@ func (h *Handler) addDockerInfo(ctx context.Context, heartbeat *HeartbeatMessage
 	}
 }
 
+// addBackupCapabilities adds backup capabilities to heartbeat if changed.
+func (h *Handler) addBackupCapabilities(ctx context.Context, heartbeat *HeartbeatMessage) {
+	if h.capabilityDetector == nil {
+		return
+	}
+
+	// Detect capabilities (cached if already detected)
+	h.mu.RLock()
+	cachedCaps := h.cachedBackupCaps
+	h.mu.RUnlock()
+
+	// Refresh capabilities periodically or if not cached
+	if cachedCaps == nil {
+		caps := h.capabilityDetector.DetectCapabilities(ctx)
+
+		h.mu.Lock()
+		h.cachedBackupCaps = caps
+		h.mu.Unlock()
+
+		cachedCaps = caps
+	}
+
+	// Check if capabilities have changed
+	currentHash := hashStruct(cachedCaps)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if currentHash != h.lastBackupCapsHash {
+		heartbeat.BackupCapabilities = cachedCaps
+		h.lastBackupCapsHash = currentHash
+		h.logger.Debug("backup capabilities changed, including in heartbeat",
+			"available_types", len(cachedCaps.AvailableTypes),
+		)
+	}
+}
+
 // addWingetInfo adds Winget info to heartbeat on Windows.
 func (h *Handler) addWingetInfo(ctx context.Context, heartbeat *HeartbeatMessage) {
 	if runtime.GOOS != "windows" {
