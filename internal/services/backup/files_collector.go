@@ -6,9 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -124,45 +122,12 @@ func (c *FilesAndFoldersCollector) CollectIncremental(ctx context.Context, confi
 		}
 	}
 
-	// Build backup data
-	backupData := map[string]interface{}{
-		"backup_type":   "files_and_folders",
-		"strategy":      string(config.Strategy),
-		"paths":         config.Paths,
-		"total_files":   totalFiles,
-		"total_size":    totalSize,
-		"archive_size":  buf.Len(),
-		"archive_data":  base64.StdEncoding.EncodeToString(buf.Bytes()),
-		"timestamp":     time.Now().UTC().Format(time.RFC3339),
-		"agent_uuid":    config.AgentUUID,
+	// Log any errors that occurred during collection
+	if len(errors) > 0 && c.logger != nil {
+		c.logger.Warn("backup completed with errors", "error_count", len(errors), "errors", errors)
 	}
 
-	if isIncremental {
-		backupData["delta_info"] = map[string]interface{}{
-			"new_files":       deltaInfo.NewFiles,
-			"modified_files":  deltaInfo.ModifiedFiles,
-			"deleted_files":   deltaInfo.DeletedFiles,
-			"unchanged_files": deltaInfo.UnchangedFiles,
-			"delta_size":      deltaInfo.DeltaSize,
-		}
-		if config.BaseBackupID != "" {
-			backupData["base_backup_id"] = config.BaseBackupID
-		}
-		if config.ParentBackupID != "" {
-			backupData["parent_backup_id"] = config.ParentBackupID
-		}
-	}
-
-	if len(errors) > 0 {
-		backupData["errors"] = errors
-	}
-
-	data, err := json.Marshal(backupData)
-	if err != nil {
-		return nil, err
-	}
-
-	// Build manifest
+	// Build manifest with all metadata (previously stored in JSON wrapper)
 	manifest := &FileManifest{
 		BackupID:       config.AgentUUID,
 		BackupType:     TypeFilesAndFolders,
@@ -176,7 +141,7 @@ func (c *FilesAndFoldersCollector) CollectIncremental(ctx context.Context, confi
 	}
 
 	return &CollectorResult{
-		Data:      data,
+		Data:      buf.Bytes(), // Return raw tar.gz data directly, not JSON-wrapped
 		Manifest:  manifest,
 		DeltaInfo: deltaInfo,
 	}, nil

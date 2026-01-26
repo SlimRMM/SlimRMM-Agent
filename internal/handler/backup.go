@@ -2922,17 +2922,11 @@ func (h *Handler) handleBackupPaths(ctx context.Context, data json.RawMessage) (
 }
 
 // collectFilesAndFoldersBackup creates a backup of specified files and folders.
+// Returns raw tar.gz archive data (not JSON-wrapped).
 func (h *Handler) collectFilesAndFoldersBackup(ctx context.Context, req createBackupRequest) ([]byte, error) {
 	if len(req.IncludePaths) == 0 {
 		return nil, fmt.Errorf("include_paths is required for files_and_folders backup")
 	}
-
-	backupData := make(map[string]interface{})
-	backupData["backup_type"] = "files_and_folders"
-	backupData["timestamp"] = time.Now().UTC().Format(time.RFC3339)
-	backupData["agent_uuid"] = h.cfg.GetUUID()
-	backupData["include_paths"] = req.IncludePaths
-	backupData["exclude_patterns"] = req.ExcludePatterns
 
 	// Create tar.gz archive of the paths
 	var buf bytes.Buffer
@@ -2941,7 +2935,6 @@ func (h *Handler) collectFilesAndFoldersBackup(ctx context.Context, req createBa
 
 	var totalFiles int
 	var totalSize int64
-	fileList := make([]map[string]interface{}, 0)
 
 	for _, path := range req.IncludePaths {
 		info, err := os.Stat(path)
@@ -2972,13 +2965,6 @@ func (h *Handler) collectFilesAndFoldersBackup(ctx context.Context, req createBa
 					return nil
 				}
 
-				relPath, _ := filepath.Rel(path, filePath)
-				fileList = append(fileList, map[string]interface{}{
-					"path":     relPath,
-					"size":     fi.Size(),
-					"modified": fi.ModTime().Format(time.RFC3339),
-				})
-
 				totalFiles++
 				totalSize += fi.Size()
 				return nil
@@ -2991,11 +2977,6 @@ func (h *Handler) collectFilesAndFoldersBackup(ctx context.Context, req createBa
 				if err := addFileToTar(tarWriter, path, filepath.Dir(path)); err != nil {
 					h.logger.Warn("failed to add file to archive", "file", path, "error", err)
 				} else {
-					fileList = append(fileList, map[string]interface{}{
-						"path":     filepath.Base(path),
-						"size":     info.Size(),
-						"modified": info.ModTime().Format(time.RFC3339),
-					})
 					totalFiles++
 					totalSize += info.Size()
 				}
@@ -3011,13 +2992,15 @@ func (h *Handler) collectFilesAndFoldersBackup(ctx context.Context, req createBa
 		return nil, fmt.Errorf("failed to close gzip writer: %w", err)
 	}
 
-	backupData["archive_data"] = base64.StdEncoding.EncodeToString(buf.Bytes())
-	backupData["archive_size"] = buf.Len()
-	backupData["total_files"] = totalFiles
-	backupData["total_size"] = totalSize
-	backupData["files"] = fileList
+	h.logger.Info("files_and_folders backup collected",
+		"total_files", totalFiles,
+		"total_size", totalSize,
+		"archive_size", buf.Len(),
+		"paths", req.IncludePaths,
+	)
 
-	return json.Marshal(backupData)
+	// Return raw tar.gz data - metadata is in the separate manifest file
+	return buf.Bytes(), nil
 }
 
 // shouldExclude checks if a path should be excluded based on patterns.
