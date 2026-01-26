@@ -52,6 +52,15 @@ func (c *FilesAndFoldersCollector) CollectIncremental(ctx context.Context, confi
 		}
 	}
 
+	// Log paths being collected
+	if c.logger != nil {
+		c.logger.Info("files_and_folders collector starting",
+			"paths", config.Paths,
+			"strategy", config.Strategy,
+			"exclude_patterns", config.ExcludePatterns,
+		)
+	}
+
 	// Build a lookup map from previous manifest for change detection
 	previousFiles := make(map[string]FileManifestEntry)
 	if config.PreviousManifest != nil {
@@ -110,6 +119,16 @@ func (c *FilesAndFoldersCollector) CollectIncremental(ctx context.Context, confi
 			Reason: "failed to close tar writer",
 			Err:    err,
 		}
+	}
+
+	// Log collection summary
+	if c.logger != nil {
+		c.logger.Info("files_and_folders collection complete",
+			"total_files", totalFiles,
+			"total_size", totalSize,
+			"archive_size", buf.Len(),
+			"manifest_entries", len(manifestEntries),
+		)
 	}
 
 	// Log any errors that occurred during collection
