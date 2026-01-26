@@ -3,7 +3,6 @@ package backup
 import (
 	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -65,10 +64,9 @@ func (c *FilesAndFoldersCollector) CollectIncremental(ctx context.Context, confi
 	isIncremental := config.Strategy == StrategyIncremental || config.Strategy == StrategyDifferential
 	computeHashes := config.ComputeHashes || isIncremental
 
-	// Create tar.gz archive
+	// Create tar archive (orchestrator handles compression)
 	var buf bytes.Buffer
-	gzWriter := gzip.NewWriter(&buf)
-	tarWriter := tar.NewWriter(gzWriter)
+	tarWriter := tar.NewWriter(&buf)
 
 	// Track files and changes
 	var manifestEntries []FileManifestEntry
@@ -114,14 +112,6 @@ func (c *FilesAndFoldersCollector) CollectIncremental(ctx context.Context, confi
 		}
 	}
 
-	if err := gzWriter.Close(); err != nil {
-		return nil, &ErrCollectionFailed{
-			Type:   TypeFilesAndFolders,
-			Reason: "failed to close gzip writer",
-			Err:    err,
-		}
-	}
-
 	// Log any errors that occurred during collection
 	if len(errors) > 0 && c.logger != nil {
 		c.logger.Warn("backup completed with errors", "error_count", len(errors), "errors", errors)
@@ -141,7 +131,7 @@ func (c *FilesAndFoldersCollector) CollectIncremental(ctx context.Context, confi
 	}
 
 	return &CollectorResult{
-		Data:      buf.Bytes(), // Return raw tar.gz data directly, not JSON-wrapped
+		Data:      buf.Bytes(), // Return raw tar data (orchestrator handles compression)
 		Manifest:  manifest,
 		DeltaInfo: deltaInfo,
 	}, nil
