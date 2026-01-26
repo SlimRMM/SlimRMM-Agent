@@ -23,14 +23,34 @@ type filesBackupMetadata struct {
 	ArchiveData []byte
 }
 
-// parseFilesBackupData parses the backup JSON and extracts metadata and archive data.
+// parseFilesBackupData parses the backup data and extracts metadata and archive data.
+// It supports two formats:
+// 1. Raw tar archive data (current format from collectFilesAndFoldersBackup)
+// 2. JSON-wrapped format with base64-encoded archive (legacy format)
 func parseFilesBackupData(data []byte) (*filesBackupMetadata, error) {
-	var backupData map[string]interface{}
-	if err := json.Unmarshal(data, &backupData); err != nil {
-		return nil, fmt.Errorf("failed to parse backup data: %w", err)
+	meta := &filesBackupMetadata{}
+
+	// First, try to detect if this is raw tar data by checking for tar header magic
+	// Tar archives start with a file entry, and the magic is at offset 257
+	if len(data) > 262 && (string(data[257:262]) == "ustar" || data[0] != '{') {
+		// This is raw tar data - count files and size by scanning the archive
+		totalFiles, totalSize := countTarContents(data)
+		meta.TotalFiles = totalFiles
+		meta.TotalSize = totalSize
+		meta.ArchiveData = data
+		return meta, nil
 	}
 
-	meta := &filesBackupMetadata{}
+	// Try parsing as JSON (legacy format)
+	var backupData map[string]interface{}
+	if err := json.Unmarshal(data, &backupData); err != nil {
+		// Not JSON either - assume it's raw tar data
+		totalFiles, totalSize := countTarContents(data)
+		meta.TotalFiles = totalFiles
+		meta.TotalSize = totalSize
+		meta.ArchiveData = data
+		return meta, nil
+	}
 
 	// Extract file count for progress calculation
 	if totalFiles, ok := backupData["total_files"].(float64); ok {
@@ -53,6 +73,29 @@ func parseFilesBackupData(data []byte) (*filesBackupMetadata, error) {
 	}
 
 	return meta, nil
+}
+
+// countTarContents scans a tar archive and returns file count and total size.
+func countTarContents(data []byte) (int, int64) {
+	reader := tar.NewReader(bytes.NewReader(data))
+	var totalFiles int
+	var totalSize int64
+
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+		if header.Typeflag == tar.TypeReg {
+			totalFiles++
+			totalSize += header.Size
+		}
+	}
+
+	return totalFiles, totalSize
 }
 
 // prepareRestoreTarget determines and creates the target directory for restore.
