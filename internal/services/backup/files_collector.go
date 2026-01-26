@@ -177,8 +177,10 @@ func (c *FilesAndFoldersCollector) addToTar(
 			return nil // Skip files we can't access
 		}
 
-		// Skip hidden files if not included
-		if !config.IncludeHidden && strings.HasPrefix(info.Name(), ".") {
+		// Skip hidden files if not included, but ALWAYS include the root path
+		// This allows backing up hidden directories like .ssh when explicitly specified
+		isRootPath := filePath == path
+		if !config.IncludeHidden && !isRootPath && strings.HasPrefix(info.Name(), ".") {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
@@ -273,8 +275,10 @@ func (c *FilesAndFoldersCollector) addToTarIncremental(
 			return nil // Skip files we can't access
 		}
 
-		// Skip hidden files if not included
-		if !config.IncludeHidden && strings.HasPrefix(info.Name(), ".") {
+		// Skip hidden files if not included, but ALWAYS include the root path
+		// This allows backing up hidden directories like .ssh when explicitly specified
+		isRootPath := filePath == path
+		if !config.IncludeHidden && !isRootPath && strings.HasPrefix(info.Name(), ".") {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
