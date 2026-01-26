@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,6 +24,13 @@ type BackupRequest struct {
 	EncryptKey       string
 	CompressionLevel int
 
+	// Incremental backup fields
+	Strategy            BackupStrategy `json:"strategy,omitempty"`
+	BaseBackupID        string         `json:"base_backup_id,omitempty"`
+	ParentBackupID      string         `json:"parent_backup_id,omitempty"`
+	PreviousManifestURL string         `json:"previous_manifest_url,omitempty"`
+	ManifestUploadURL   string         `json:"manifest_upload_url,omitempty"`
+
 	// Collector-specific config
 	Config CollectorConfig
 }
@@ -38,6 +46,17 @@ type BackupResult struct {
 	Encrypted         bool
 	EncryptionIV      string
 	Error             string
+
+	// Incremental backup fields
+	Strategy          BackupStrategy `json:"strategy,omitempty"`
+	BaseBackupID      string         `json:"base_backup_id,omitempty"`
+	ParentBackupID    string         `json:"parent_backup_id,omitempty"`
+	DeltaSizeBytes    int64          `json:"delta_size_bytes,omitempty"`
+	NewFilesCount     int            `json:"new_files_count,omitempty"`
+	ModifiedFilesCount int           `json:"modified_files_count,omitempty"`
+	DeletedFilesCount int            `json:"deleted_files_count,omitempty"`
+	UnchangedFilesCount int          `json:"unchanged_files_count,omitempty"`
+	ManifestHash      string         `json:"manifest_hash,omitempty"`
 }
 
 // Orchestrator coordinates backup operations.
@@ -94,8 +113,16 @@ func (o *Orchestrator) SetCompressionLevel(level CompressionLevel) {
 // CreateBackup creates a backup using the configured collectors.
 func (o *Orchestrator) CreateBackup(ctx context.Context, req BackupRequest, progress ProgressReporter) (*BackupResult, error) {
 	result := &BackupResult{
-		BackupID: req.BackupID,
-		Status:   "in_progress",
+		BackupID:       req.BackupID,
+		Status:         "in_progress",
+		Strategy:       req.Strategy,
+		BaseBackupID:   req.BaseBackupID,
+		ParentBackupID: req.ParentBackupID,
+	}
+
+	// Default strategy to full if not specified
+	if req.Strategy == "" {
+		req.Strategy = StrategyFull
 	}
 
 	// Report start
@@ -107,16 +134,76 @@ func (o *Orchestrator) CreateBackup(ctx context.Context, req BackupRequest, prog
 	o.logger.Info("collecting backup data",
 		"backup_id", req.BackupID,
 		"backup_type", req.BackupType,
+		"strategy", req.Strategy,
 	)
 
-	data, err := o.registry.Collect(ctx, req.Config)
-	if err != nil {
-		result.Status = "failed"
-		result.Error = fmt.Sprintf("collection failed: %v", err)
-		if progress != nil {
-			progress.ReportError(err)
+	// Prepare config with incremental settings
+	config := req.Config
+	config.Strategy = req.Strategy
+	config.BaseBackupID = req.BaseBackupID
+	config.ParentBackupID = req.ParentBackupID
+	config.PreviousManifestURL = req.PreviousManifestURL
+
+	var data []byte
+	var manifest *FileManifest
+	var deltaInfo *DeltaInfo
+
+	// Use incremental collection if supported and requested
+	isIncremental := req.Strategy == StrategyIncremental || req.Strategy == StrategyDifferential
+	if isIncremental && o.registry.SupportsIncremental(req.BackupType) {
+		// Download previous manifest if URL provided
+		if req.PreviousManifestURL != "" {
+			if progress != nil {
+				progress.ReportProgress("fetching_manifest", 5, "Fetching previous backup manifest", "info")
+			}
+
+			previousManifest, err := o.downloadManifest(ctx, req.PreviousManifestURL)
+			if err != nil {
+				o.logger.Warn("failed to download previous manifest, falling back to full backup",
+					"error", err,
+				)
+				config.Strategy = StrategyFull
+				result.Strategy = StrategyFull
+			} else {
+				config.PreviousManifest = previousManifest
+			}
 		}
-		return result, err
+
+		// Collect with incremental support
+		collectorResult, err := o.registry.CollectIncremental(ctx, config)
+		if err != nil {
+			result.Status = "failed"
+			result.Error = fmt.Sprintf("collection failed: %v", err)
+			if progress != nil {
+				progress.ReportError(err)
+			}
+			return result, err
+		}
+
+		data = collectorResult.Data
+		manifest = collectorResult.Manifest
+		deltaInfo = collectorResult.DeltaInfo
+
+		// Populate delta metrics
+		if deltaInfo != nil {
+			result.NewFilesCount = deltaInfo.NewFiles
+			result.ModifiedFilesCount = deltaInfo.ModifiedFiles
+			result.DeletedFilesCount = deltaInfo.DeletedFiles
+			result.UnchangedFilesCount = deltaInfo.UnchangedFiles
+			result.DeltaSizeBytes = deltaInfo.DeltaSize
+		}
+	} else {
+		// Regular collection
+		var err error
+		data, err = o.registry.Collect(ctx, config)
+		if err != nil {
+			result.Status = "failed"
+			result.Error = fmt.Sprintf("collection failed: %v", err)
+			if progress != nil {
+				progress.ReportError(err)
+			}
+			return result, err
+		}
 	}
 
 	result.SizeBytes = int64(len(data))
@@ -182,6 +269,26 @@ func (o *Orchestrator) CreateBackup(ctx context.Context, req BackupRequest, prog
 		}
 	}
 
+	// Upload manifest if URL provided and manifest exists
+	if req.ManifestUploadURL != "" && manifest != nil {
+		if progress != nil {
+			progress.ReportProgress("uploading_manifest", 90, "Uploading backup manifest", "info")
+		}
+
+		manifestData, err := json.Marshal(manifest)
+		if err != nil {
+			o.logger.Error("failed to marshal manifest", "error", err)
+		} else {
+			if err := o.uploadData(ctx, req.ManifestUploadURL, manifestData); err != nil {
+				o.logger.Warn("failed to upload manifest", "error", err)
+			} else {
+				// Calculate manifest hash
+				manifestHash := sha256.Sum256(manifestData)
+				result.ManifestHash = hex.EncodeToString(manifestHash[:])
+			}
+		}
+	}
+
 	result.Status = "completed"
 
 	if progress != nil {
@@ -191,12 +298,53 @@ func (o *Orchestrator) CreateBackup(ctx context.Context, req BackupRequest, prog
 
 	o.logger.Info("backup completed",
 		"backup_id", req.BackupID,
+		"strategy", result.Strategy,
 		"size_bytes", result.SizeBytes,
 		"compressed_bytes", result.CompressedBytes,
+		"delta_size_bytes", result.DeltaSizeBytes,
+		"new_files", result.NewFilesCount,
+		"modified_files", result.ModifiedFilesCount,
+		"deleted_files", result.DeletedFilesCount,
 		"encrypted", result.Encrypted,
 	)
 
 	return result, nil
+}
+
+// downloadManifest downloads and parses a manifest from the given URL.
+func (o *Orchestrator) downloadManifest(ctx context.Context, url string) (*FileManifest, error) {
+	data, err := o.downloadData(ctx, url)
+	if err != nil {
+		return nil, fmt.Errorf("downloading manifest: %w", err)
+	}
+
+	var manifest FileManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, fmt.Errorf("parsing manifest: %w", err)
+	}
+
+	return &manifest, nil
+}
+
+// downloadData downloads data from the specified URL (for manifest download).
+func (o *Orchestrator) downloadData(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	resp, err := o.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("downloading: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return io.ReadAll(resp.Body)
 }
 
 // uploadData uploads data to the specified URL.
@@ -232,8 +380,22 @@ type RestoreRequest struct {
 	EncryptKey  string
 	EncryptIV   string
 
+	// Incremental restore fields
+	Strategy        BackupStrategy           `json:"strategy,omitempty"`
+	RestoreChain    []RestoreChainEntry      `json:"restore_chain,omitempty"`
+
 	// Restore-specific config
 	Config RestoreConfig
+}
+
+// RestoreChainEntry represents a backup in the restore chain.
+type RestoreChainEntry struct {
+	BackupID    string `json:"backup_id"`
+	DownloadURL string `json:"download_url"`
+	Encrypted   bool   `json:"encrypted"`
+	EncryptKey  string `json:"encrypt_key,omitempty"`
+	EncryptIV   string `json:"encrypt_iv,omitempty"`
+	Strategy    BackupStrategy `json:"strategy"`
 }
 
 // RestoreConfig contains configuration for restore operations.
@@ -243,6 +405,10 @@ type RestoreConfig struct {
 	RestoreTarget     string
 	OverwriteFiles    bool
 	PreserveStructure bool
+
+	// Incremental restore options
+	ApplyDeltas       bool     // Apply incremental deltas in sequence
+	SkipDeletedFiles  bool     // Don't delete files marked as deleted
 
 	// Docker restore
 	ContainerName  string
@@ -267,6 +433,11 @@ type RestoreResult struct {
 	TotalSize     int64
 	RestoredSize  int64
 	Error         string
+
+	// Incremental restore metrics
+	ChainLength       int   `json:"chain_length,omitempty"`
+	DeltasApplied     int   `json:"deltas_applied,omitempty"`
+	DeletedFilesCount int   `json:"deleted_files_count,omitempty"`
 }
 
 // Restorer defines the interface for backup restorers.
@@ -338,6 +509,11 @@ func (o *RestoreOrchestrator) RestoreBackup(ctx context.Context, req RestoreRequ
 	result := &RestoreResult{
 		BackupID: req.BackupID,
 		Status:   "in_progress",
+	}
+
+	// Check if we have a restore chain (incremental restore)
+	if len(req.RestoreChain) > 0 {
+		return o.restoreChain(ctx, req, progress)
 	}
 
 	// Report start
@@ -431,6 +607,148 @@ func (o *RestoreOrchestrator) RestoreBackup(ctx context.Context, req RestoreRequ
 		"restored_files", result.RestoredFiles,
 		"skipped_files", result.SkippedFiles,
 		"failed_files", result.FailedFiles,
+	)
+
+	return result, nil
+}
+
+// restoreChain handles incremental restore by applying backups in chain order.
+func (o *RestoreOrchestrator) restoreChain(ctx context.Context, req RestoreRequest, progress ProgressReporter) (*RestoreResult, error) {
+	result := &RestoreResult{
+		BackupID:    req.BackupID,
+		Status:      "in_progress",
+		ChainLength: len(req.RestoreChain),
+	}
+
+	o.logger.Info("starting chain restore",
+		"backup_id", req.BackupID,
+		"chain_length", len(req.RestoreChain),
+	)
+
+	// Get restorer
+	restorer, ok := o.registry.Get(req.BackupType)
+	if !ok {
+		result.Status = "failed"
+		result.Error = fmt.Sprintf("no restorer for backup type: %s", req.BackupType)
+		return result, fmt.Errorf("no restorer for backup type: %s", req.BackupType)
+	}
+
+	// Apply each backup in the chain
+	for i, entry := range req.RestoreChain {
+		select {
+		case <-ctx.Done():
+			result.Status = "cancelled"
+			result.Error = "context cancelled"
+			return result, ctx.Err()
+		default:
+		}
+
+		progressPct := int(float64(i) / float64(len(req.RestoreChain)) * 80)
+		if progress != nil {
+			progress.ReportProgress("restoring_chain",
+				progressPct,
+				fmt.Sprintf("Restoring backup %d of %d (%s)", i+1, len(req.RestoreChain), entry.Strategy),
+				"info",
+			)
+		}
+
+		o.logger.Info("applying backup from chain",
+			"chain_index", i,
+			"backup_id", entry.BackupID,
+			"strategy", entry.Strategy,
+		)
+
+		// Download this backup
+		data, err := o.downloadData(ctx, entry.DownloadURL)
+		if err != nil {
+			result.Status = "failed"
+			result.Error = fmt.Sprintf("download failed for chain entry %d: %v", i, err)
+			if progress != nil {
+				progress.ReportError(err)
+			}
+			return result, err
+		}
+
+		// Decrypt if needed
+		if entry.Encrypted && entry.EncryptKey != "" {
+			data, err = o.encryptor.DecryptWithIV(data, entry.EncryptKey, entry.EncryptIV)
+			if err != nil {
+				result.Status = "failed"
+				result.Error = fmt.Sprintf("decryption failed for chain entry %d: %v", i, err)
+				if progress != nil {
+					progress.ReportError(err)
+				}
+				return result, err
+			}
+		}
+
+		// Decompress
+		data, err = o.compressor.Decompress(data)
+		if err != nil {
+			result.Status = "failed"
+			result.Error = fmt.Sprintf("decompression failed for chain entry %d: %v", i, err)
+			if progress != nil {
+				progress.ReportError(err)
+			}
+			return result, err
+		}
+
+		// Configure for incremental apply
+		config := req.Config
+		if i > 0 {
+			// For subsequent entries, we're applying deltas
+			config.ApplyDeltas = true
+		}
+
+		// Restore/apply this backup
+		chainResult, err := restorer.Restore(ctx, data, config)
+		if err != nil {
+			result.Status = "failed"
+			result.Error = fmt.Sprintf("restore failed for chain entry %d: %v", i, err)
+			if progress != nil {
+				progress.ReportError(err)
+			}
+			return result, err
+		}
+
+		// Accumulate results
+		if i == 0 {
+			// Base backup sets the initial counts
+			result.TotalFiles = chainResult.TotalFiles
+			result.RestoredFiles = chainResult.RestoredFiles
+			result.SkippedFiles = chainResult.SkippedFiles
+			result.FailedFiles = chainResult.FailedFiles
+			result.TotalSize = chainResult.TotalSize
+			result.RestoredSize = chainResult.RestoredSize
+		} else {
+			// Incremental backups add to the counts
+			result.DeltasApplied++
+			result.RestoredFiles += chainResult.RestoredFiles
+			result.SkippedFiles += chainResult.SkippedFiles
+			result.FailedFiles += chainResult.FailedFiles
+			result.RestoredSize += chainResult.RestoredSize
+			result.DeletedFilesCount += chainResult.DeletedFilesCount
+		}
+
+		o.logger.Info("applied backup from chain",
+			"chain_index", i,
+			"backup_id", entry.BackupID,
+			"restored_files", chainResult.RestoredFiles,
+		)
+	}
+
+	result.Status = "completed"
+
+	if progress != nil {
+		progress.ReportProgress("completed", 100, "Chain restore completed successfully", "info")
+		progress.ReportCompletion(result)
+	}
+
+	o.logger.Info("chain restore completed",
+		"backup_id", req.BackupID,
+		"chain_length", result.ChainLength,
+		"deltas_applied", result.DeltasApplied,
+		"total_restored_files", result.RestoredFiles,
 	)
 
 	return result, nil

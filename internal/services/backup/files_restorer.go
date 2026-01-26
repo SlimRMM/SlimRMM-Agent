@@ -38,11 +38,37 @@ func (r *FilesAndFoldersRestorer) Restore(ctx context.Context, data []byte, conf
 	var backupData struct {
 		ArchiveData string   `json:"archive_data"`
 		Files       []string `json:"files"`
+		Strategy    string   `json:"strategy,omitempty"`
+		DeltaInfo   *struct {
+			NewFiles      int   `json:"new_files"`
+			ModifiedFiles int   `json:"modified_files"`
+			DeletedFiles  int   `json:"deleted_files"`
+		} `json:"delta_info,omitempty"`
+		DeletedPaths []string `json:"deleted_paths,omitempty"`
 	}
 	if err := json.Unmarshal(data, &backupData); err != nil {
 		result.Status = "failed"
 		result.Error = fmt.Sprintf("failed to parse backup data: %v", err)
 		return result, err
+	}
+
+	// Handle deleted files for incremental restore
+	if config.ApplyDeltas && !config.SkipDeletedFiles && len(backupData.DeletedPaths) > 0 {
+		targetPath := config.RestoreTarget
+		if targetPath == "" {
+			targetPath = "."
+		}
+		for _, deletedPath := range backupData.DeletedPaths {
+			fullPath := filepath.Join(targetPath, deletedPath)
+			if isRestorePathSafe(targetPath, fullPath) {
+				if err := os.Remove(fullPath); err == nil {
+					result.DeletedFilesCount++
+					if r.logger != nil {
+						r.logger.Info("Deleted file from incremental restore", "path", deletedPath)
+					}
+				}
+			}
+		}
 	}
 
 	// Decode the archive data

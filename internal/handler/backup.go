@@ -229,6 +229,13 @@ type createBackupRequest struct {
 	EncryptKey       string           `json:"encrypt_key,omitempty"`       // DEK for client-side encryption (base64)
 	CompressionLevel CompressionLevel `json:"compression_level,omitempty"` // Compression level: none, fast, balanced, high, maximum
 
+	// Incremental backup parameters
+	Strategy            string `json:"strategy,omitempty"`              // full, incremental, differential, synthetic_full
+	BaseBackupID        string `json:"base_backup_id,omitempty"`        // Base backup ID for differential/incremental
+	ParentBackupID      string `json:"parent_backup_id,omitempty"`      // Parent backup ID for incremental
+	PreviousManifestURL string `json:"previous_manifest_url,omitempty"` // URL to download previous manifest
+	ManifestUploadURL   string `json:"manifest_upload_url,omitempty"`   // URL to upload current manifest
+
 	// Files and Folders specific parameters
 	IncludePaths    []string `json:"include_paths,omitempty"`    // Paths to include in backup
 	ExcludePatterns []string `json:"exclude_patterns,omitempty"` // Glob patterns to exclude
@@ -296,6 +303,17 @@ type createBackupResponse struct {
 	Encrypted         bool   `json:"encrypted"`
 	EncryptionIV      string `json:"encryption_iv,omitempty"`
 	Error             string `json:"error,omitempty"`
+
+	// Incremental backup metrics
+	Strategy           string `json:"strategy,omitempty"`
+	BaseBackupID       string `json:"base_backup_id,omitempty"`
+	ParentBackupID     string `json:"parent_backup_id,omitempty"`
+	DeltaSizeBytes     int64  `json:"delta_size_bytes,omitempty"`
+	NewFilesCount      int    `json:"new_files_count,omitempty"`
+	ModifiedFilesCount int    `json:"modified_files_count,omitempty"`
+	DeletedFilesCount  int    `json:"deleted_files_count,omitempty"`
+	UnchangedFilesCount int   `json:"unchanged_files_count,omitempty"`
+	ManifestHash       string `json:"manifest_hash,omitempty"`
 }
 
 // createBackupViaOrchestrator creates a backup using the injected backup orchestrator service.
@@ -362,14 +380,32 @@ func (h *Handler) createBackupViaOrchestrator(ctx context.Context, req createBac
 		compressionLevel = backup.CompressionMaximum
 	}
 
+	// Map backup strategy
+	var backupStrategy backup.BackupStrategy
+	switch req.Strategy {
+	case "incremental":
+		backupStrategy = backup.StrategyIncremental
+	case "differential":
+		backupStrategy = backup.StrategyDifferential
+	case "synthetic_full":
+		backupStrategy = backup.StrategySynthetic
+	default:
+		backupStrategy = backup.StrategyFull
+	}
+
 	// Build backup request
 	backupReq := backup.BackupRequest{
-		BackupID:   req.BackupID,
-		BackupType: backupType,
-		UploadURL:  req.UploadURL,
-		Encrypt:    req.Encrypt,
-		EncryptKey: req.EncryptKey,
-		Config:     collectorConfig,
+		BackupID:            req.BackupID,
+		BackupType:          backupType,
+		UploadURL:           req.UploadURL,
+		Encrypt:             req.Encrypt,
+		EncryptKey:          req.EncryptKey,
+		Strategy:            backupStrategy,
+		BaseBackupID:        req.BaseBackupID,
+		ParentBackupID:      req.ParentBackupID,
+		PreviousManifestURL: req.PreviousManifestURL,
+		ManifestUploadURL:   req.ManifestUploadURL,
+		Config:              collectorConfig,
 	}
 
 	// Set compression level
@@ -391,16 +427,35 @@ func (h *Handler) createBackupViaOrchestrator(ctx context.Context, req createBac
 	}
 
 	return &createBackupResponse{
-		BackupID:          result.BackupID,
-		Status:            result.Status,
-		SizeBytes:         result.SizeBytes,
-		CompressedBytes:   result.CompressedBytes,
-		ContentHashSHA256: result.ContentHashSHA256,
-		ContentHashSHA512: result.ContentHashSHA512,
-		Encrypted:         result.Encrypted,
-		EncryptionIV:      result.EncryptionIV,
-		Error:             result.Error,
+		BackupID:            result.BackupID,
+		Status:              result.Status,
+		SizeBytes:           result.SizeBytes,
+		CompressedBytes:     result.CompressedBytes,
+		ContentHashSHA256:   result.ContentHashSHA256,
+		ContentHashSHA512:   result.ContentHashSHA512,
+		Encrypted:           result.Encrypted,
+		EncryptionIV:        result.EncryptionIV,
+		Error:               result.Error,
+		Strategy:            string(result.Strategy),
+		BaseBackupID:        result.BaseBackupID,
+		ParentBackupID:      result.ParentBackupID,
+		DeltaSizeBytes:      result.DeltaSizeBytes,
+		NewFilesCount:       result.NewFilesCount,
+		ModifiedFilesCount:  result.ModifiedFilesCount,
+		DeletedFilesCount:   result.DeletedFilesCount,
+		UnchangedFilesCount: result.UnchangedFilesCount,
+		ManifestHash:        result.ManifestHash,
 	}, nil
+}
+
+// restoreChainEntry represents a backup in the restore chain for incremental restore.
+type restoreChainEntry struct {
+	BackupID    string `json:"backup_id"`
+	DownloadURL string `json:"download_url"`
+	Encrypted   bool   `json:"encrypted"`
+	EncryptKey  string `json:"encrypt_key,omitempty"`
+	EncryptIV   string `json:"encrypt_iv,omitempty"`
+	Strategy    string `json:"strategy"` // full, incremental, differential
 }
 
 type restoreBackupRequest struct {
@@ -412,6 +467,11 @@ type restoreBackupRequest struct {
 	EncryptKey    string `json:"encrypt_key,omitempty"` // DEK for decryption (base64)
 	EncryptIV     string `json:"encryption_iv,omitempty"`
 	ProgressURL   string `json:"progress_url,omitempty"` // URL to report progress to
+
+	// Incremental restore parameters
+	Strategy         string              `json:"strategy,omitempty"`          // full, incremental, differential
+	RestoreChain     []restoreChainEntry `json:"restore_chain,omitempty"`     // Ordered chain of backups to restore
+	SkipDeletedFiles bool                `json:"skip_deleted_files,omitempty"` // Don't delete files marked as deleted
 
 	// Files and Folders specific restore parameters
 	RestorePaths      []string `json:"restore_paths,omitempty"`      // Specific paths to restore (empty = all)
