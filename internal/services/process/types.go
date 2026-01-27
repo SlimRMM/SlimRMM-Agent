@@ -20,7 +20,31 @@ const (
 	SignalTerm Signal = "TERM"
 	SignalKill Signal = "KILL"
 	SignalInt  Signal = "INT"
+	SignalHup  Signal = "HUP"
+	SignalQuit Signal = "QUIT"
+	SignalUsr1 Signal = "USR1"
+	SignalUsr2 Signal = "USR2"
+	SignalStop Signal = "STOP"
+	SignalCont Signal = "CONT"
 )
+
+// validSignals is the set of signals that can be safely sent to processes.
+var validSignals = map[Signal]bool{
+	SignalTerm: true,
+	SignalKill: true,
+	SignalInt:  true,
+	SignalHup:  true,
+	SignalQuit: true,
+	SignalUsr1: true,
+	SignalUsr2: true,
+	SignalStop: true,
+	SignalCont: true,
+}
+
+// IsValid checks if the signal is a known valid signal.
+func (s Signal) IsValid() bool {
+	return validSignals[s]
+}
 
 // ProcessService defines operations for process management.
 type ProcessService interface {

@@ -172,6 +172,11 @@ func (s *DefaultProcessService) IsProcessRunning(ctx context.Context, pid int) b
 func (s *DefaultProcessService) SendSignal(ctx context.Context, pid int, signal Signal) error {
 	s.logger.Debug("sending signal to process", "pid", pid, "signal", signal)
 
+	// Validate signal to prevent command injection
+	if !signal.IsValid() {
+		return fmt.Errorf("invalid signal: %s", signal)
+	}
+
 	var cmd *exec.Cmd
 
 	if runtime.GOOS == "windows" {

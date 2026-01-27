@@ -14,10 +14,60 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// validSignals contains the set of valid Unix signals that can be sent to processes.
+// Only uppercase signal names without the "SIG" prefix are allowed.
+var validSignals = map[string]bool{
+	"TERM": true,
+	"KILL": true,
+	"INT":  true,
+	"HUP":  true,
+	"QUIT": true,
+	"USR1": true,
+	"USR2": true,
+	"STOP": true,
+	"CONT": true,
+	"TSTP": true,
+}
+
+// bundleIDRegex validates macOS bundle identifiers.
+// Bundle IDs follow reverse-DNS notation: com.example.app
+var bundleIDRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9._-]*$`)
+
+// isValidSignal checks if a signal name is safe to use.
+func isValidSignal(signal string) bool {
+	return validSignals[strings.ToUpper(signal)]
+}
+
+// isValidBundleID validates a macOS bundle identifier to prevent injection.
+func isValidBundleID(bundleID string) bool {
+	if bundleID == "" || len(bundleID) > 255 {
+		return false
+	}
+	return bundleIDRegex.MatchString(bundleID)
+}
+
+// safeNameRegex validates app names, login item names, etc.
+// Allows alphanumeric, spaces, dots, hyphens, and underscores.
+// Explicitly disallows quotes and other shell/AppleScript metacharacters.
+var safeNameRegex = regexp.MustCompile(`^[a-zA-Z0-9 ._-]+$`)
+
+// isValidAppName validates an application name to prevent injection.
+func isValidAppName(name string) bool {
+	if name == "" || len(name) > 255 {
+		return false
+	}
+	// Disallow quotes, backslashes, and other dangerous characters
+	if strings.ContainsAny(name, `"'\;$(){}[]<>|&!~` + "`") {
+		return false
+	}
+	return safeNameRegex.MatchString(name)
+}
 
 // ZapStanza represents the parsed zap stanza from a Homebrew cask.
 type ZapStanza struct {
@@ -277,7 +327,15 @@ func quitApp(ctx context.Context, bundleID string) ZapOperation {
 		Timestamp: start,
 	}
 
-	// Use osascript to quit the app
+	// Validate bundle ID to prevent AppleScript injection
+	if !isValidBundleID(bundleID) {
+		op.DurationMs = time.Since(start).Milliseconds()
+		op.Error = fmt.Sprintf("invalid bundle ID: %s", bundleID)
+		op.Success = false
+		return op
+	}
+
+	// Use osascript to quit the app (now safe after validation)
 	script := fmt.Sprintf(`quit app id "%s"`, bundleID)
 	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	op.Command = "osascript"
@@ -324,7 +382,26 @@ func sendSignal(ctx context.Context, sig interface{}) ZapOperation {
 
 	op.Target = fmt.Sprintf("%s -> %s", signal, bundleID)
 
-	// Get PID from bundle ID
+	// Validate signal to prevent command injection
+	if !isValidSignal(signal) {
+		op.DurationMs = time.Since(start).Milliseconds()
+		op.Error = fmt.Sprintf("invalid signal: %s", signal)
+		op.Success = false
+		return op
+	}
+
+	// Validate bundle ID to prevent AppleScript injection
+	if !isValidBundleID(bundleID) {
+		op.DurationMs = time.Since(start).Milliseconds()
+		op.Error = fmt.Sprintf("invalid bundle ID: %s", bundleID)
+		op.Success = false
+		return op
+	}
+
+	// Normalize signal to uppercase for consistency
+	signal = strings.ToUpper(signal)
+
+	// Get PID from bundle ID (now safe after validation)
 	script := fmt.Sprintf(`tell application "System Events" to get unix id of process "%s"`, bundleID)
 	pidCmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	pidOutput, err := pidCmd.Output()
@@ -806,7 +883,15 @@ func removeLoginItem(ctx context.Context, itemName string) ZapOperation {
 		Timestamp: start,
 	}
 
-	// Use osascript to remove login item
+	// Validate item name to prevent AppleScript injection
+	if !isValidAppName(itemName) {
+		op.DurationMs = time.Since(start).Milliseconds()
+		op.Error = fmt.Sprintf("invalid login item name: %s", itemName)
+		op.Success = false
+		return op
+	}
+
+	// Use osascript to remove login item (now safe after validation)
 	script := fmt.Sprintf(`tell application "System Events" to delete login item "%s"`, itemName)
 	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
 	op.Command = "osascript"
@@ -985,6 +1070,21 @@ func GetInstalledServices(ctx context.Context, pattern string) []string {
 func QuitAllInstances(ctx context.Context, appName string) []ZapOperation {
 	var operations []ZapOperation
 
+	start := time.Now()
+
+	// Validate app name to prevent AppleScript injection and command injection
+	if !isValidAppName(appName) {
+		op := ZapOperation{
+			Operation:  "quit_all_instances",
+			Target:     appName,
+			Timestamp:  start,
+			DurationMs: time.Since(start).Milliseconds(),
+			Error:      fmt.Sprintf("invalid app name: %s", appName),
+			Success:    false,
+		}
+		return append(operations, op)
+	}
+
 	// Try to quit via AppleScript first (graceful)
 	script := fmt.Sprintf(`
 		tell application "System Events"
@@ -995,7 +1095,6 @@ func QuitAllInstances(ctx context.Context, appName string) []ZapOperation {
 		end tell
 	`, appName)
 
-	start := time.Now()
 	op := ZapOperation{
 		Operation: "quit_all_instances",
 		Target:    appName,
