@@ -917,6 +917,11 @@ func (u *Updater) rollbackSingleBinary(backupPath, destPath string) error {
 
 // stopService stops the agent service.
 func (u *Updater) stopService() error {
+	// SECURITY: Validate service name to prevent command injection
+	if !isValidServiceName(u.serviceName) {
+		return fmt.Errorf("invalid service name: %s", u.serviceName)
+	}
+
 	switch runtime.GOOS {
 	case "linux":
 		return exec.Command("systemctl", "stop", u.serviceName).Run()
@@ -989,6 +994,12 @@ func (u *Updater) waitForServiceStopped(timeout time.Duration) {
 		return
 	}
 
+	// SECURITY: Validate service name to prevent command injection
+	if !isValidServiceName(u.serviceName) {
+		u.logger.Warn("invalid service name, skipping wait", "service", u.serviceName)
+		return
+	}
+
 	timeoutSec := int(timeout.Seconds())
 
 	// Use PowerShell to wait for service to be stopped
@@ -1009,6 +1020,11 @@ func (u *Updater) waitForServiceStopped(timeout time.Duration) {
 
 // startService starts the agent service.
 func (u *Updater) startService() error {
+	// SECURITY: Validate service name to prevent command injection
+	if !isValidServiceName(u.serviceName) {
+		return fmt.Errorf("invalid service name: %s", u.serviceName)
+	}
+
 	switch runtime.GOOS {
 	case "linux":
 		cmd := exec.Command("systemctl", "start", u.serviceName)
@@ -1128,6 +1144,11 @@ func (u *Updater) restartService() error {
 
 // healthCheck verifies the new version is running correctly.
 func (u *Updater) healthCheck(ctx context.Context) error {
+	// SECURITY: Validate service name to prevent command injection
+	if !isValidServiceName(u.serviceName) {
+		return fmt.Errorf("invalid service name: %s", u.serviceName)
+	}
+
 	// Wait a bit for service to start
 	u.logger.Info("starting health check, waiting 5 seconds for service startup")
 	time.Sleep(5 * time.Second)
@@ -1163,6 +1184,11 @@ func (u *Updater) healthCheck(ctx context.Context) error {
 
 // isServiceRunning checks if the service is running.
 func (u *Updater) isServiceRunning() (bool, error) {
+	// SECURITY: Validate service name to prevent command injection
+	if !isValidServiceName(u.serviceName) {
+		return false, fmt.Errorf("invalid service name: %s", u.serviceName)
+	}
+
 	switch runtime.GOOS {
 	case "linux":
 		cmd := exec.Command("systemctl", "is-active", u.serviceName)
@@ -1344,6 +1370,11 @@ func isFileLocked(err error) bool {
 
 // spawnHelperForUpdate spawns the helper process to complete the update after the agent exits.
 func (u *Updater) spawnHelperForUpdate(newBinaryPath string) error {
+	// SECURITY: Validate service name to prevent command injection via helper args
+	if !isValidServiceName(u.serviceName) {
+		return fmt.Errorf("invalid service name: %s", u.serviceName)
+	}
+
 	helperPath := filepath.Join(filepath.Dir(u.binaryPath), "slimrmm-helper.exe")
 
 	// Check if helper exists

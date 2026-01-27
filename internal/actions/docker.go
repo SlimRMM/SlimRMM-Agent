@@ -6,10 +6,65 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// =============================================================================
+// Docker ID/Name Validation (Security)
+// =============================================================================
+
+// containerIDRegex matches Docker container IDs (12 or 64 hex chars) or container names.
+// Container names: start with letter, alphanumeric with underscore, hyphen, dot.
+var containerIDRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
+// imageRefRegex matches Docker image references.
+// Examples: nginx, nginx:latest, registry.example.com/image:tag, sha256:abc123...
+var imageRefRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_./-]*(:[\w][\w.-]*)?(@sha256:[a-fA-F0-9]{64})?$`)
+
+// volumeNameRegex matches Docker volume names (alphanumeric with underscore, hyphen, dot).
+var volumeNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
+// composePathRegex matches safe compose file paths (no shell metacharacters).
+var composePathRegex = regexp.MustCompile(`^[a-zA-Z0-9_./-]+$`)
+
+// isValidContainerID checks if a container ID/name is safe for use in commands.
+func isValidContainerID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	return containerIDRegex.MatchString(id)
+}
+
+// isValidImageRef checks if an image reference is safe for use in commands.
+func isValidImageRef(ref string) bool {
+	if ref == "" || len(ref) > 256 {
+		return false
+	}
+	return imageRefRegex.MatchString(ref)
+}
+
+// isValidVolumeName checks if a volume name is safe for use in commands.
+func isValidVolumeName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	return volumeNameRegex.MatchString(name)
+}
+
+// isValidComposePath checks if a compose file path is safe.
+func isValidComposePath(path string) bool {
+	if path == "" || len(path) > 512 {
+		return false
+	}
+	// Block path traversal attempts
+	if strings.Contains(path, "..") {
+		return false
+	}
+	return composePathRegex.MatchString(path)
+}
 
 // DockerContainer represents a Docker container.
 type DockerContainer struct {
@@ -234,6 +289,11 @@ func ListDockerContainers(ctx context.Context, all bool) ([]DockerContainer, err
 
 // DockerContainerAction performs an action on a container.
 func DockerContainerAction(ctx context.Context, containerID, action string) error {
+	// SECURITY: Validate container ID to prevent command injection
+	if !isValidContainerID(containerID) {
+		return fmt.Errorf("invalid container ID: %s", containerID)
+	}
+
 	validActions := map[string]bool{
 		"start":   true,
 		"stop":    true,
@@ -256,6 +316,11 @@ func DockerContainerAction(ctx context.Context, containerID, action string) erro
 
 // RemoveDockerContainer removes a container.
 func RemoveDockerContainer(ctx context.Context, containerID string, force bool) error {
+	// SECURITY: Validate container ID to prevent command injection
+	if !isValidContainerID(containerID) {
+		return fmt.Errorf("invalid container ID: %s", containerID)
+	}
+
 	args := []string{"rm", containerID}
 	if force {
 		args = []string{"rm", "-f", containerID}
@@ -270,6 +335,11 @@ func RemoveDockerContainer(ctx context.Context, containerID string, force bool) 
 
 // GetDockerContainerLogs retrieves container logs.
 func GetDockerContainerLogs(ctx context.Context, containerID string, tail int, timestamps bool) (*DockerContainerLogs, error) {
+	// SECURITY: Validate container ID to prevent command injection
+	if !isValidContainerID(containerID) {
+		return nil, fmt.Errorf("invalid container ID: %s", containerID)
+	}
+
 	args := []string{"logs"}
 	if tail > 0 {
 		args = append(args, "--tail", strconv.Itoa(tail))
@@ -296,6 +366,11 @@ func GetDockerContainerLogs(ctx context.Context, containerID string, tail int, t
 
 // GetDockerContainerStats retrieves container resource statistics.
 func GetDockerContainerStats(ctx context.Context, containerID string) (*DockerContainerStats, error) {
+	// SECURITY: Validate container ID to prevent command injection
+	if !isValidContainerID(containerID) {
+		return nil, fmt.Errorf("invalid container ID: %s", containerID)
+	}
+
 	cmd := exec.CommandContext(ctx, "docker", "stats", "--no-stream", "--format", "{{json .}}", containerID)
 	output, err := cmd.Output()
 	if err != nil {
@@ -372,6 +447,11 @@ func ListDockerImages(ctx context.Context) ([]DockerImage, error) {
 
 // RemoveDockerImage removes an image.
 func RemoveDockerImage(ctx context.Context, imageID string, force bool) error {
+	// SECURITY: Validate image ID to prevent command injection
+	if !isValidImageRef(imageID) {
+		return fmt.Errorf("invalid image ID: %s", imageID)
+	}
+
 	args := []string{"rmi", imageID}
 	if force {
 		args = []string{"rmi", "-f", imageID}
@@ -386,6 +466,11 @@ func RemoveDockerImage(ctx context.Context, imageID string, force bool) error {
 
 // PullDockerImage pulls an image from a registry.
 func PullDockerImage(ctx context.Context, imageName string) error {
+	// SECURITY: Validate image name to prevent command injection
+	if !isValidImageRef(imageName) {
+		return fmt.Errorf("invalid image name: %s", imageName)
+	}
+
 	cmd := exec.CommandContext(ctx, "docker", "pull", imageName)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to pull image: %s", string(output))
@@ -427,6 +512,11 @@ func ListDockerVolumes(ctx context.Context) ([]DockerVolume, error) {
 
 // RemoveDockerVolume removes a volume.
 func RemoveDockerVolume(ctx context.Context, volumeName string, force bool) error {
+	// SECURITY: Validate volume name to prevent command injection
+	if !isValidVolumeName(volumeName) {
+		return fmt.Errorf("invalid volume name: %s", volumeName)
+	}
+
 	args := []string{"volume", "rm", volumeName}
 	if force {
 		args = []string{"volume", "rm", "-f", volumeName}
@@ -473,6 +563,11 @@ func ListDockerNetworks(ctx context.Context) ([]DockerNetwork, error) {
 
 // DockerComposeAction performs a Docker Compose action.
 func DockerComposeAction(ctx context.Context, projectPath, action string) error {
+	// SECURITY: Validate compose path to prevent command injection and path traversal
+	if !isValidComposePath(projectPath) {
+		return fmt.Errorf("invalid compose path: %s", projectPath)
+	}
+
 	validActions := map[string][]string{
 		"up":      {"up", "-d"},
 		"down":    {"down"},
@@ -499,6 +594,11 @@ func DockerComposeAction(ctx context.Context, projectPath, action string) error 
 
 // InspectDockerContainer returns detailed container information.
 func InspectDockerContainer(ctx context.Context, containerID string) (map[string]interface{}, error) {
+	// SECURITY: Validate container ID to prevent command injection
+	if !isValidContainerID(containerID) {
+		return nil, fmt.Errorf("invalid container ID: %s", containerID)
+	}
+
 	cmd := exec.CommandContext(ctx, "docker", "inspect", containerID)
 	output, err := cmd.Output()
 	if err != nil {
@@ -518,7 +618,20 @@ func InspectDockerContainer(ctx context.Context, containerID string) (map[string
 }
 
 // ExecInDockerContainer executes a command in a container.
+// SECURITY NOTE: The command parameter is passed directly to docker exec.
+// The caller is responsible for validating the command contents.
+// This function only validates the container ID.
 func ExecInDockerContainer(ctx context.Context, containerID string, command []string, timeout time.Duration) (map[string]interface{}, error) {
+	// SECURITY: Validate container ID to prevent command injection
+	if !isValidContainerID(containerID) {
+		return nil, fmt.Errorf("invalid container ID: %s", containerID)
+	}
+
+	// SECURITY: Ensure command is not empty
+	if len(command) == 0 {
+		return nil, fmt.Errorf("command cannot be empty")
+	}
+
 	args := []string{"exec", containerID}
 	args = append(args, command...)
 
@@ -735,6 +848,11 @@ func RestartUnhealthyContainers(ctx context.Context, timeout int, maxRetries int
 
 	for _, containerID := range containerIDs {
 		if containerID == "" {
+			continue
+		}
+
+		// SECURITY: Validate container ID even from docker output (defense in depth)
+		if !isValidContainerID(containerID) {
 			continue
 		}
 
