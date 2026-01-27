@@ -45,8 +45,10 @@ const (
 	pongWait          = 60 * time.Second
 	pingPeriod        = (pongWait * 9) / 10
 	heartbeatPeriod   = 30 * time.Second
-	maxMessageSize    = 10 * 1024 * 1024 // 10 MB
-	certCheckInterval = 24 * time.Hour   // Check certificates every 24 hours
+	// SECURITY: Reduced from 10MB to 1MB to prevent memory exhaustion DoS attacks.
+	// Large file transfers should use streaming endpoints, not WebSocket messages.
+	maxMessageSize    = 1 * 1024 * 1024 // 1 MB
+	certCheckInterval = 24 * time.Hour  // Check certificates every 24 hours
 
 	// Connection constants
 	connectionTimeout = 30 * time.Second
