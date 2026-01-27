@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -213,15 +214,20 @@ func (cw *CountingWriter) Written() int64 {
 	return cw.written
 }
 
-// StreamingEncryptor wraps a writer with AES-256-CTR encryption.
+// StreamingEncryptor wraps a writer with AES-256-CTR encryption and HMAC authentication.
+// SECURITY: Uses Encrypt-then-MAC (EtM) pattern for authenticated encryption.
 type StreamingEncryptor struct {
-	w      io.Writer
-	stream cipher.Stream
-	iv     []byte
+	w       io.Writer
+	stream  cipher.Stream
+	iv      []byte
+	hmac    hash.Hash
+	written int64
 }
 
-// NewStreamingEncryptor creates a new streaming encryptor.
-// The key must be 32 bytes (AES-256).
+// NewStreamingEncryptor creates a new streaming encryptor with HMAC authentication.
+// The key must be 32 bytes (AES-256). The key is used for both encryption and HMAC
+// (derived separately to avoid key reuse).
+// SECURITY: Implements Encrypt-then-MAC pattern - HMAC is computed over ciphertext.
 func NewStreamingEncryptor(w io.Writer, key []byte) (*StreamingEncryptor, error) {
 	if len(key) != 32 {
 		return nil, fmt.Errorf("key must be 32 bytes, got %d", len(key))
@@ -239,18 +245,36 @@ func NewStreamingEncryptor(w io.Writer, key []byte) (*StreamingEncryptor, error)
 
 	stream := cipher.NewCTR(block, iv)
 
+	// SECURITY: Derive HMAC key from encryption key using SHA-256 to avoid key reuse
+	// This is a standard key derivation pattern when a single key is provided
+	hmacKeyDerivation := sha256.Sum256(append([]byte("hmac-key-"), key...))
+	hmacWriter := hmac.New(sha256.New, hmacKeyDerivation[:])
+
+	// Include IV in HMAC to authenticate it
+	hmacWriter.Write(iv)
+
 	return &StreamingEncryptor{
 		w:      w,
 		stream: stream,
 		iv:     iv,
+		hmac:   hmacWriter,
 	}, nil
 }
 
-// Write implements io.Writer with encryption.
+// Write implements io.Writer with encryption and HMAC authentication.
+// SECURITY: Ciphertext is written to HMAC for authentication (Encrypt-then-MAC).
 func (se *StreamingEncryptor) Write(p []byte) (n int, err error) {
 	encrypted := make([]byte, len(p))
 	se.stream.XORKeyStream(encrypted, p)
-	return se.w.Write(encrypted)
+
+	// Write to underlying writer
+	n, err = se.w.Write(encrypted)
+	if n > 0 {
+		// SECURITY: Update HMAC with ciphertext (Encrypt-then-MAC)
+		se.hmac.Write(encrypted[:n])
+		se.written += int64(n)
+	}
+	return n, err
 }
 
 // IV returns the initialization vector (hex-encoded).
@@ -258,14 +282,40 @@ func (se *StreamingEncryptor) IV() string {
 	return hex.EncodeToString(se.iv)
 }
 
-// StreamingDecryptor wraps a reader with AES-256-CTR decryption.
-type StreamingDecryptor struct {
-	r      io.Reader
-	stream cipher.Stream
+// MAC returns the HMAC-SHA256 authentication tag (hex-encoded).
+// SECURITY: Call this after all data has been written to get the final MAC.
+func (se *StreamingEncryptor) MAC() string {
+	return hex.EncodeToString(se.hmac.Sum(nil))
 }
 
-// NewStreamingDecryptor creates a new streaming decryptor.
+// Written returns the total bytes written.
+func (se *StreamingEncryptor) Written() int64 {
+	return se.written
+}
+
+// ErrInvalidMAC indicates that HMAC verification failed.
+var ErrInvalidMAC = errors.New("HMAC verification failed: data may be corrupted or tampered")
+
+// StreamingDecryptor wraps a reader with AES-256-CTR decryption and HMAC verification.
+// SECURITY: Verifies HMAC after reading to detect tampering.
+type StreamingDecryptor struct {
+	r           io.Reader
+	stream      cipher.Stream
+	hmac        hash.Hash
+	expectedMAC []byte
+}
+
+// NewStreamingDecryptor creates a new streaming decryptor with HMAC verification.
+// SECURITY: The macHex parameter is optional for backward compatibility, but should
+// be provided for authenticated decryption. If provided, VerifyMAC() must be called
+// after reading all data.
 func NewStreamingDecryptor(r io.Reader, key []byte, ivHex string) (*StreamingDecryptor, error) {
+	return NewStreamingDecryptorWithMAC(r, key, ivHex, "")
+}
+
+// NewStreamingDecryptorWithMAC creates a decryptor with HMAC verification enabled.
+// SECURITY: Always use this constructor for authenticated decryption.
+func NewStreamingDecryptorWithMAC(r io.Reader, key []byte, ivHex string, macHex string) (*StreamingDecryptor, error) {
 	if len(key) != 32 {
 		return nil, fmt.Errorf("key must be 32 bytes, got %d", len(key))
 	}
@@ -286,19 +336,60 @@ func NewStreamingDecryptor(r io.Reader, key []byte, ivHex string) (*StreamingDec
 
 	stream := cipher.NewCTR(block, iv)
 
+	// SECURITY: Derive HMAC key same as encryptor
+	hmacKeyDerivation := sha256.Sum256(append([]byte("hmac-key-"), key...))
+	hmacWriter := hmac.New(sha256.New, hmacKeyDerivation[:])
+
+	// Include IV in HMAC (same as encryptor)
+	hmacWriter.Write(iv)
+
+	var expectedMAC []byte
+	if macHex != "" {
+		expectedMAC, err = hex.DecodeString(macHex)
+		if err != nil {
+			return nil, fmt.Errorf("decoding MAC: %w", err)
+		}
+	}
+
 	return &StreamingDecryptor{
-		r:      r,
-		stream: stream,
+		r:           r,
+		stream:      stream,
+		hmac:        hmacWriter,
+		expectedMAC: expectedMAC,
 	}, nil
 }
 
-// Read implements io.Reader with decryption.
+// Read implements io.Reader with decryption and HMAC computation.
+// SECURITY: Computes HMAC over ciphertext for later verification.
 func (sd *StreamingDecryptor) Read(p []byte) (n int, err error) {
 	n, err = sd.r.Read(p)
 	if n > 0 {
+		// SECURITY: Update HMAC with ciphertext before decrypting
+		sd.hmac.Write(p[:n])
 		sd.stream.XORKeyStream(p[:n], p[:n])
 	}
 	return n, err
+}
+
+// VerifyMAC verifies the HMAC after all data has been read.
+// SECURITY: Must be called after reading all data to ensure integrity.
+// Returns ErrInvalidMAC if verification fails.
+func (sd *StreamingDecryptor) VerifyMAC() error {
+	if sd.expectedMAC == nil {
+		// No MAC provided, skip verification (backward compatibility)
+		return nil
+	}
+
+	computedMAC := sd.hmac.Sum(nil)
+	if !hmac.Equal(computedMAC, sd.expectedMAC) {
+		return ErrInvalidMAC
+	}
+	return nil
+}
+
+// ComputedMAC returns the computed HMAC (hex-encoded) for verification.
+func (sd *StreamingDecryptor) ComputedMAC() string {
+	return hex.EncodeToString(sd.hmac.Sum(nil))
 }
 
 // ChunkedUploader uploads data in chunks using multipart upload or PUT requests.
@@ -374,6 +465,7 @@ type UploadResult struct {
 	SHA256        string
 	SHA512        string
 	EncryptionIV  string
+	EncryptionMAC string // HMAC-SHA256 for authenticated encryption
 	Encrypted     bool
 }
 
