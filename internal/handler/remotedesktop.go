@@ -31,11 +31,13 @@ type startRemoteDesktopRequest struct {
 func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req startRemoteDesktopRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		req.SessionID = h.cfg.GetUUID()
+		// SECURITY: Reject invalid JSON instead of silently assigning default session ID
+		return nil, fmt.Errorf("invalid request format: %w", err)
 	}
 
 	if req.SessionID == "" {
-		req.SessionID = h.cfg.GetUUID()
+		// SECURITY: Require explicit session ID to prevent session hijacking
+		return nil, fmt.Errorf("session_id is required")
 	}
 
 	h.logger.Info("starting remote desktop session",
@@ -84,11 +86,13 @@ type stopRemoteDesktopRequest struct {
 func (h *Handler) handleStopRemoteDesktop(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	var req stopRemoteDesktopRequest
 	if err := json.Unmarshal(data, &req); err != nil {
-		req.SessionID = h.cfg.GetUUID()
+		// SECURITY: Reject invalid JSON instead of silently assigning default session ID
+		return nil, fmt.Errorf("invalid request format: %w", err)
 	}
 
 	if req.SessionID == "" {
-		req.SessionID = h.cfg.GetUUID()
+		// SECURITY: Require explicit session ID to prevent session hijacking
+		return nil, fmt.Errorf("session_id is required")
 	}
 
 	result := remotedesktop.StopSession(req.SessionID)
@@ -135,7 +139,8 @@ func (h *Handler) handleRemoteControl(ctx context.Context, data json.RawMessage)
 	}
 
 	if req.SessionID == "" {
-		req.SessionID = h.cfg.GetUUID()
+		// SECURITY: Require explicit session ID to prevent unauthorized control
+		return nil, fmt.Errorf("session_id is required")
 	}
 
 	event := remotedesktop.InputEvent{
@@ -169,7 +174,8 @@ func (h *Handler) handleSetQuality(ctx context.Context, data json.RawMessage) (i
 	}
 
 	if req.SessionID == "" {
-		req.SessionID = h.cfg.GetUUID()
+		// SECURITY: Require explicit session ID
+		return nil, fmt.Errorf("session_id is required")
 	}
 
 	return remotedesktop.SetQuality(req.SessionID, req.Quality), nil
@@ -187,7 +193,8 @@ func (h *Handler) handleSetMonitor(ctx context.Context, data json.RawMessage) (i
 	}
 
 	if req.SessionID == "" {
-		req.SessionID = h.cfg.GetUUID()
+		// SECURITY: Require explicit session ID
+		return nil, fmt.Errorf("session_id is required")
 	}
 
 	return remotedesktop.SetMonitor(req.SessionID, req.MonitorID), nil
@@ -215,7 +222,8 @@ func (h *Handler) handleSetViewportSize(ctx context.Context, data json.RawMessag
 	}
 
 	if req.SessionID == "" {
-		req.SessionID = h.cfg.GetUUID()
+		// SECURITY: Require explicit session ID
+		return nil, fmt.Errorf("session_id is required")
 	}
 
 	return remotedesktop.SetViewportSize(req.SessionID, req.ViewportWidth, req.ViewportHeight), nil
