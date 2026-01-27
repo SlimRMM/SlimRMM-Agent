@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+// Note: minimalEnvForDatabase is defined in streaming_database_collector.go
+
 // MySQLCollector collects MySQL/MariaDB database backups.
 type MySQLCollector struct{}
 
@@ -46,6 +48,14 @@ func (c *MySQLCollector) Collect(ctx context.Context, config CollectorConfig) ([
 
 	// Execute mysqldump
 	cmd := exec.CommandContext(ctx, "mysqldump", args...)
+
+	// Set minimal environment with password (prevents leaking parent env vars
+	// and avoids exposing password in process listings)
+	if config.Password != "" {
+		cmd.Env = minimalEnvForDatabase("MYSQL_PWD=" + config.Password)
+	} else {
+		cmd.Env = minimalEnvForDatabase()
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -92,12 +102,8 @@ func (c *MySQLCollector) buildMysqldumpArgs(config CollectorConfig) []string {
 	if config.Username != "" {
 		args = append(args, "-u", config.Username)
 	}
-	if config.Password != "" {
-		// Note: Passing password via command line is not ideal but matches
-		// the original implementation. Consider using --defaults-extra-file
-		// for production use.
-		args = append(args, "-p"+config.Password)
-	}
+	// Password is passed via MYSQL_PWD environment variable in Collect()
+	// to prevent exposure in process listings (ps, htop, etc.)
 
 	// Dump options
 	// Always use single-transaction for InnoDB tables to ensure consistency
@@ -129,15 +135,20 @@ func (c *MySQLCollector) TestConnection(ctx context.Context, config CollectorCon
 	if config.Username != "" {
 		args = append(args, "-u", config.Username)
 	}
-	if config.Password != "" {
-		args = append(args, "-p"+config.Password)
-	}
+	// Password is passed via environment variable to prevent exposure in process listings
 
 	if config.DatabaseName != "" {
 		args = append(args, config.DatabaseName)
 	}
 
 	cmd := exec.CommandContext(ctx, "mysql", args...)
+
+	// Set minimal environment with password (prevents leaking parent env vars)
+	if config.Password != "" {
+		cmd.Env = minimalEnvForDatabase("MYSQL_PWD=" + config.Password)
+	} else {
+		cmd.Env = minimalEnvForDatabase()
+	}
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

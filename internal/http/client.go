@@ -11,6 +11,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// MaxErrorBodySize is the maximum size of error response bodies to prevent DoS.
+// Error messages shouldn't need more than 64KB.
+const MaxErrorBodySize = 64 * 1024
+
 // ProgressCallback is called during downloads/uploads with progress updates.
 // progress is a value between 0 and 100.
 type ProgressCallback func(progress int, bytesTransferred, totalBytes int64)
@@ -128,10 +132,13 @@ func (c *DefaultClient) Download(ctx context.Context, url string, opts ...Downlo
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
+		// Limit error body size to prevent DoS via large error responses
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodySize))
 		return nil, fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
+	// For successful responses, use Content-Length if available to validate size
+	// The actual data is read with a buffer in DownloadToFile; here we trust the timeout
 	return io.ReadAll(resp.Body)
 }
 
@@ -165,7 +172,8 @@ func (c *DefaultClient) DownloadToFile(ctx context.Context, url, destPath string
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
+		// Limit error body size to prevent DoS via large error responses
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodySize))
 		return fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -242,7 +250,8 @@ func (c *DefaultClient) Upload(ctx context.Context, url string, data []byte, opt
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
+		// Limit error body size to prevent DoS via large error responses
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodySize))
 		return fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, string(body))
 	}
 

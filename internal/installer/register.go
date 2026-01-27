@@ -271,7 +271,7 @@ func registerAgent(ctx context.Context, serverURL string, enrollmentToken string
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
+				MinVersion: tls.VersionTLS13,
 			},
 		},
 	}
@@ -372,7 +372,7 @@ func waitForApproval(ctx context.Context, serverURL, uuid, regToken string, logg
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
+				MinVersion: tls.VersionTLS13,
 			},
 		},
 	}
@@ -468,7 +468,7 @@ func fetchCertificatesAndSave(ctx context.Context, cfg *config.Config, serverURL
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
+				MinVersion: tls.VersionTLS13,
 			},
 		},
 	}
