@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strings"
 )
 
 // DefaultComplianceService implements ComplianceService using platform-specific
@@ -142,11 +144,71 @@ func (s *DefaultComplianceService) RunSingleCheck(ctx context.Context, check *Ch
 	}
 }
 
+// validateOsqueryQuery validates an osquery query for security.
+// SECURITY: Prevents execution of dangerous queries.
+func validateOsqueryQuery(query string) error {
+	// Normalize query for validation
+	normalized := strings.ToLower(strings.TrimSpace(query))
+
+	// SECURITY: Only allow SELECT statements
+	if !strings.HasPrefix(normalized, "select ") {
+		return fmt.Errorf("only SELECT queries are allowed")
+	}
+
+	// SECURITY: Block dangerous SQL keywords
+	dangerousPatterns := []string{
+		`\bdrop\b`, `\bdelete\b`, `\binsert\b`, `\bupdate\b`,
+		`\bcreate\b`, `\balter\b`, `\btruncate\b`, `\bexec\b`,
+		`\battach\b`, `\bdetach\b`, `\bload_extension\b`,
+	}
+	for _, pattern := range dangerousPatterns {
+		re := regexp.MustCompile(pattern)
+		if re.MatchString(normalized) {
+			return fmt.Errorf("query contains forbidden keyword")
+		}
+	}
+
+	// SECURITY: Block access to highly sensitive tables that could be used for reconnaissance
+	// These tables expose sensitive system information beyond compliance checking needs
+	sensitiveTablePatterns := []string{
+		`\bshadow\b`,              // Password hashes
+		`\bcurl\b`,                // Can make network requests
+		`\bcurl_certificate\b`,    // Network access
+		`\bcarves\b`,              // File carving
+		`\byara\b`,                // YARA scanning
+		`\baugeas\b`,              // Config file manipulation
+	}
+	for _, pattern := range sensitiveTablePatterns {
+		re := regexp.MustCompile(pattern)
+		if re.MatchString(normalized) {
+			return fmt.Errorf("access to sensitive table is not allowed")
+		}
+	}
+
+	// SECURITY: Limit query length to prevent resource exhaustion
+	if len(query) > 4096 {
+		return fmt.Errorf("query exceeds maximum allowed length")
+	}
+
+	return nil
+}
+
 // runOsqueryCheck executes an osquery-based compliance check.
 func (s *DefaultComplianceService) runOsqueryCheck(ctx context.Context, check *Check, result *CheckResult) (*CheckResult, error) {
 	if s.queryExecutor == nil {
 		result.Status = "error"
 		result.Message = "osquery executor not available"
+		return result, nil
+	}
+
+	// SECURITY: Validate query before execution
+	if err := validateOsqueryQuery(check.Query); err != nil {
+		s.logger.Warn("compliance query validation failed",
+			"check_id", check.ID,
+			"error", err,
+		)
+		result.Status = "error"
+		result.Message = fmt.Sprintf("query validation failed: %v", err)
 		return result, nil
 	}
 

@@ -15,6 +15,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/slimrmm/slimrmm-agent/internal/security/urlval"
 )
 
 // StreamingOrchestrator coordinates memory-safe backup operations.
@@ -439,7 +441,14 @@ func (so *StreamingOrchestrator) downloadManifest(ctx context.Context, url strin
 }
 
 // uploadData uploads data to a URL (for small data like manifests).
+// SECURITY: Validates URL to prevent SSRF attacks.
 func (so *StreamingOrchestrator) uploadData(ctx context.Context, url string, data []byte) error {
+	// SECURITY: Validate URL to prevent SSRF attacks
+	validator := urlval.NewDefault()
+	if err := validator.ValidateWithDNS(url); err != nil {
+		return fmt.Errorf("url validation failed: %w", err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)

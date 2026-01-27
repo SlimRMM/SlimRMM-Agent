@@ -18,6 +18,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/slimrmm/slimrmm-agent/internal/security/urlval"
 )
 
 // Memory safety constants for enterprise-grade backup operations.
@@ -540,7 +542,14 @@ func NewStreamingDownloader(cfg StreamingDownloaderConfig) *StreamingDownloader 
 }
 
 // Download streams data from a URL to the provided writer.
+// SECURITY: Validates URL to prevent SSRF attacks.
 func (sd *StreamingDownloader) Download(ctx context.Context, url string, w io.Writer) (int64, error) {
+	// SECURITY: Validate URL to prevent SSRF attacks
+	validator := urlval.NewDefault()
+	if err := validator.ValidateWithDNS(url); err != nil {
+		return 0, fmt.Errorf("url validation failed: %w", err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, fmt.Errorf("creating request: %w", err)

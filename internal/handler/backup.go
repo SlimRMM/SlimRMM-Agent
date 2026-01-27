@@ -29,6 +29,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/proxmox"
 	"github.com/slimrmm/slimrmm-agent/internal/security/audit"
+	"github.com/slimrmm/slimrmm-agent/internal/security/urlval"
 	"github.com/slimrmm/slimrmm-agent/internal/services/backup"
 )
 
@@ -1086,7 +1087,14 @@ func (h *Handler) decryptData(ciphertext []byte, keyBase64 string, ivBase64 stri
 }
 
 // uploadBackupData uploads backup data to a pre-signed URL.
+// SECURITY: Validates URL to prevent SSRF attacks.
 func (h *Handler) uploadBackupData(ctx context.Context, uploadURL string, data []byte) error {
+	// SECURITY: Validate URL to prevent SSRF attacks
+	validator := urlval.NewDefault()
+	if err := validator.ValidateWithDNS(uploadURL); err != nil {
+		return fmt.Errorf("url validation failed: %w", err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "PUT", uploadURL, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)

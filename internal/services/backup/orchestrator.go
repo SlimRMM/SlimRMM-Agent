@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/slimrmm/slimrmm-agent/internal/security/urlval"
 )
 
 // BackupRequest represents a request to create a backup.
@@ -327,7 +329,14 @@ func (o *Orchestrator) downloadManifest(ctx context.Context, url string) (*FileM
 }
 
 // downloadData downloads data from the specified URL (for manifest download).
+// SECURITY: Validates URL to prevent SSRF attacks.
 func (o *Orchestrator) downloadData(ctx context.Context, url string) ([]byte, error) {
+	// SECURITY: Validate URL to prevent SSRF attacks
+	validator := urlval.NewDefault()
+	if err := validator.ValidateWithDNS(url); err != nil {
+		return nil, fmt.Errorf("url validation failed: %w", err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
@@ -348,7 +357,14 @@ func (o *Orchestrator) downloadData(ctx context.Context, url string) ([]byte, er
 }
 
 // uploadData uploads data to the specified URL.
+// SECURITY: Validates URL to prevent SSRF attacks.
 func (o *Orchestrator) uploadData(ctx context.Context, url string, data []byte) error {
+	// SECURITY: Validate URL to prevent SSRF attacks
+	validator := urlval.NewDefault()
+	if err := validator.ValidateWithDNS(url); err != nil {
+		return fmt.Errorf("url validation failed: %w", err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
