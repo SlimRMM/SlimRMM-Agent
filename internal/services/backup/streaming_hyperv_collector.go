@@ -477,32 +477,10 @@ func (c *StreamingHyperVConfigCollector) getStorageInfo(ctx context.Context) int
 	return result
 }
 
-// isHyperVAvailable checks if Hyper-V is available.
-func isHyperVAvailable() bool {
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
-		"Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V | Select-Object -ExpandProperty State")
-	output, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	return string(output) == "Enabled\r\n" || string(output) == "Enabled"
-}
-
 // isValidVMName validates VM name to prevent command injection.
 func isValidVMName(name string) bool {
 	return vmNameValidator.MatchString(name)
 }
 
-// escapePowerShellString escapes a string for use in PowerShell.
-func escapePowerShellString(s string) string {
-	// Replace single quotes with two single quotes
-	result := ""
-	for _, c := range s {
-		if c == '\'' {
-			result += "''"
-		} else {
-			result += string(c)
-		}
-	}
-	return result
-}
+// Note: isHyperVAvailable is defined in capabilities.go
+// Note: escapePowerShellString is defined in hyperv_collector.go
