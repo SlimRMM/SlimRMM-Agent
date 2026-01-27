@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"runtime"
 	"time"
@@ -41,9 +40,11 @@ func (c *PostgreSQLCollector) Collect(ctx context.Context, config CollectorConfi
 	// Execute pg_dump
 	cmd := exec.CommandContext(ctx, "pg_dump", args...)
 
-	// Set password via environment variable (secure way)
+	// Set minimal environment with password (prevents leaking parent env vars)
 	if config.Password != "" {
-		cmd.Env = append(os.Environ(), "PGPASSWORD="+config.Password)
+		cmd.Env = minimalEnvForDatabase("PGPASSWORD=" + config.Password)
+	} else {
+		cmd.Env = minimalEnvForDatabase()
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -132,8 +133,11 @@ func (c *PostgreSQLCollector) TestConnection(ctx context.Context, config Collect
 
 	cmd := exec.CommandContext(ctx, "psql", args...)
 
+	// Set minimal environment with password (prevents leaking parent env vars)
 	if config.Password != "" {
-		cmd.Env = append(os.Environ(), "PGPASSWORD="+config.Password)
+		cmd.Env = minimalEnvForDatabase("PGPASSWORD=" + config.Password)
+	} else {
+		cmd.Env = minimalEnvForDatabase()
 	}
 
 	var stderr bytes.Buffer

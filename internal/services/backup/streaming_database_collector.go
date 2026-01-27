@@ -15,6 +15,49 @@ import (
 	"time"
 )
 
+// minimalEnvForDatabase creates a minimal environment for database commands.
+// This prevents leaking sensitive environment variables from the parent process
+// to database dump commands while preserving necessary variables for tool operation.
+func minimalEnvForDatabase(extraVars ...string) []string {
+	// Only include essential environment variables
+	essentialVars := []string{
+		"PATH",           // Required for finding executables
+		"HOME",           // Required by some tools for config files
+		"LANG",           // Locale settings
+		"LC_ALL",         // Locale settings
+		"LC_CTYPE",       // Character encoding
+		"TERM",           // Terminal type (some tools need this)
+		"TMPDIR",         // Temporary directory
+		"TMP",            // Temporary directory (Windows)
+		"TEMP",           // Temporary directory (Windows)
+		"SYSTEMROOT",     // Windows system root
+		"WINDIR",         // Windows directory
+		"LOCALAPPDATA",   // Windows local app data
+		"PROGRAMDATA",    // Windows program data
+		"COMPUTERNAME",   // Windows hostname
+		"USERNAME",       // Windows username
+		"USERDOMAIN",     // Windows domain
+		"USER",           // Unix username
+		"LOGNAME",        // Unix login name
+		"SHELL",          // User's shell
+		"XDG_RUNTIME_DIR", // XDG runtime directory
+	}
+
+	env := make([]string, 0, len(essentialVars)+len(extraVars))
+
+	// Copy only essential variables from current environment
+	for _, key := range essentialVars {
+		if val := os.Getenv(key); val != "" {
+			env = append(env, key+"="+val)
+		}
+	}
+
+	// Add extra variables (like passwords)
+	env = append(env, extraVars...)
+
+	return env
+}
+
 // StreamingMySQLCollector collects MySQL database backups using streaming.
 // Memory usage is O(buffer_size) regardless of database size.
 type StreamingMySQLCollector struct {
@@ -150,9 +193,11 @@ func (c *StreamingMySQLCollector) buildMySQLDumpArgs(config CollectorConfig) []s
 func (c *StreamingMySQLCollector) streamMySQLDump(ctx context.Context, args []string, password string, w io.Writer) (int64, error) {
 	cmd := exec.CommandContext(ctx, "mysqldump", args...)
 
-	// Set password via environment variable (secure way)
+	// Set minimal environment with password (prevents leaking parent env vars)
 	if password != "" {
-		cmd.Env = append(os.Environ(), "MYSQL_PWD="+password)
+		cmd.Env = minimalEnvForDatabase("MYSQL_PWD=" + password)
+	} else {
+		cmd.Env = minimalEnvForDatabase()
 	}
 
 	stdout, err := cmd.StdoutPipe()
@@ -324,9 +369,11 @@ func (c *StreamingPostgreSQLCollector) buildPgDumpArgs(config CollectorConfig) [
 func (c *StreamingPostgreSQLCollector) streamPgDump(ctx context.Context, args []string, password string, w io.Writer) (int64, error) {
 	cmd := exec.CommandContext(ctx, "pg_dump", args...)
 
-	// Set password via environment variable (secure way)
+	// Set minimal environment with password (prevents leaking parent env vars)
 	if password != "" {
-		cmd.Env = append(os.Environ(), "PGPASSWORD="+password)
+		cmd.Env = minimalEnvForDatabase("PGPASSWORD=" + password)
+	} else {
+		cmd.Env = minimalEnvForDatabase()
 	}
 
 	stdout, err := cmd.StdoutPipe()
@@ -444,8 +491,11 @@ func (c *StreamingMySQLCollector) TestConnection(ctx context.Context, config Col
 
 	cmd := exec.CommandContext(ctx, "mysql", args...)
 
+	// Set minimal environment with password (prevents leaking parent env vars)
 	if config.Password != "" {
-		cmd.Env = append(os.Environ(), "MYSQL_PWD="+config.Password)
+		cmd.Env = minimalEnvForDatabase("MYSQL_PWD=" + config.Password)
+	} else {
+		cmd.Env = minimalEnvForDatabase()
 	}
 
 	if err := cmd.Run(); err != nil {
@@ -482,8 +532,11 @@ func (c *StreamingPostgreSQLCollector) TestConnection(ctx context.Context, confi
 
 	cmd := exec.CommandContext(ctx, "psql", args...)
 
+	// Set minimal environment with password (prevents leaking parent env vars)
 	if config.Password != "" {
-		cmd.Env = append(os.Environ(), "PGPASSWORD="+config.Password)
+		cmd.Env = minimalEnvForDatabase("PGPASSWORD=" + config.Password)
+	} else {
+		cmd.Env = minimalEnvForDatabase()
 	}
 
 	if err := cmd.Run(); err != nil {

@@ -16,6 +16,10 @@ import (
 	"time"
 )
 
+// maxTarFileCount is the maximum number of files allowed in a tar archive.
+// This prevents DoS attacks via tar archives with millions of small files.
+const maxTarFileCount = 1_000_000
+
 // filesBackupMetadata contains metadata from a files_and_folders backup.
 type filesBackupMetadata struct {
 	TotalFiles  int
@@ -76,6 +80,7 @@ func parseFilesBackupData(data []byte) (*filesBackupMetadata, error) {
 }
 
 // countTarContents scans a tar archive and returns file count and total size.
+// Stops counting at maxTarFileCount to prevent DoS via malicious archives.
 func countTarContents(data []byte) (int, int64) {
 	reader := tar.NewReader(bytes.NewReader(data))
 	var totalFiles int
@@ -92,6 +97,11 @@ func countTarContents(data []byte) (int, int64) {
 		if header.Typeflag == tar.TypeReg {
 			totalFiles++
 			totalSize += header.Size
+
+			// Prevent DoS via archives with excessive file counts
+			if totalFiles >= maxTarFileCount {
+				break
+			}
 		}
 	}
 

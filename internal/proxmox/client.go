@@ -6,11 +6,32 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/luthermonson/go-proxmox"
 )
+
+// localhostHosts is the set of hosts considered localhost for InsecureSkipVerify.
+var localhostHosts = map[string]bool{
+	"localhost":             true,
+	"127.0.0.1":             true,
+	"::1":                   true,
+	"[::1]":                 true,
+	"localhost.localdomain": true,
+}
+
+// isLocalhostURL checks if the given URL points to localhost.
+// InsecureSkipVerify is only allowed for localhost connections.
+func isLocalhostURL(apiURL string) bool {
+	parsed, err := url.Parse(apiURL)
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	return localhostHosts[host]
+}
 
 // Client wraps the Proxmox API client with automatic token management.
 type Client struct {
@@ -38,17 +59,24 @@ func NewClient(ctx context.Context, configDir string) (*Client, error) {
 		return nil, ErrTokenNotConfigured
 	}
 
+	// SECURITY: Validate that we're only connecting to localhost
+	// InsecureSkipVerify is only safe for localhost connections
+	if !isLocalhostURL(localAPIURL) {
+		return nil, fmt.Errorf("proxmox client can only connect to localhost (got: %s)", localAPIURL)
+	}
+
 	// Create HTTP client with TLS configuration
 	// SECURITY: InsecureSkipVerify is only used for localhost (127.0.0.1:8006)
 	// connections to the local Proxmox API which typically uses self-signed certs.
 	// This is acceptable because:
 	// 1. The connection never leaves the local machine
 	// 2. An attacker with localhost access already has full system access
+	// 3. The URL is validated above to ensure it's localhost
 	httpClient := &http.Client{
 		Timeout: clientTimeout,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // #nosec G402 - localhost only
+				InsecureSkipVerify: true, // #nosec G402 - localhost only, validated above
 				MinVersion:         tls.VersionTLS13,
 			},
 		},

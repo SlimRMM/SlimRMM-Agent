@@ -64,6 +64,33 @@ func expandPath(path string) string {
 	return path
 }
 
+// isValidAppName validates that an app name is safe for use in file paths.
+// This prevents path traversal attacks via malicious app names.
+func isValidAppName(name string) bool {
+	if name == "" || len(name) > 255 {
+		return false
+	}
+	// Disallow path separators and traversal sequences
+	if strings.ContainsAny(name, `/\`) {
+		return false
+	}
+	if strings.Contains(name, "..") {
+		return false
+	}
+	// Disallow other dangerous characters
+	if strings.ContainsAny(name, `<>:"|?*`) {
+		return false
+	}
+	// Ensure the name doesn't start or end with whitespace or dots
+	if strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ") {
+		return false
+	}
+	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") {
+		return false
+	}
+	return true
+}
+
 // detectRPMPackageManager detects the available RPM package manager using filesystem service.
 func detectRPMPackageManager() string {
 	fs := filesystem.GetDefault()
@@ -186,9 +213,19 @@ func (h *Handler) createWindowsSnapshot(ctx context.Context, req CreateSnapshotR
 
 // createMacOSSnapshot creates a snapshot for macOS.
 func (h *Handler) createMacOSSnapshot(ctx context.Context, req CreateSnapshotRequest, snapshot *UninstallSnapshot) {
+	// Validate app name to prevent path traversal attacks
+	if req.AppName != "" && !isValidAppName(req.AppName) {
+		// Store error in PackageInfo and return early
+		if snapshot.PackageInfo == nil {
+			snapshot.PackageInfo = make(map[string]interface{})
+		}
+		snapshot.PackageInfo["validation_error"] = fmt.Sprintf("invalid app name: %s", req.AppName)
+		return
+	}
+
 	fs := filesystem.GetDefault()
 
-	// Find app bundle path
+	// Find app bundle path (app name is validated above)
 	appPaths := []string{
 		filepath.Join("/Applications", req.AppName+".app"),
 		filepath.Join(os.Getenv("HOME"), "Applications", req.AppName+".app"),

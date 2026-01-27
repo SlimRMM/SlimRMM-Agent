@@ -13,6 +13,10 @@ import (
 	"path/filepath"
 )
 
+// maxRestoreFileCount is the maximum number of files to restore from a backup.
+// This prevents DoS attacks via malicious archives with millions of files.
+const maxRestoreFileCount = 1_000_000
+
 // FilesAndFoldersRestorer restores files and folders from backups.
 type FilesAndFoldersRestorer struct {
 	logger Logger
@@ -111,6 +115,13 @@ func (r *FilesAndFoldersRestorer) Restore(ctx context.Context, data []byte, conf
 		}
 
 		result.TotalFiles++
+
+		// Prevent DoS via archives with excessive file counts
+		if result.TotalFiles > maxRestoreFileCount {
+			result.Status = "partial"
+			result.Error = fmt.Sprintf("archive contains more than %d files, restore truncated", maxRestoreFileCount)
+			break
+		}
 
 		// Check if this file should be restored
 		if len(restorePathSet) > 0 && !shouldRestoreFileByPath(header.Name, restorePathSet) {

@@ -231,3 +231,30 @@ func (s *DefaultValidationService) stopService(ctx context.Context, service stri
 		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
 }
+
+// isValidAppName validates that an app name is safe for use in file paths.
+// This prevents path traversal attacks via malicious app names.
+func isValidAppName(name string) bool {
+	if name == "" || len(name) > 255 {
+		return false
+	}
+	// Disallow path separators and traversal sequences
+	if strings.ContainsAny(name, `/\`) {
+		return false
+	}
+	if strings.Contains(name, "..") {
+		return false
+	}
+	// Disallow other dangerous characters
+	if strings.ContainsAny(name, `<>:"|?*`) {
+		return false
+	}
+	// Ensure the name doesn't start or end with whitespace or dots
+	if strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ") {
+		return false
+	}
+	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") {
+		return false
+	}
+	return true
+}

@@ -151,6 +151,12 @@ func (v *CaskValidator) Validate(ctx context.Context, req *ValidationRequest) (*
 	}
 
 	// Find app bundle and estimate size
+	// Validate AppName to prevent path traversal attacks
+	if req.AppName != "" && !isValidAppName(req.AppName) {
+		result.Errors = append(result.Errors, "Invalid app name")
+		return result, nil
+	}
+
 	appPaths := []string{
 		filepath.Join("/Applications", req.AppName+".app"),
 		filepath.Join(os.Getenv("HOME"), "Applications", req.AppName+".app"),
