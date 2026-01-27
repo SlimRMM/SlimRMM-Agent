@@ -29,6 +29,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/proxmox"
 	"github.com/slimrmm/slimrmm-agent/internal/security/audit"
+	"github.com/slimrmm/slimrmm-agent/internal/security/pathval"
 	"github.com/slimrmm/slimrmm-agent/internal/security/urlval"
 	"github.com/slimrmm/slimrmm-agent/internal/services/backup"
 )
@@ -1893,6 +1894,24 @@ func (h *Handler) collectDockerComposeBackup(ctx context.Context, req createBack
 		return nil, fmt.Errorf("compose_path is required for docker_compose backup")
 	}
 
+	// SECURITY: Validate compose path to prevent path traversal attacks
+	// Use a custom validator that doesn't block .env files (needed for Docker Compose)
+	composeValidator := pathval.NewWithPaths(
+		pathval.AllowedPaths,
+		pathval.ForbiddenPaths,
+		[]string{".ssh", ".gnupg", ".pem", ".key", ".p12", ".pfx", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"},
+	)
+	if runtime.GOOS == "windows" {
+		composeValidator = pathval.NewWithPaths(
+			pathval.AllowedPathsWindows,
+			pathval.ForbiddenPathsWindows,
+			[]string{".ssh", ".gnupg", ".pem", ".key", ".p12", ".pfx", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"},
+		)
+	}
+	if err := composeValidator.Validate(req.ComposePath); err != nil {
+		return nil, fmt.Errorf("invalid compose path: %w", err)
+	}
+
 	backupData := make(map[string]interface{})
 	backupData["backup_type"] = "docker_compose"
 	backupData["compose_path"] = req.ComposePath
@@ -2565,6 +2584,24 @@ func (h *Handler) restoreDockerCompose(ctx context.Context, req restoreBackupReq
 		} else {
 			return fmt.Errorf("compose_path is required for docker_compose restore")
 		}
+	}
+
+	// SECURITY: Validate compose path to prevent path traversal attacks
+	// Use a custom validator that doesn't block .env files (needed for Docker Compose)
+	composeValidator := pathval.NewWithPaths(
+		pathval.AllowedPaths,
+		pathval.ForbiddenPaths,
+		[]string{".ssh", ".gnupg", ".pem", ".key", ".p12", ".pfx", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"},
+	)
+	if runtime.GOOS == "windows" {
+		composeValidator = pathval.NewWithPaths(
+			pathval.AllowedPathsWindows,
+			pathval.ForbiddenPathsWindows,
+			[]string{".ssh", ".gnupg", ".pem", ".key", ".p12", ".pfx", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"},
+		)
+	}
+	if err := composeValidator.Validate(composePath); err != nil {
+		return fmt.Errorf("invalid compose path: %w", err)
 	}
 
 	// Ensure directory exists
