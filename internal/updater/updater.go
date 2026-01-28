@@ -1094,30 +1094,35 @@ func (u *Updater) restartService() error {
 	switch runtime.GOOS {
 	case "linux":
 		// On Linux, systemctl restart sends SIGTERM to the current process.
-		// We spawn it in the background so we can finish our cleanup first.
+		// We spawn it in a goroutine so we can finish our cleanup first.
 		u.logger.Info("scheduling service restart in 2 seconds")
-		// Service name is validated above - safe to use in shell command
-		cmd := exec.Command("sh", "-c", fmt.Sprintf("sleep 2 && systemctl restart %s", u.serviceName))
-		if err := cmd.Start(); err != nil {
-			u.logger.Error("failed to schedule restart", "error", err)
-			return err
-		}
+		// SECURITY: Use direct exec.Command with arguments instead of shell -c
+		// to prevent command injection even if service name contains special chars
+		serviceName := u.serviceName
+		go func() {
+			time.Sleep(2 * time.Second)
+			cmd := exec.Command("systemctl", "restart", serviceName)
+			if err := cmd.Run(); err != nil {
+				// Log error but can't return it from goroutine
+				u.logger.Error("failed to restart service", "error", err)
+			}
+		}()
 		u.logger.Info("restart scheduled, process will be restarted shortly")
 		return nil
 	case "darwin":
 		// On macOS, launchctl kickstart -k sends SIGTERM immediately.
-		// We spawn a background shell that waits, then restarts the service.
+		// We spawn it in a goroutine that waits, then restarts the service.
 		// This allows the current process to finish cleanup before being killed.
 		u.logger.Info("scheduling service restart in 2 seconds")
-		// Service name is validated above - safe to use in shell command
+		// SECURITY: Use direct exec.Command with arguments instead of shell -c
 		serviceIdentifier := fmt.Sprintf("system/%s", u.serviceName)
-		cmd := exec.Command("sh", "-c", fmt.Sprintf("sleep 2 && launchctl kickstart -k %s", serviceIdentifier))
-		if err := cmd.Start(); err != nil {
-			u.logger.Error("failed to schedule restart", "error", err)
-			// Fallback: try immediate restart using direct exec (no shell)
-			_ = exec.Command("launchctl", "kickstart", "-k", serviceIdentifier).Start()
-			return nil
-		}
+		go func() {
+			time.Sleep(2 * time.Second)
+			cmd := exec.Command("launchctl", "kickstart", "-k", serviceIdentifier)
+			if err := cmd.Run(); err != nil {
+				u.logger.Error("failed to restart service", "error", err)
+			}
+		}()
 		u.logger.Info("restart scheduled, process will be restarted shortly")
 		return nil
 	case "windows":

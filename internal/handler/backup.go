@@ -2686,22 +2686,41 @@ func (h *Handler) restoreProxmoxConfig(ctx context.Context, req restoreBackupReq
 		return fmt.Errorf("no config_files found in backup")
 	}
 
+	// SECURITY: Create path validator for config file restore
+	configValidator := pathval.New()
+
 	for path, contentB64 := range configFiles {
 		contentStr, ok := contentB64.(string)
 		if !ok {
 			continue
 		}
 
+		// SECURITY: Validate path to prevent path traversal attacks
+		if err := configValidator.Validate(path); err != nil {
+			h.logger.Warn("config file path validation failed",
+				"path", path,
+				"error", err,
+			)
+			continue
+		}
+
+		// SECURITY: Ensure path is absolute and doesn't contain traversal patterns
+		cleanPath := filepath.Clean(path)
+		if !filepath.IsAbs(cleanPath) {
+			h.logger.Warn("config file path must be absolute", "path", path)
+			continue
+		}
+
 		content, err := base64.StdEncoding.DecodeString(contentStr)
 		if err != nil {
-			h.logger.Warn("failed to decode config file", "path", path, "error", err)
+			h.logger.Warn("failed to decode config file", "path", cleanPath, "error", err)
 			continue
 		}
 
 		// Create backup of existing file
-		if _, err := os.Stat(path); err == nil {
-			backupPath := path + ".backup." + time.Now().Format("20060102150405")
-			if existingData, err := os.ReadFile(path); err == nil {
+		if _, err := os.Stat(cleanPath); err == nil {
+			backupPath := cleanPath + ".backup." + time.Now().Format("20060102150405")
+			if existingData, err := os.ReadFile(cleanPath); err == nil {
 				if err := os.WriteFile(backupPath, existingData, 0600); err != nil {
 					h.logger.Warn("failed to backup existing file", "path", backupPath, "error", err)
 				} else {
@@ -2711,19 +2730,19 @@ func (h *Handler) restoreProxmoxConfig(ctx context.Context, req restoreBackupReq
 		}
 
 		// Ensure directory exists
-		dir := filepath.Dir(path)
+		dir := filepath.Dir(cleanPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			h.logger.Warn("failed to create directory", "path", dir, "error", err)
 			continue
 		}
 
 		// Write restored config
-		if err := os.WriteFile(path, content, 0600); err != nil {
-			h.logger.Warn("failed to write config file", "path", path, "error", err)
+		if err := os.WriteFile(cleanPath, content, 0600); err != nil {
+			h.logger.Warn("failed to write config file", "path", cleanPath, "error", err)
 			continue
 		}
 
-		h.logger.Info("config file restored", "path", path)
+		h.logger.Info("config file restored", "path", cleanPath)
 	}
 
 	return nil
