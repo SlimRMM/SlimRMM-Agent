@@ -191,6 +191,49 @@ func (hw *HashingWriter) Written() int64 {
 	return hw.written
 }
 
+// HashingReader wraps a reader and computes hashes on the fly.
+type HashingReader struct {
+	r       io.Reader
+	sha256h hash.Hash
+	sha512h hash.Hash
+	read    int64
+}
+
+// NewHashingReader creates a reader that computes SHA256 and SHA512 hashes.
+func NewHashingReader(r io.Reader) *HashingReader {
+	return &HashingReader{
+		r:       r,
+		sha256h: sha256.New(),
+		sha512h: sha512.New(),
+	}
+}
+
+// Read implements io.Reader, reading from underlying reader and updating hash functions.
+func (hr *HashingReader) Read(p []byte) (n int, err error) {
+	n, err = hr.r.Read(p)
+	if n > 0 {
+		hr.sha256h.Write(p[:n])
+		hr.sha512h.Write(p[:n])
+		hr.read += int64(n)
+	}
+	return n, err
+}
+
+// SHA256Sum returns the hex-encoded SHA256 hash.
+func (hr *HashingReader) SHA256Sum() string {
+	return hex.EncodeToString(hr.sha256h.Sum(nil))
+}
+
+// SHA512Sum returns the hex-encoded SHA512 hash.
+func (hr *HashingReader) SHA512Sum() string {
+	return hex.EncodeToString(hr.sha512h.Sum(nil))
+}
+
+// BytesRead returns the total bytes read.
+func (hr *HashingReader) BytesRead() int64 {
+	return hr.read
+}
+
 // CountingWriter wraps a writer and counts bytes written.
 type CountingWriter struct {
 	w       io.Writer
@@ -471,9 +514,75 @@ type UploadResult struct {
 
 // Upload streams data from a reader to the specified URL.
 // This method handles the entire upload in a memory-efficient manner.
+// For S3 pre-signed URLs, Content-Length is required, so we detect seekable readers
+// and use them directly instead of piping.
 func (cu *ChunkedUploader) Upload(ctx context.Context, url string, r io.Reader) (*UploadResult, error) {
-	// For simple PUT uploads (like S3 pre-signed URLs), we need to buffer
-	// because we need Content-Length header. We use a pipe to stream through.
+	// Check if reader is seekable (like a file) - if so, we can get size and use directly
+	if seeker, ok := r.(io.ReadSeeker); ok {
+		return cu.uploadWithContentLength(ctx, url, seeker)
+	}
+
+	// For non-seekable readers, use pipe-based streaming (may not work with all S3 configs)
+	return cu.uploadStreaming(ctx, url, r)
+}
+
+// uploadWithContentLength uploads from a seekable reader with proper Content-Length header.
+// This is required for S3 pre-signed URLs which don't support chunked transfer encoding.
+func (cu *ChunkedUploader) uploadWithContentLength(ctx context.Context, url string, r io.ReadSeeker) (*UploadResult, error) {
+	// Get content length by seeking to end
+	currentPos, err := r.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return nil, fmt.Errorf("getting current position: %w", err)
+	}
+
+	endPos, err := r.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, fmt.Errorf("seeking to end: %w", err)
+	}
+
+	contentLength := endPos - currentPos
+
+	// Seek back to original position
+	if _, err := r.Seek(currentPos, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("seeking back to start: %w", err)
+	}
+
+	// Create hashing reader to compute hashes while reading
+	hr := NewHashingReader(r)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, hr)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.ContentLength = contentLength
+
+	cu.logger.Info("uploading with content-length",
+		"content_length", contentLength,
+		"url_host", req.URL.Host,
+	)
+
+	resp, err := cu.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("uploading: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body := cu.readLimitedBody(resp.Body)
+		return nil, fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, body)
+	}
+
+	return &UploadResult{
+		BytesUploaded: hr.BytesRead(),
+		SHA256:        hr.SHA256Sum(),
+		SHA512:        hr.SHA512Sum(),
+	}, nil
+}
+
+// uploadStreaming uploads using pipe-based streaming for non-seekable readers.
+func (cu *ChunkedUploader) uploadStreaming(ctx context.Context, url string, r io.Reader) (*UploadResult, error) {
 	pr, pw := io.Pipe()
 
 	result := &UploadResult{}
@@ -489,15 +598,17 @@ func (cu *ChunkedUploader) Upload(ctx context.Context, url string, r io.Reader) 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, pr)
 		if err != nil {
 			uploadErr = fmt.Errorf("creating request: %w", err)
+			pw.CloseWithError(err) // Signal writer to stop
 			return
 		}
 
 		req.Header.Set("Content-Type", "application/octet-stream")
-		// Note: Content-Length will be set by the pipe mechanism or chunked encoding
+		req.Header.Set("Transfer-Encoding", "chunked")
 
 		resp, err := cu.httpClient.Do(req)
 		if err != nil {
 			uploadErr = fmt.Errorf("uploading: %w", err)
+			pw.CloseWithError(err) // Signal writer to stop
 			return
 		}
 		defer resp.Body.Close()
