@@ -73,7 +73,8 @@ func TestLoad(t *testing.T) {
 	configPath := filepath.Join(tmpDir, configFileName)
 
 	// Write valid config
-	cfg := Config{
+	// Use pointer to avoid copying mutex (go vet warning)
+	cfg := &Config{
 		Server:      "https://example.com",
 		UUID:        "test-uuid-123",
 		MTLSEnabled: true,
@@ -134,7 +135,8 @@ func TestLoadMissingServer(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	configPath := filepath.Join(tmpDir, configFileName)
-	cfg := Config{UUID: "test-uuid"} // Missing server
+	// Use pointer to avoid copying mutex (go vet warning)
+	cfg := &Config{UUID: "test-uuid"} // Missing server
 	data, _ := json.Marshal(cfg)
 	if err := os.WriteFile(configPath, data, 0600); err != nil {
 		t.Fatalf("failed to write config: %v", err)
