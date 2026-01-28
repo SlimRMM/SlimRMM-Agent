@@ -255,13 +255,15 @@ type Handler struct {
 	processService *process.DefaultProcessService
 
 	// Backup services for backup orchestration
-	backupOrchestrator   *backup.Orchestrator
-	restoreOrchestrator  *backup.RestoreOrchestrator
-	collectorRegistry    *backup.CollectorRegistry
-	restorerRegistry     *backup.RestorerRegistry
-	capabilityDetector   *backup.CapabilityDetector
-	lastBackupCapsHash   string
-	cachedBackupCaps     *backup.BackupCapabilities
+	backupOrchestrator           *backup.Orchestrator
+	restoreOrchestrator          *backup.RestoreOrchestrator
+	collectorRegistry            *backup.CollectorRegistry
+	restorerRegistry             *backup.RestorerRegistry
+	capabilityDetector           *backup.CapabilityDetector
+	lastBackupCapsHash           string
+	cachedBackupCaps             *backup.BackupCapabilities
+	streamingOrchestrator        *backup.StreamingOrchestrator
+	streamingCollectorRegistry   *backup.StreamingCollectorRegistry
 
 	// Winget upgrade service for package upgrades
 	wingetUpgradeService *wingetservice.UpgradeService
@@ -365,6 +367,24 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	restorerRegistry.Register(backup.NewAgentConfigRestorer(agentPaths, backupLogger))
 	restorerRegistry.Register(backup.NewAgentLogsRestorer(agentPaths, backupLogger))
 
+	// Initialize STREAMING collector registry for memory-safe Docker backups
+	// This prevents OOM by piping data directly from docker export to upload
+	// instead of loading entire container into memory
+	streamingCollectorRegistry := backup.NewStreamingCollectorRegistry()
+	tempDir := paths.BaseDir // Use agent data dir for temp files
+	streamingCollectorRegistry.Register(backup.NewStreamingDockerContainerCollector(logger, tempDir))
+	streamingCollectorRegistry.Register(backup.NewStreamingDockerVolumeCollector(logger, tempDir))
+	streamingCollectorRegistry.Register(backup.NewStreamingDockerImageCollector(logger, tempDir))
+	streamingCollectorRegistry.Register(backup.NewStreamingDockerComposeCollector(logger, tempDir))
+
+	// Create streaming orchestrator for large backups (Docker types)
+	streamingOrchestrator := backup.NewStreamingOrchestrator(streamingCollectorRegistry, backup.StreamingOrchestratorConfig{
+		Logger:           logger,
+		CompressionLevel: backup.CompressionBalanced,
+		MaxMemoryUsage:   512 * 1024 * 1024, // 512 MB max
+		TempDir:          tempDir,
+	})
+
 	backupOrchestrator := backup.NewOrchestrator(collectorRegistry, backup.OrchestratorConfig{
 		Logger: logger,
 	})
@@ -401,12 +421,14 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		validationService:    validationService,
 		complianceService:    complianceService,
 		processService:       processService,
-		backupOrchestrator:   backupOrchestrator,
-		restoreOrchestrator:  restoreOrchestrator,
-		collectorRegistry:    collectorRegistry,
-		restorerRegistry:     restorerRegistry,
-		capabilityDetector:   capabilityDetector,
-		wingetUpgradeService: wingetUpgradeService,
+		backupOrchestrator:           backupOrchestrator,
+		restoreOrchestrator:          restoreOrchestrator,
+		collectorRegistry:            collectorRegistry,
+		restorerRegistry:             restorerRegistry,
+		capabilityDetector:           capabilityDetector,
+		streamingOrchestrator:        streamingOrchestrator,
+		streamingCollectorRegistry:   streamingCollectorRegistry,
+		wingetUpgradeService:         wingetUpgradeService,
 	}
 
 	h.registerHandlers()

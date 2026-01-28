@@ -410,16 +410,36 @@ func (h *Handler) createBackupViaOrchestrator(ctx context.Context, req createBac
 		Config:              collectorConfig,
 	}
 
-	// Set compression level
-	h.backupOrchestrator.SetCompressionLevel(compressionLevel)
-
 	// Create progress reporter
 	progress := backup.NewWebSocketProgressReporter(req.BackupID, func(msg map[string]interface{}) {
 		h.SendRaw(msg)
 	})
 
-	// Execute backup via orchestrator
-	result, err := h.backupOrchestrator.CreateBackup(ctx, backupReq, progress)
+	// Check if this backup type should use streaming (Docker types can be very large)
+	// Streaming prevents OOM by piping data directly from docker export to upload
+	// instead of loading the entire container filesystem into memory
+	isStreamingType := backupType == backup.TypeDockerContainer ||
+		backupType == backup.TypeDockerVolume ||
+		backupType == backup.TypeDockerImage ||
+		backupType == backup.TypeDockerCompose
+
+	var result *backup.BackupResult
+	var err error
+
+	if isStreamingType && h.streamingCollectorRegistry.Has(backupType) {
+		// Use streaming orchestrator for Docker types to prevent OOM
+		h.logger.Info("using streaming orchestrator for large backup type",
+			"backup_id", req.BackupID,
+			"backup_type", backupType,
+		)
+		h.streamingOrchestrator.SetCompressionLevel(compressionLevel)
+		result, err = h.streamingOrchestrator.CreateBackupStreaming(ctx, backupReq, progress)
+	} else {
+		// Use non-streaming orchestrator for smaller backup types
+		h.backupOrchestrator.SetCompressionLevel(compressionLevel)
+		result, err = h.backupOrchestrator.CreateBackup(ctx, backupReq, progress)
+	}
+
 	if err != nil {
 		return &createBackupResponse{
 			BackupID: req.BackupID,
