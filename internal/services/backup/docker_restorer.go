@@ -78,9 +78,11 @@ func (r *DockerContainerRestorer) Restore(ctx context.Context, data []byte, conf
 	result.Status = "completed"
 	result.RestoredFiles = 1
 	result.TotalFiles = 1
+	result.TotalSize = int64(len(exportData))
+	result.RestoredSize = int64(len(exportData))
 
 	if r.logger != nil {
-		r.logger.Info("Docker container restored successfully", "container", containerName)
+		r.logger.Info("Docker container restored successfully", "container", containerName, "size", len(exportData))
 	}
 
 	return result, nil
@@ -161,9 +163,11 @@ func (r *DockerVolumeRestorer) Restore(ctx context.Context, data []byte, config 
 	result.Status = "completed"
 	result.RestoredFiles = 1
 	result.TotalFiles = 1
+	result.TotalSize = int64(len(volumeData))
+	result.RestoredSize = int64(len(volumeData))
 
 	if r.logger != nil {
-		r.logger.Info("Docker volume restored successfully", "volume", volumeName)
+		r.logger.Info("Docker volume restored successfully", "volume", volumeName, "size", len(volumeData))
 	}
 
 	return result, nil
@@ -230,9 +234,11 @@ func (r *DockerImageRestorer) Restore(ctx context.Context, data []byte, config R
 	result.Status = "completed"
 	result.RestoredFiles = 1
 	result.TotalFiles = 1
+	result.TotalSize = int64(len(imageData))
+	result.RestoredSize = int64(len(imageData))
 
 	if r.logger != nil {
-		r.logger.Info("Docker image restored successfully", "image", backupData.ImageName, "output", string(output))
+		r.logger.Info("Docker image restored successfully", "image", backupData.ImageName, "size", len(imageData), "output", string(output))
 	}
 
 	return result, nil
