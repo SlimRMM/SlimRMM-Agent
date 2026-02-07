@@ -85,12 +85,12 @@ type StreamingIncrementalCollector interface {
 }
 
 // BufferPool manages a pool of reusable byte buffers to reduce GC pressure.
+// Thread-safe: uses atomic operations for allocation tracking without mutex overhead.
 type BufferPool struct {
 	pool      sync.Pool
 	chunkSize int
-	allocated int64
+	allocated int64 // accessed atomically
 	maxSize   int64
-	mu        sync.Mutex
 }
 
 // NewBufferPool creates a new buffer pool with the specified chunk size.
@@ -117,24 +117,19 @@ func NewBufferPool(chunkSize int, maxPoolSize int64) *BufferPool {
 }
 
 // Get retrieves a buffer from the pool.
+// Thread-safe: uses atomic operations for allocation tracking.
 func (bp *BufferPool) Get() []byte {
-	bp.mu.Lock()
 	atomic.AddInt64(&bp.allocated, int64(bp.chunkSize))
-	bp.mu.Unlock()
-
 	return bp.pool.Get().([]byte)
 }
 
 // Put returns a buffer to the pool.
+// Thread-safe: uses atomic operations for allocation tracking.
 func (bp *BufferPool) Put(buf []byte) {
 	if len(buf) != bp.chunkSize {
 		return // Don't pool incorrectly sized buffers
 	}
-
-	bp.mu.Lock()
 	atomic.AddInt64(&bp.allocated, -int64(bp.chunkSize))
-	bp.mu.Unlock()
-
 	bp.pool.Put(buf)
 }
 
