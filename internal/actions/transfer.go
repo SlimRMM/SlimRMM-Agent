@@ -26,6 +26,14 @@ const (
 	CleanupInterval     = 5 * time.Minute   // Cleanup check interval
 )
 
+// downloadBufferPool provides reusable buffers for chunk downloads to reduce GC pressure.
+// Uses sync.Pool for efficient buffer reuse across concurrent downloads.
+var downloadBufferPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, DownloadChunkSize)
+	},
+}
+
 // UploadSession tracks an ongoing file upload.
 type UploadSession struct {
 	ID           string
@@ -253,6 +261,8 @@ type DownloadResult struct {
 }
 
 // DownloadFile prepares a file for download.
+// Optimized: uses io.TeeReader to compute hash and read content in a single pass
+// for files up to DirectDownloadLimit (50MB), avoiding double file reads.
 func DownloadFile(path string, offset, limit int64) (*DownloadResult, error) {
 	validator := pathval.New()
 	if err := validator.ValidateWithSymlinkResolution(path); err != nil {
@@ -278,29 +288,30 @@ func DownloadFile(path string, offset, limit int64) (*DownloadResult, error) {
 	}
 	defer file.Close()
 
-	// Calculate hash
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, file); err != nil {
-		return nil, fmt.Errorf("calculating hash: %w", err)
-	}
-
 	result := &DownloadResult{
 		Path: path,
 		Size: info.Size(),
-		Hash: hex.EncodeToString(hasher.Sum(nil)),
 	}
 
-	// For files up to DirectDownloadLimit (10MB), include content directly
-	// This provides instant downloads for most files without chunking overhead
+	// For files up to DirectDownloadLimit (50MB), read content and compute hash in single pass
+	// This avoids double file reads by using io.TeeReader
 	if info.Size() <= DirectDownloadLimit {
-		file.Seek(0, io.SeekStart)
-		data, err := io.ReadAll(file)
+		hasher := sha256.New()
+		teeReader := io.TeeReader(file, hasher)
+		data, err := io.ReadAll(teeReader)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("reading file: %w", err)
 		}
+		result.Hash = hex.EncodeToString(hasher.Sum(nil))
 		result.Content = base64.StdEncoding.EncodeToString(data)
 	} else {
-		// For larger files, use 1MB chunks for faster transfer
+		// For larger files, compute hash only (chunked download will read content separately)
+		hasher := sha256.New()
+		if _, err := io.Copy(hasher, file); err != nil {
+			return nil, fmt.Errorf("calculating hash: %w", err)
+		}
+		result.Hash = hex.EncodeToString(hasher.Sum(nil))
+		// Use 1MB chunks for faster transfer
 		result.ChunkCount = int((info.Size() + DownloadChunkSize - 1) / DownloadChunkSize)
 	}
 
@@ -308,6 +319,7 @@ func DownloadFile(path string, offset, limit int64) (*DownloadResult, error) {
 }
 
 // DownloadChunk returns a specific chunk of a file.
+// Uses buffer pooling to reduce GC pressure for large file transfers.
 func DownloadChunk(path string, chunkIndex int) ([]byte, error) {
 	validator := pathval.New()
 	if err := validator.ValidateWithSymlinkResolution(path); err != nil {
@@ -325,13 +337,20 @@ func DownloadChunk(path string, chunkIndex int) ([]byte, error) {
 		return nil, err
 	}
 
-	data := make([]byte, DownloadChunkSize)
-	n, err := file.Read(data)
+	// Get buffer from pool (reduces GC pressure for large file transfers)
+	poolBuf := downloadBufferPool.Get().([]byte)
+	n, err := file.Read(poolBuf)
 	if err != nil && err != io.EOF {
+		downloadBufferPool.Put(poolBuf)
 		return nil, err
 	}
 
-	return data[:n], nil
+	// Copy to correctly sized result slice and return buffer to pool
+	data := make([]byte, n)
+	copy(data, poolBuf[:n])
+	downloadBufferPool.Put(poolBuf)
+
+	return data, nil
 }
 
 // DownloadURL downloads a file from a URL.
