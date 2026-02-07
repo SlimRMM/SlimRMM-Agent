@@ -209,7 +209,9 @@ func (so *StreamingOrchestrator) CreateBackupStreaming(ctx context.Context, req 
 	}
 
 	// Create the streaming pipeline
-	// Pipeline: Collector -> Compressor -> Encryptor -> HashingWriter -> File/Discard
+	// Pipeline: Collector -> Compressor -> HashingWriter -> Encryptor -> File/Discard
+	// IMPORTANT: Hash is computed on COMPRESSED data BEFORE encryption to match
+	// the verification process which decrypts then hashes.
 	var manifest *FileManifest
 	var deltaInfo *DeltaInfo
 	var encryptor *StreamingEncryptor
@@ -222,11 +224,8 @@ func (so *StreamingOrchestrator) CreateBackupStreaming(ctx context.Context, req 
 		finalWriter = io.Discard
 	}
 
-	// Create hashing writer (always needed for checksums)
-	hashWriter := NewHashingWriter(finalWriter)
-
-	// Create encryption layer if needed
-	var encWriter io.Writer = hashWriter
+	// Create encryption layer if needed (wraps final destination)
+	var encWriter io.Writer = finalWriter
 	if req.Encrypt && req.EncryptKey != "" {
 		keyBytes, err := decodeEncryptionKey(req.EncryptKey)
 		if err != nil {
@@ -235,7 +234,7 @@ func (so *StreamingOrchestrator) CreateBackupStreaming(ctx context.Context, req 
 			return result, err
 		}
 
-		encryptor, err = NewStreamingEncryptor(hashWriter, keyBytes)
+		encryptor, err = NewStreamingEncryptor(finalWriter, keyBytes)
 		if err != nil {
 			result.Status = "failed"
 			result.Error = fmt.Sprintf("creating encryptor: %v", err)
@@ -245,8 +244,12 @@ func (so *StreamingOrchestrator) CreateBackupStreaming(ctx context.Context, req 
 		result.Encrypted = true
 	}
 
-	// Create compression layer
-	compWriter, err := NewStreamingCompressor(encWriter, so.compressionLevel)
+	// Create hashing writer (wraps encryptor or final destination)
+	// Hash is computed on compressed data BEFORE encryption
+	hashWriter := NewHashingWriter(encWriter)
+
+	// Create compression layer (wraps hash writer)
+	compWriter, err := NewStreamingCompressor(hashWriter, so.compressionLevel)
 	if err != nil {
 		result.Status = "failed"
 		result.Error = fmt.Sprintf("creating compressor: %v", err)
