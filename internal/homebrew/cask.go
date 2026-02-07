@@ -28,6 +28,12 @@ const (
 	RequestTimeout = 30 * time.Second
 )
 
+// httpClient is a properly configured HTTP client with timeout.
+// Using a shared client enables connection reuse and prevents resource leaks.
+var httpClient = &http.Client{
+	Timeout: RequestTimeout,
+}
+
 // CaskInfo represents Homebrew cask metadata from API.
 type CaskInfo struct {
 	Token     string            `json:"token"`
@@ -94,7 +100,7 @@ func FetchCaskInfo(ctx context.Context, caskName string) (*CaskInfo, error) {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch cask info: %w", err)
 	}
