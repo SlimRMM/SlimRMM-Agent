@@ -434,8 +434,20 @@ type RestoreConfig struct {
 	RestoreVolumes bool
 
 	// Agent restore
-	ConfigPath      string
-	CompliancePath  string
+	ConfigPath     string
+	CompliancePath string
+
+	// Database restore
+	DatabaseType   string // "postgresql" or "mysql"
+	ConnectionType string // "host" or "socket"
+	Host           string
+	Port           int
+	SocketPath     string
+	Username       string
+	Password       string
+	DatabaseName   string // Target database name (can differ from source)
+	DropExisting   bool   // Drop existing database before restore
+	CreateDatabase bool   // Create database if not exists
 }
 
 // RestoreResult represents the result of a restore operation.

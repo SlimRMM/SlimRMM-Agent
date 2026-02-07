@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -415,13 +416,15 @@ func (h *Handler) createBackupViaOrchestrator(ctx context.Context, req createBac
 		h.SendRaw(msg)
 	})
 
-	// Check if this backup type should use streaming (Docker types can be very large)
-	// Streaming prevents OOM by piping data directly from docker export to upload
-	// instead of loading the entire container filesystem into memory
+	// Check if this backup type should use streaming (Docker and database types can be very large)
+	// Streaming prevents OOM by piping data directly to upload
+	// instead of loading the entire backup into memory
 	isStreamingType := backupType == backup.TypeDockerContainer ||
 		backupType == backup.TypeDockerVolume ||
 		backupType == backup.TypeDockerImage ||
-		backupType == backup.TypeDockerCompose
+		backupType == backup.TypeDockerCompose ||
+		backupType == backup.TypePostgreSQL ||
+		backupType == backup.TypeMySQL
 
 	var result *backup.BackupResult
 	var err error
@@ -518,6 +521,18 @@ type restoreBackupRequest struct {
 	TargetPath    string `json:"target_path,omitempty"`     // Path for restored VM
 	RegisterVM    bool   `json:"register_vm,omitempty"`     // Register VM after restore
 	GenerateNewID bool   `json:"generate_new_id,omitempty"` // Generate new VM ID
+
+	// Database-specific restore parameters
+	DatabaseType   string `json:"database_type,omitempty"`   // postgresql or mysql
+	ConnectionType string `json:"connection_type,omitempty"` // host or socket
+	DBHost         string `json:"db_host,omitempty"`
+	DBPort         int    `json:"db_port,omitempty"`
+	DBSocketPath   string `json:"db_socket_path,omitempty"`
+	DBUsername     string `json:"db_username,omitempty"`
+	DBPassword     string `json:"db_password,omitempty"`
+	DBName         string `json:"db_name,omitempty"`         // Target database name
+	DropExisting   bool   `json:"drop_existing,omitempty"`   // Drop existing before restore
+	CreateDatabase bool   `json:"create_database,omitempty"` // Create if not exists
 }
 
 type restoreBackupResponse struct {
@@ -1565,6 +1580,12 @@ func (h *Handler) restoreBackupDataWithRequest(ctx context.Context, req restoreB
 		return h.restoreDockerImage(ctx, req, data)
 	case "docker_compose":
 		return h.restoreDockerCompose(ctx, req, data)
+
+	// Database restores
+	case "postgresql":
+		return h.restorePostgreSQL(ctx, req, data)
+	case "mysql":
+		return h.restoreMySQL(ctx, req, data)
 
 	// Proxmox restores - typically handled by Proxmox itself
 	case "proxmox_vm", "proxmox_lxc":
@@ -4064,4 +4085,72 @@ func (h *Handler) getMySQLDatabases(ctx context.Context, req testDatabaseConnect
 	}
 
 	return databases
+}
+
+// restorePostgreSQL restores a PostgreSQL database from backup.
+func (h *Handler) restorePostgreSQL(ctx context.Context, req restoreBackupRequest, data []byte) error {
+	restorer := backup.NewPostgreSQLRestorer(slog.Default())
+
+	config := backup.RestoreConfig{
+		DatabaseType:   req.DatabaseType,
+		ConnectionType: req.ConnectionType,
+		Host:           req.DBHost,
+		Port:           req.DBPort,
+		SocketPath:     req.DBSocketPath,
+		Username:       req.DBUsername,
+		Password:       req.DBPassword,
+		DatabaseName:   req.DBName,
+		DropExisting:   req.DropExisting,
+		CreateDatabase: req.CreateDatabase,
+	}
+
+	result, err := restorer.Restore(ctx, data, config)
+	if err != nil {
+		return fmt.Errorf("postgresql restore failed: %w", err)
+	}
+
+	if result.Status != "completed" {
+		return fmt.Errorf("postgresql restore incomplete: %s", result.Error)
+	}
+
+	h.logger.Info("postgresql database restored successfully",
+		"database", req.DBName,
+		"size", result.RestoredSize,
+	)
+
+	return nil
+}
+
+// restoreMySQL restores a MySQL database from backup.
+func (h *Handler) restoreMySQL(ctx context.Context, req restoreBackupRequest, data []byte) error {
+	restorer := backup.NewMySQLRestorer(slog.Default())
+
+	config := backup.RestoreConfig{
+		DatabaseType:   req.DatabaseType,
+		ConnectionType: req.ConnectionType,
+		Host:           req.DBHost,
+		Port:           req.DBPort,
+		SocketPath:     req.DBSocketPath,
+		Username:       req.DBUsername,
+		Password:       req.DBPassword,
+		DatabaseName:   req.DBName,
+		DropExisting:   req.DropExisting,
+		CreateDatabase: req.CreateDatabase,
+	}
+
+	result, err := restorer.Restore(ctx, data, config)
+	if err != nil {
+		return fmt.Errorf("mysql restore failed: %w", err)
+	}
+
+	if result.Status != "completed" {
+		return fmt.Errorf("mysql restore incomplete: %s", result.Error)
+	}
+
+	h.logger.Info("mysql database restored successfully",
+		"database", req.DBName,
+		"size", result.RestoredSize,
+	)
+
+	return nil
 }
