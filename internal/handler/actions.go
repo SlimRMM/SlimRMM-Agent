@@ -28,6 +28,17 @@ import (
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
 
+// unmarshalRequest is a generic helper that unmarshals JSON data into the specified type.
+// It reduces boilerplate by providing consistent error messages using i18n.MsgInvalidRequest.
+// Usage: req, err := unmarshalRequest[MyRequestType](data)
+func unmarshalRequest[T any](data json.RawMessage) (*T, error) {
+	var req T
+	if err := json.Unmarshal(data, &req); err != nil {
+		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
+	}
+	return &req, nil
+}
+
 // registerAllHandlers registers all action handlers.
 // Handler names match Python agent for API compatibility.
 func (h *Handler) registerHandlers() {
@@ -179,9 +190,9 @@ type customCommandRequest struct {
 }
 
 func (h *Handler) handleCustomCommand(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	var req customCommandRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
+	req, err := unmarshalRequest[customCommandRequest](data)
+	if err != nil {
+		return nil, err
 	}
 
 	timeout := time.Duration(req.Timeout) * time.Second
@@ -201,9 +212,9 @@ type executeScriptRequest struct {
 }
 
 func (h *Handler) handleExecuteScript(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	var req executeScriptRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
+	req, err := unmarshalRequest[executeScriptRequest](data)
+	if err != nil {
+		return nil, err
 	}
 
 	timeout := time.Duration(req.TimeoutSeconds) * time.Second
@@ -259,9 +270,9 @@ type listDirRequest struct {
 }
 
 func (h *Handler) handleListDir(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	var req listDirRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
+	req, err := unmarshalRequest[listDirRequest](data)
+	if err != nil {
+		return nil, err
 	}
 
 	return actions.ListDirectory(req.Path)
@@ -273,9 +284,9 @@ type createFolderRequest struct {
 }
 
 func (h *Handler) handleCreateFolder(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	var req createFolderRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
+	req, err := unmarshalRequest[createFolderRequest](data)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := actions.CreateFolder(req.Path, 0755); err != nil {
