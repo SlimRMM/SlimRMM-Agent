@@ -102,6 +102,9 @@ var specialKeyMap = map[string]string{
 }
 
 // MapKey maps a JavaScript key name to a robotgo key name.
+// It translates browser keyboard event key names (e.g., "Enter", "ArrowUp")
+// to robotgo key identifiers (e.g., "enter", "up"). Returns the original
+// key if no mapping exists (for regular character keys).
 func MapKey(key string) string {
 	if mapped, ok := specialKeyMap[key]; ok {
 		return mapped

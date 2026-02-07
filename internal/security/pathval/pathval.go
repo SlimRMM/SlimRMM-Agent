@@ -228,12 +228,16 @@ func (v *Validator) ValidateWithSymlinkResolution(path string) error {
 	return nil
 }
 
-// IsPathSafe is a convenience function using the default validator.
+// IsPathSafe is a convenience function that checks if a path is safe using the default validator.
+// Returns true if the path passes all security validations (no traversal, no forbidden paths).
+// Thread-safe: creates a new validator instance for each call.
 func IsPathSafe(path string) bool {
 	return New().Validate(path) == nil
 }
 
-// SanitizePath cleans and normalizes a path.
+// SanitizePath cleans and normalizes a path by removing redundant separators,
+// resolving . and .. elements, and converting to an absolute path when possible.
+// This does NOT validate the path for security - use Validate() for that.
 func SanitizePath(path string) string {
 	// Clean the path
 	cleaned := filepath.Clean(path)

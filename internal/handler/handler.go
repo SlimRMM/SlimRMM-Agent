@@ -366,6 +366,9 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	restorerRegistry.Register(backup.NewFilesAndFoldersRestorer(backupLogger))
 	restorerRegistry.Register(backup.NewAgentConfigRestorer(agentPaths, backupLogger))
 	restorerRegistry.Register(backup.NewAgentLogsRestorer(agentPaths, backupLogger))
+	// Database restorers
+	restorerRegistry.Register(backup.NewPostgreSQLRestorer(backupLogger))
+	restorerRegistry.Register(backup.NewMySQLRestorer(backupLogger))
 
 	// Initialize STREAMING collector registry for memory-safe Docker backups
 	// This prevents OOM by piping data directly from docker export to upload
@@ -376,8 +379,11 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	streamingCollectorRegistry.Register(backup.NewStreamingDockerVolumeCollector(logger, tempDir))
 	streamingCollectorRegistry.Register(backup.NewStreamingDockerImageCollector(logger, tempDir))
 	streamingCollectorRegistry.Register(backup.NewStreamingDockerComposeCollector(logger, tempDir))
+	// Database streaming collectors for memory-safe database backups
+	streamingCollectorRegistry.Register(backup.NewStreamingPostgreSQLCollector(logger))
+	streamingCollectorRegistry.Register(backup.NewStreamingMySQLCollector(logger))
 
-	// Create streaming orchestrator for large backups (Docker types)
+	// Create streaming orchestrator for large backups (Docker types and databases)
 	streamingOrchestrator := backup.NewStreamingOrchestrator(streamingCollectorRegistry, backup.StreamingOrchestratorConfig{
 		Logger:           logger,
 		CompressionLevel: backup.CompressionBalanced,
@@ -503,6 +509,8 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 }
 
 // SetSelfHealingWatchdog sets the self-healing watchdog for connection monitoring.
+// The watchdog receives connection success/failure notifications to trigger
+// automatic recovery actions when the agent loses connectivity.
 func (h *Handler) SetSelfHealingWatchdog(w SelfHealingWatchdog) {
 	h.selfHealingWatchdog = w
 }
@@ -521,8 +529,9 @@ func (h *Handler) recordConnectionFailure() {
 	}
 }
 
-// SetWingetHelperAvailable sets whether winget is available via helper in user context.
-// This is called when an update scan via helper succeeds.
+// SetWingetHelperAvailable sets whether winget is available via the helper process.
+// This is called when an update scan via helper succeeds, indicating that winget
+// can be used in user context through the helper binary for interactive operations.
 func (h *Handler) SetWingetHelperAvailable(available bool) {
 	h.mu.Lock()
 	h.wingetHelperAvailable = available
@@ -535,8 +544,10 @@ func (h *Handler) SetWingetHelperAvailable(available bool) {
 // Default delay before scheduling a reboot after policy execution.
 const defaultRebootDelaySeconds = 30
 
-// ScheduleReboot schedules a system reboot after a delay.
-// This consolidates the reboot scheduling logic used across multiple handlers.
+// ScheduleReboot schedules a system reboot after the default delay (30 seconds).
+// This consolidates the reboot scheduling logic used across multiple handlers,
+// allowing pending operations to complete before the system restarts.
+// The reboot runs in a background goroutine and logs the reason for auditing.
 func (h *Handler) ScheduleReboot(reason string) {
 	go func() {
 		time.Sleep(defaultRebootDelaySeconds * time.Second)
@@ -1343,7 +1354,9 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 	h.Send(resp)
 }
 
-// Send sends a response to the server.
+// Send marshals and sends a Response to the server via WebSocket.
+// Thread-safe: uses a buffered channel for non-blocking sends.
+// If the send channel is full, the message is dropped with a warning log.
 func (h *Handler) Send(resp Response) {
 	data, err := json.Marshal(resp)
 	if err != nil {
@@ -1358,7 +1371,10 @@ func (h *Handler) Send(resp Response) {
 	}
 }
 
-// SendRaw sends any message to the server without wrapping.
+// SendRaw marshals and sends any message to the server without Response wrapping.
+// Use this for custom message formats like heartbeats, alerts, and progress updates.
+// Thread-safe: uses a buffered channel for non-blocking sends.
+// If the send channel is full, the message is dropped with a warning log.
 func (h *Handler) SendRaw(msg interface{}) {
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -1373,7 +1389,10 @@ func (h *Handler) SendRaw(msg interface{}) {
 	}
 }
 
-// Close closes the WebSocket connection.
+// Close gracefully shuts down the handler and closes the WebSocket connection.
+// It stops all background services including the inventory watcher, upload manager,
+// anti-replay protection, and audit logger. Sends a WebSocket close message
+// before closing the underlying connection. Thread-safe.
 func (h *Handler) Close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
