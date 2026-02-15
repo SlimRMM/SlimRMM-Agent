@@ -2862,13 +2862,83 @@ func (h *Handler) handleExecuteWingetUpdates(ctx context.Context, data json.RawM
 }
 
 // executeWingetUpgradeByID runs winget upgrade for a single package by ID.
+// It first tries user context via helper (for per-user packages like Spotify, Zoom),
+// then falls back to system context.
 func (h *Handler) executeWingetUpgradeByID(ctx context.Context, wingetPath, packageID, executionID string) wingetUpdateResult {
-	result := wingetUpdateResult{
-		PackageID:   packageID,
-		PackageName: packageID, // Use ID as name if not known
+	// First try user context via helper (for per-user installed packages)
+	if userResult, ok := h.tryBulkUpgradeViaHelper(wingetPath, packageID, executionID); ok {
+		return userResult
 	}
 
-	// Run winget upgrade
+	// Fall back to system context
+	h.logger.Info("trying winget upgrade in system context", "package", packageID)
+	return h.executeWingetUpgradeSystem(ctx, wingetPath, packageID, executionID)
+}
+
+// tryBulkUpgradeViaHelper attempts a winget upgrade via the helper process (user context).
+// Returns the result and true if the upgrade was handled (success or definitive failure),
+// or zero value and false if system context should be tried instead.
+func (h *Handler) tryBulkUpgradeViaHelper(wingetPath, packageID, executionID string) (wingetUpdateResult, bool) {
+	helperClient, err := helper.GetManager().Acquire()
+	if err != nil {
+		h.logger.Debug("helper not available for bulk upgrade, falling back to system context", "package", packageID, "error", err)
+		return wingetUpdateResult{}, false
+	}
+	defer helper.GetManager().Release()
+
+	h.logger.Info("trying winget upgrade via helper (user context)", "package", packageID)
+
+	upgradeResult, err := helperClient.UpgradeWingetPackage(wingetPath, packageID)
+	if err != nil || upgradeResult == nil {
+		h.logger.Debug("helper upgrade call failed, falling back to system context", "package", packageID, "error", err)
+		return wingetUpdateResult{}, false
+	}
+
+	result := wingetUpdateResult{
+		PackageID:   packageID,
+		PackageName: packageID,
+	}
+
+	if upgradeResult.Success {
+		result.Status = "success"
+		h.logger.Info("winget upgrade succeeded via helper (user context)", "package", packageID)
+		h.SendRaw(map[string]interface{}{
+			"action":       "winget_update_output",
+			"execution_id": executionID,
+			"output":       upgradeResult.Output,
+		})
+		return result, true
+	}
+
+	// Package not found in user context -> fall back to system context
+	if winget.IsPackageNotFound(upgradeResult.ExitCode) ||
+		strings.Contains(strings.ToLower(upgradeResult.Output), "no installed package") {
+		h.logger.Info("package not found in user context, trying system context", "package", packageID)
+		return wingetUpdateResult{}, false
+	}
+
+	// No update available (already up to date)
+	if winget.IsNoUpdateAvailable(upgradeResult.ExitCode) || winget.IsNoApplicableUpgrade(upgradeResult.ExitCode) {
+		result.Status = "skipped"
+		result.Error = "already up to date"
+		h.logger.Info("winget upgrade skipped (already up to date)", "package", packageID)
+		return result, true
+	}
+
+	// Definitive failure in user context
+	result.Status = "failed"
+	result.Error = fmt.Sprintf("upgrade failed in user context: %s", upgradeResult.Error)
+	h.logger.Error("winget upgrade failed via helper (user context)", "package", packageID, "error", upgradeResult.Error)
+	return result, true
+}
+
+// executeWingetUpgradeSystem runs winget upgrade in the SYSTEM context (fallback).
+func (h *Handler) executeWingetUpgradeSystem(ctx context.Context, wingetPath, packageID, executionID string) wingetUpdateResult {
+	result := wingetUpdateResult{
+		PackageID:   packageID,
+		PackageName: packageID,
+	}
+
 	cmd := exec.CommandContext(ctx, wingetPath, "upgrade",
 		"--id", packageID,
 		"--accept-source-agreements",
@@ -2932,11 +3002,9 @@ func (h *Handler) executeWingetUpgradeByID(ctx context.Context, wingetPath, pack
 	err := cmd.Wait()
 
 	if err != nil {
-		// Check for specific exit codes
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode := exitErr.ExitCode()
-			// 0x8A150011 = No applicable upgrade found (already up to date)
-			if exitCode == 0x8A150011 || exitCode == -1978335215 {
+			if winget.IsNoUpdateAvailable(exitCode) || winget.IsNoApplicableUpgrade(exitCode) {
 				result.Status = "skipped"
 				result.Error = "already up to date"
 				return result
