@@ -4,6 +4,8 @@ package pathval
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -196,32 +198,119 @@ func (v *Validator) Validate(path string) error {
 	return nil
 }
 
+// resolveSafe attempts to resolve all symlinks in a path. If the path does not
+// exist, it walks up parent directories until it finds an existing ancestor,
+// resolves symlinks on that ancestor, and rejoins the non-existing tail.
+// This allows safe symlink resolution even for paths that do not yet exist
+// (e.g. files about to be created). Fails closed: any unexpected error is
+// returned so callers can reject.
+//
+// NOTE: TOCTOU windows are inherent to stat/open-based resolution. A concurrent
+// attacker that can mutate the filesystem between this resolution and the
+// caller's subsequent open(2) may still swap directory entries. For strict
+// guarantees use openat2(RESOLVE_NO_SYMLINKS) on Linux, which performs
+// resolution atomically at the syscall level. This implementation minimizes
+// the window by issuing the minimum number of stat calls: the happy path
+// performs a single EvalSymlinks call and inspects the returned error rather
+// than doing a separate Lstat probe first.
+func resolveSafe(path string) (string, error) {
+	cleaned := filepath.Clean(path)
+
+	// Fast path: one syscall. EvalSymlinks both checks existence and
+	// resolves symlinks atomically (per-call), eliminating the prior
+	// Lstat->EvalSymlinks TOCTOU window.
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		// Unexpected error (permission, I/O) — fail closed.
+		return "", err
+	}
+
+	// Path does not exist — walk up parents until we find an existing
+	// ancestor we can resolve. We call EvalSymlinks directly on each
+	// candidate parent (no separate Lstat), again minimizing syscalls.
+	tail := ""
+	ancestor := cleaned
+	for {
+		parent := filepath.Dir(ancestor)
+		base := filepath.Base(ancestor)
+		if tail == "" {
+			tail = base
+		} else {
+			tail = filepath.Join(base, tail)
+		}
+
+		if parent == ancestor {
+			// Reached filesystem root without finding existing ancestor.
+			return "", os.ErrNotExist
+		}
+
+		resolvedParent, evalErr := filepath.EvalSymlinks(parent)
+		if evalErr == nil {
+			return filepath.Join(resolvedParent, tail), nil
+		}
+		if !errors.Is(evalErr, fs.ErrNotExist) {
+			// Unexpected error — fail closed.
+			return "", evalErr
+		}
+		ancestor = parent
+	}
+}
+
+// pathMatchesForbidden checks whether a (already cleaned) path matches any
+// forbidden entry — either a direct prefix match in forbiddenPaths or a
+// substring match against any of the forbiddenPatterns.
+func pathMatchesForbidden(cleanPath string, forbiddenPaths, forbiddenPatterns []string) bool {
+	for _, forbidden := range forbiddenPaths {
+		if strings.HasPrefix(cleanPath, forbidden) {
+			return true
+		}
+	}
+	pathLower := strings.ToLower(cleanPath)
+	baseLower := strings.ToLower(filepath.Base(cleanPath))
+	for _, pattern := range forbiddenPatterns {
+		patternLower := strings.ToLower(pattern)
+		if strings.Contains(pathLower, patternLower) {
+			return true
+		}
+		if strings.Contains(baseLower, patternLower) {
+			return true
+		}
+	}
+	return false
+}
+
 // ValidateWithSymlinkResolution validates the path and resolves symlinks.
+// It checks both the cleaned input path and the fully symlink-resolved path
+// against forbiddenPaths/forbiddenPatterns. Any mismatch where the resolved
+// path differs from the cleaned path AND the resolved path hits a forbidden
+// entry is rejected with a clear error that mentions symlink resolution.
+// Fails closed: any error from resolveSafe (other than a clean non-existent
+// path that still resolves via parent walk) causes rejection.
 func (v *Validator) ValidateWithSymlinkResolution(path string) error {
-	// First validate the path itself
+	// First validate the path itself via the standard checks.
 	if err := v.Validate(path); err != nil {
 		return err
 	}
 
-	// Check if path exists
-	info, err := os.Lstat(path)
+	cleaned := filepath.Clean(path)
+
+	// Resolve symlinks safely (walks up to existing ancestor if needed).
+	resolved, err := resolveSafe(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Path doesn't exist yet, that's OK for creation
-			return nil
-		}
-		return err
+		// Fail closed on any resolution error.
+		return fmt.Errorf("%w: could not resolve symlinks: %v", ErrSymlinkTraversal, err)
 	}
 
-	// If it's a symlink, resolve it and validate the target
-	if info.Mode()&os.ModeSymlink != 0 {
-		resolved, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return err
-		}
-
-		if err := v.Validate(resolved); err != nil {
-			return ErrSymlinkTraversal
+	// If resolution changed the path, re-check the resolved path against
+	// the forbidden lists to ensure a symlink did not redirect us into
+	// a sensitive location.
+	if resolved != cleaned {
+		if pathMatchesForbidden(resolved, v.forbiddenPaths, v.forbiddenPatterns) {
+			return fmt.Errorf("%w: symlink resolution redirected %q to forbidden target %q",
+				ErrSymlinkTraversal, cleaned, resolved)
 		}
 	}
 

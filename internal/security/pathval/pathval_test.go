@@ -286,6 +286,73 @@ func TestValidateWithSymlinkResolution_Escape(t *testing.T) {
 	})
 }
 
+// TestResolveSafe_TOCTOUDocumented documents that symlink validation is
+// best-effort with respect to concurrent filesystem mutation. The underlying
+// resolution uses filepath.EvalSymlinks, which is itself implemented on top
+// of stat/readlink syscalls; an attacker racing the validator can in principle
+// swap a symlink target between the time resolveSafe returns and the caller
+// subsequently opens the path. For strict guarantees a platform-specific
+// atomic primitive (e.g. openat2(RESOLVE_NO_SYMLINKS) on Linux) is required.
+//
+// This test does not attempt to race the validator — doing so would be
+// inherently flaky. It simply pins the contract: resolveSafe returns a
+// snapshot of the resolved path at the moment of the call, nothing more.
+func TestResolveSafe_TOCTOUDocumented(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping symlink tests on Windows")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "pathval_toctou")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	resolvedTmpDir, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(resolvedTmpDir, "target.txt")
+	if err := os.WriteFile(target, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(resolvedTmpDir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	// Snapshot #1: link -> target.
+	got1, err := resolveSafe(link)
+	if err != nil {
+		t.Fatalf("resolveSafe(link) err = %v", err)
+	}
+	if got1 != target {
+		t.Errorf("snapshot #1: got %q want %q", got1, target)
+	}
+
+	// Swap the symlink target to demonstrate that subsequent calls observe
+	// the new state — the validator's guarantee is per-call, not durable.
+	newTarget := filepath.Join(resolvedTmpDir, "other.txt")
+	if err := os.WriteFile(newTarget, []byte("y"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(newTarget, link); err != nil {
+		t.Fatal(err)
+	}
+
+	got2, err := resolveSafe(link)
+	if err != nil {
+		t.Fatalf("resolveSafe(link) after swap err = %v", err)
+	}
+	if got2 != newTarget {
+		t.Errorf("snapshot #2: got %q want %q", got2, newTarget)
+	}
+}
+
 func TestIsPathSafe(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping Unix path tests on Windows")
