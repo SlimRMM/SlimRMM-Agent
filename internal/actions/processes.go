@@ -9,10 +9,34 @@ package actions
 
 import (
 	"context"
+	"regexp"
 	"strings"
 
 	"github.com/shirou/gopsutil/v3/process"
 )
+
+// javaDPropRedactRegex matches Java-style -D system properties that carry
+// secrets (e.g. -Dpassword=secret, -Dapi.key=abc). The dot is allowed so that
+// property names like "spring.datasource.password" are covered.
+var javaDPropRedactRegex = regexp.MustCompile(`(?i)(-D[\w.]*(password|passwd|secret|token|api[_-]?key|bearer)[\w.]*)=\S+`)
+
+// redactCmdLine applies secret-redaction to a process command line before it
+// is sent to the backend. It layers the shared sanitizeOutput() redactions
+// (key=value / key: value style) on top of a Java-style -Dprop=secret pass,
+// so that command lines such as
+//
+//	java -Dpassword=hunter2 -jar app.jar
+//	docker run -e DB_PASSWORD=xxx image
+//	myapp --api-key=abc123
+//
+// never leak plaintext credentials. Empty input is returned as-is.
+func redactCmdLine(s string) string {
+	if s == "" {
+		return s
+	}
+	s = javaDPropRedactRegex.ReplaceAllString(s, "$1=***REDACTED***")
+	return sanitizeOutput(s)
+}
 
 // ProcessInfo is a JSON-friendly snapshot of a single running process. All
 // numeric fields use signed types (int64) to avoid Python-side parsing issues
@@ -77,7 +101,10 @@ func ListProcesses(ctx context.Context) ([]ProcessInfo, error) {
 			if len(cmd) > maxCmdLineLen {
 				cmd = cmd[:maxCmdLineLen] + "..."
 			}
-			info.CmdLine = strings.TrimSpace(cmd)
+			// Redact secrets (passwords, tokens, API keys, bearer tokens,
+			// Java -Dpassword=... style flags) BEFORE storing the cmdline,
+			// so plaintext credentials never reach the backend.
+			info.CmdLine = redactCmdLine(strings.TrimSpace(cmd))
 		}
 
 		result = append(result, info)
