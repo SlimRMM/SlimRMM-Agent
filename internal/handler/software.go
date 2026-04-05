@@ -112,6 +112,9 @@ type downloadAndInstallMSIRequest struct {
 // handleInstallSoftware handles software installation via winget.
 // Delegates to the service layer for proper MVC separation.
 func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -186,6 +189,9 @@ func (h *Handler) handleInstallSoftware(ctx context.Context, data json.RawMessag
 
 // handleDownloadAndInstallMSI handles MSI package download and installation.
 func (h *Handler) handleDownloadAndInstallMSI(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -380,6 +386,9 @@ type downloadAndInstallPKGRequest struct {
 // handleDownloadAndInstallPKG handles PKG package download and installation on macOS.
 // Delegates to the service layer for proper MVC separation.
 func (h *Handler) handleDownloadAndInstallPKG(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "darwin" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -461,6 +470,9 @@ type downloadAndInstallCaskRequest struct {
 // handleDownloadAndInstallCask handles Homebrew cask installation.
 // Delegates to the service layer for proper MVC separation.
 func (h *Handler) handleDownloadAndInstallCask(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "darwin" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -550,6 +562,9 @@ type downloadAndInstallDEBRequest struct {
 // handleDownloadAndInstallDEB handles DEB package download and installation on Debian/Ubuntu.
 // Delegates to the service layer for proper MVC separation.
 func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "linux" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -634,6 +649,9 @@ type downloadAndInstallRPMRequest struct {
 // handleDownloadAndInstallRPM handles RPM package download and installation on RHEL/CentOS/Fedora/SUSE.
 // Delegates to the service layer for proper MVC separation.
 func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "linux" {
 		return map[string]interface{}{
 			"status": "failed",

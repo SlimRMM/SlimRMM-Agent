@@ -197,6 +197,9 @@ type customCommandRequest struct {
 }
 
 func (h *Handler) handleCustomCommand(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	req, err := unmarshalRequest[customCommandRequest](data)
 	if err != nil {
 		return nil, err
@@ -219,6 +222,9 @@ type executeScriptRequest struct {
 }
 
 func (h *Handler) handleExecuteScript(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	req, err := unmarshalRequest[executeScriptRequest](data)
 	if err != nil {
 		return nil, err
@@ -742,6 +748,9 @@ type systemControlRequest struct {
 }
 
 func (h *Handler) handleRestart(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req systemControlRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -755,6 +764,9 @@ func (h *Handler) handleRestart(ctx context.Context, data json.RawMessage) (inte
 }
 
 func (h *Handler) handleShutdown(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req systemControlRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -796,6 +808,9 @@ type executePatchesRequest struct {
 }
 
 func (h *Handler) handleExecutePatches(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req executePatchesRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -1061,6 +1076,9 @@ type updateAgentRequest struct {
 }
 
 func (h *Handler) handleUpdateAgent(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req updateAgentRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -1139,6 +1157,9 @@ func (h *Handler) handleCheckUpdate(ctx context.Context, data json.RawMessage) (
 
 // handleUpdateOsquery installs or updates osquery.
 func (h *Handler) handleUpdateOsquery(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	client := osquery.New()
 
 	// Check if already installed
@@ -1408,6 +1429,9 @@ type setUninstallKeyRequest struct {
 }
 
 func (h *Handler) handleSetUninstallKey(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req setUninstallKeyRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -1795,6 +1819,9 @@ type dockerPruneRequest struct {
 }
 
 func (h *Handler) handleDockerPruneImages(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req dockerPruneRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -1803,14 +1830,23 @@ func (h *Handler) handleDockerPruneImages(ctx context.Context, data json.RawMess
 }
 
 func (h *Handler) handleDockerPruneVolumes(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	return actions.PruneDockerVolumes(ctx)
 }
 
 func (h *Handler) handleDockerPruneNetworks(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	return actions.PruneDockerNetworks(ctx)
 }
 
 func (h *Handler) handleDockerPruneAll(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req dockerPruneRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -1843,6 +1879,9 @@ type dockerUpdateImagesRequest struct {
 }
 
 func (h *Handler) handleDockerUpdateImages(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req dockerUpdateImagesRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -2035,6 +2074,9 @@ func (h *Handler) handleGetWingetStatus(ctx context.Context, data json.RawMessag
 
 // handleInstallWinget installs winget on Windows.
 func (h *Handler) handleInstallWinget(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status":  "unsupported",
@@ -2120,6 +2162,9 @@ type wingetUpdateResult struct {
 }
 
 func (h *Handler) handleExecuteWingetPolicy(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -2236,6 +2281,9 @@ type wingetInstallResult struct {
 
 // handleExecuteWingetInstallPolicy handles installing software via winget policy.
 func (h *Handler) handleExecuteWingetInstallPolicy(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -2471,6 +2519,9 @@ type wingetManualUpdatesRequest struct {
 // handleExecuteWingetUpdate handles single package winget update.
 // It first tries user context via helper, then falls back to system context.
 func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -2691,6 +2742,9 @@ func (h *Handler) evaluateWingetExitStatus(err error) (status string, errorMsg s
 
 // handleExecuteWingetUpdates handles bulk winget update.
 func (h *Handler) handleExecuteWingetUpdates(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status": "failed",

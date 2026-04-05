@@ -363,6 +363,9 @@ type uninstallRPMRequest struct {
 // handleUninstallSoftware handles software uninstallation via winget on Windows.
 // Delegates to the service layer for proper MVC separation.
 func (h *Handler) handleUninstallSoftware(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -432,6 +435,9 @@ func (h *Handler) handleUninstallSoftware(ctx context.Context, data json.RawMess
 // handleUninstallMSI handles MSI uninstallation on Windows.
 // Delegates to the service layer for proper MVC separation.
 func (h *Handler) handleUninstallMSI(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -502,6 +508,9 @@ func (h *Handler) handleUninstallMSI(ctx context.Context, data json.RawMessage) 
 // handleUninstallPKG handles PKG uninstallation on macOS.
 // Delegates to the service layer for proper MVC separation.
 func (h *Handler) handleUninstallPKG(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "darwin" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -571,6 +580,9 @@ func (h *Handler) handleUninstallPKG(ctx context.Context, data json.RawMessage) 
 // handleUninstallCask handles Homebrew cask uninstallation on macOS.
 // Delegates to the service layer for proper MVC separation.
 func (h *Handler) handleUninstallCask(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "darwin" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -654,6 +666,9 @@ func (h *Handler) handleUninstallCask(ctx context.Context, data json.RawMessage)
 // handleUninstallDEB handles DEB package uninstallation on Linux.
 // Delegates to the service layer for proper MVC separation.
 func (h *Handler) handleUninstallDEB(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "linux" {
 		return map[string]interface{}{
 			"status": "failed",
@@ -724,6 +739,9 @@ func (h *Handler) handleUninstallDEB(ctx context.Context, data json.RawMessage) 
 // handleUninstallRPM handles RPM package uninstallation on Linux.
 // Delegates to the service layer for proper MVC separation.
 func (h *Handler) handleUninstallRPM(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	if runtime.GOOS != "linux" {
 		return map[string]interface{}{
 			"status": "failed",

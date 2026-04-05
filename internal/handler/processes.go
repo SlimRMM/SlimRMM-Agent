@@ -4,10 +4,18 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
 )
+
+// ErrMaintenanceActive is returned by destructive handlers when the agent is
+// currently in maintenance mode. Handlers that mutate system state (scripts,
+// patches, updates, installs, reboots, registry changes, container pruning,
+// etc.) must check IsInMaintenance() at the start and return this sentinel
+// error so the backend can distinguish policy rejections from real failures.
+var ErrMaintenanceActive = errors.New("agent is in maintenance mode, destructive operations are blocked")
 
 // handleListProcesses enumerates the running processes on the host and returns
 // them in a shape consumable by the backend's GET /agents/{id}/processes
@@ -29,12 +37,9 @@ type setMaintenanceRequest struct {
 }
 
 // handleSetMaintenanceMode flips the agent's maintenance flag. While the flag
-// is set, other handlers may opt to refuse destructive work (script-exec,
-// patching, etc.) by checking IsInMaintenance().
-//
-// TODO: wire up rejection logic in long-running / destructive handlers to
-// honour this flag. For now we only record the state so the backend can sync
-// it and probe it via get_maintenance_status.
+// is set, destructive handlers (script-exec, patching, updates, installs,
+// reboots, etc.) refuse to run and return ErrMaintenanceActive. Read-only
+// handlers and the maintenance toggle itself remain available.
 func (h *Handler) handleSetMaintenanceMode(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	req, err := unmarshalRequest[setMaintenanceRequest](data)
 	if err != nil {
