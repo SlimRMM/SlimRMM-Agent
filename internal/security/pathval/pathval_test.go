@@ -2,6 +2,7 @@
 package pathval
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -280,7 +281,7 @@ func TestValidateWithSymlinkResolution_Escape(t *testing.T) {
 
 	t.Run("symlink escape attempt", func(t *testing.T) {
 		err := v.ValidateWithSymlinkResolution(escapeLink)
-		if err != ErrSymlinkTraversal {
+		if !errors.Is(err, ErrSymlinkTraversal) {
 			t.Errorf("ValidateWithSymlinkResolution() = %v, want ErrSymlinkTraversal", err)
 		}
 	})
