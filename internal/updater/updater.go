@@ -1375,14 +1375,36 @@ func (u *Updater) GetChecksumFromRelease(ctx context.Context, version string) (m
 	checksums := make(map[string]string)
 	lines := strings.Split(string(data), "\n")
 	for _, line := range lines {
-		parts := strings.Fields(line)
-		if len(parts) == 2 {
-			checksums[parts[1]] = parts[0]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
 		}
+		// sha256sum format: "HASH  FILENAME" (two spaces), but tolerate
+		// any whitespace between hash and filename, and preserve spaces
+		// within filenames by only splitting on the first whitespace run.
+		parts := strings.Fields(trimmed)
+		if len(parts) < 2 {
+			continue
+		}
+		hash := strings.TrimSpace(parts[0])
+		filename := strings.TrimSpace(strings.Join(parts[1:], " "))
+		if filename == "" {
+			continue
+		}
+		if !checksumHashRe.MatchString(hash) {
+			continue
+		}
+		checksums[filename] = strings.ToLower(hash)
 	}
 
 	return checksums, nil
 }
+
+// checksumHashRe validates that a checksum token is a hex string of at least
+// 32 chars (covers MD5/SHA-1/SHA-256/SHA-512). Only SHA-256 is actually
+// used for verification, but we accept the others so future format changes
+// do not silently drop entries.
+var checksumHashRe = regexp.MustCompile(`^[a-fA-F0-9]{32,}$`)
 
 // VerifyChecksum verifies a file's SHA256 checksum.
 func VerifyChecksum(filePath, expectedHash string) error {
