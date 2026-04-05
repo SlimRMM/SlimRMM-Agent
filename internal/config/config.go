@@ -135,7 +135,51 @@ func (c *Config) Save() error {
 		return fmt.Errorf("writing config: %w", err)
 	}
 
+	// Explicitly enforce 0600 permissions. os.WriteFile only applies the mode
+	// on file creation (subject to umask) — an existing file keeps its old
+	// perms. Chmod is a no-op with respect to unix perms on Windows.
+	if err := os.Chmod(c.filePath, configFileMode); err != nil {
+		return fmt.Errorf("setting config permissions: %w", err)
+	}
+
 	return nil
+}
+
+// redact returns a fixed placeholder for non-empty secrets and an empty string
+// for empty ones, so redacted repr still conveys presence/absence without
+// leaking values.
+func redact(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "***REDACTED***"
+}
+
+// String implements fmt.Stringer. It returns a human-readable representation
+// of the Config with all secret fields redacted. JSON serialisation is
+// unaffected because it does not consult String().
+func (c *Config) String() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return fmt.Sprintf("Config{Server:%q UUID:%q MTLSEnabled:%t InstallDate:%q "+
+		"LastConnection:%q LastHeartbeat:%q ReregistrationSecret:%q "+
+		"TamperProtection:%t UninstallKeyHash:%q WatchdogEnabled:%t TamperAlertEnabled:%t}",
+		c.Server, c.UUID, c.MTLSEnabled, c.InstallDate,
+		c.LastConnection, c.LastHeartbeat, redact(c.ReregistrationSecret),
+		c.TamperProtection, redact(c.UninstallKeyHash), c.WatchdogEnabled, c.TamperAlertEnabled)
+}
+
+// GoString implements fmt.GoStringer (used by %#v) with the same redaction as
+// String so debug dumps do not leak secrets.
+func (c *Config) GoString() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return fmt.Sprintf("config.Config{Server:%q, UUID:%q, MTLSEnabled:%t, InstallDate:%q, "+
+		"LastConnection:%q, LastHeartbeat:%q, ReregistrationSecret:%q, "+
+		"TamperProtection:%t, UninstallKeyHash:%q, WatchdogEnabled:%t, TamperAlertEnabled:%t}",
+		c.Server, c.UUID, c.MTLSEnabled, c.InstallDate,
+		c.LastConnection, c.LastHeartbeat, redact(c.ReregistrationSecret),
+		c.TamperProtection, redact(c.UninstallKeyHash), c.WatchdogEnabled, c.TamperAlertEnabled)
 }
 
 // SetUUID updates the agent UUID.
