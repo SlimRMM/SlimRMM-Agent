@@ -180,6 +180,13 @@ func (h *Handler) registerHandlers() {
 
 	// Backup handlers
 	h.registerBackupHandlers()
+
+	// Process management
+	h.handlers["list_processes"] = h.handleListProcesses
+
+	// Maintenance mode sync
+	h.handlers["set_maintenance_mode"] = h.handleSetMaintenanceMode
+	h.handlers["get_maintenance_status"] = h.handleGetMaintenanceStatus
 }
 
 // Command handlers
@@ -3116,4 +3123,18 @@ func (h *Handler) handleGetNetworkInterfaces(ctx context.Context, data json.RawM
 		"interfaces": interfaces,
 		"count":      len(interfaces),
 	}, nil
+}
+
+// Basic handler implementations
+
+func (h *Handler) handlePing(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	return map[string]string{"pong": "ok"}, nil
+}
+
+func (h *Handler) handleGetSystemStats(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	return h.monitor.GetStats(ctx)
+}
+
+func (h *Handler) handleHeartbeat(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	return h.monitor.GetStats(ctx)
 }

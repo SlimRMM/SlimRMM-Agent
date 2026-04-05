@@ -17,9 +17,9 @@ func buildDiskStats(stats *monitor.Stats) []HeartbeatDisk {
 		diskStats = append(diskStats, HeartbeatDisk{
 			Device:      d.Device,
 			Mountpoint:  d.Mountpoint,
-			Total:       d.Total,
-			Used:        d.Used,
-			Free:        d.Free,
+			Total:       int64(d.Total),
+			Used:        int64(d.Used),
+			Free:        int64(d.Free),
 			UsedPercent: d.UsedPercent,
 		})
 	}
@@ -36,10 +36,10 @@ func aggregateNetworkIO(stats *monitor.Stats) *HeartbeatNetworkIO {
 		totalPacketsRecv += n.PacketsRecv
 	}
 	return &HeartbeatNetworkIO{
-		BytesSent:   totalBytesSent,
-		BytesRecv:   totalBytesRecv,
-		PacketsSent: totalPacketsSent,
-		PacketsRecv: totalPacketsRecv,
+		BytesSent:   int64(totalBytesSent),
+		BytesRecv:   int64(totalBytesRecv),
+		PacketsSent: int64(totalPacketsSent),
+		PacketsRecv: int64(totalPacketsRecv),
 	}
 }
 
@@ -52,11 +52,11 @@ func (h *Handler) buildBaseHeartbeat(ctx context.Context, stats *monitor.Stats) 
 		Stats: HeartbeatStats{
 			CPUPercent:    stats.CPU.UsagePercent,
 			MemoryPercent: stats.Memory.UsedPercent,
-			MemoryUsed:    stats.Memory.Used,
-			MemoryTotal:   stats.Memory.Total,
+			MemoryUsed:    int64(stats.Memory.Used),
+			MemoryTotal:   int64(stats.Memory.Total),
 			Disk:          buildDiskStats(stats),
 			NetworkIO:     aggregateNetworkIO(stats),
-			UptimeSeconds: stats.Uptime,
+			UptimeSeconds: int64(stats.Uptime),
 			ProcessCount:  stats.ProcessCount,
 			Timezone:      stats.Timezone,
 		},

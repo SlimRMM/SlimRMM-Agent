@@ -4,9 +4,7 @@ package handler
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,17 +12,16 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
 	"github.com/slimrmm/slimrmm-agent/internal/config"
-	"github.com/slimrmm/slimrmm-agent/internal/logging"
 	"github.com/slimrmm/slimrmm-agent/internal/monitor"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/security/antireplay"
 	"github.com/slimrmm/slimrmm-agent/internal/security/audit"
-	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/security/ratelimit"
 	"github.com/slimrmm/slimrmm-agent/internal/services/backup"
 	"github.com/slimrmm/slimrmm-agent/internal/services/compliance"
@@ -36,150 +33,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/tamper"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
-	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
-
-const (
-	// WebSocket timing constants
-	writeWait         = 10 * time.Second
-	pongWait          = 60 * time.Second
-	pingPeriod        = (pongWait * 9) / 10
-	heartbeatPeriod   = 30 * time.Second
-	// SECURITY: Reduced from 10MB to 1MB to prevent memory exhaustion DoS attacks.
-	// Large file transfers should use streaming endpoints, not WebSocket messages.
-	maxMessageSize    = 1 * 1024 * 1024 // 1 MB
-	certCheckInterval = 24 * time.Hour  // Check certificates every 24 hours
-
-	// Connection constants
-	connectionTimeout = 30 * time.Second
-	tcpKeepAlive      = 30 * time.Second
-	handshakeTimeout  = 15 * time.Second
-	wsEndpoint        = "/api/v1/ws/agent"
-	httpClientTimeout = 30 * time.Second
-
-	// Heartbeat configuration
-	fullHeartbeatInterval = 10  // Full heartbeat every N heartbeats (~5 minutes)
-	configSaveInterval    = 10  // Save config every N heartbeats (~5 minutes)
-	wingetUpdateInterval  = 120 // Winget update check every N heartbeats (~60 minutes)
-)
-
-// actionToResponseAction maps request action names to their response action names.
-// This is needed because the backend expects specific action names for certain responses.
-var actionToResponseAction = map[string]string{
-	"pull_logs":           "logs_result",
-	"create_agent_backup": "backup_result",
-}
-
-// Message represents a WebSocket message from the backend.
-// The backend sends all fields at root level, not inside a "data" object.
-type Message struct {
-	Action    string          `json:"action"`
-	RequestID string          `json:"request_id,omitempty"`
-	ScanType  string          `json:"scan_type,omitempty"`
-	Query     string          `json:"query,omitempty"`
-	Data      json.RawMessage `json:"data,omitempty"`
-	// Additional fields used by various actions
-	// We store the raw message to extract action-specific fields
-	Raw json.RawMessage `json:"-"`
-}
-
-// Response represents a WebSocket response.
-type Response struct {
-	Action    string      `json:"action"`
-	RequestID string      `json:"request_id,omitempty"`
-	Success   bool        `json:"success"`
-	Data      interface{} `json:"data,omitempty"`
-	Error     string      `json:"error,omitempty"`
-}
-
-// HeartbeatMessage is the format expected by the backend (Python-compatible).
-type HeartbeatMessage struct {
-	Action             string                     `json:"action"`
-	Type               string                     `json:"type,omitempty"`
-	AgentVersion       string                     `json:"agent_version"`
-	Stats              HeartbeatStats             `json:"stats"`
-	ExternalIP         string                     `json:"external_ip,omitempty"`
-	SerialNumber       string                     `json:"serial_number,omitempty"`
-	Proxmox            *HeartbeatProxmox          `json:"proxmox,omitempty"`
-	HyperV             *HeartbeatHyperV           `json:"hyperv,omitempty"`
-	Docker             *DockerInfo                `json:"docker,omitempty"`
-	Winget             *HeartbeatWinget           `json:"winget,omitempty"`
-	BackupCapabilities *backup.BackupCapabilities `json:"backup_capabilities,omitempty"`
-}
-
-// HeartbeatWinget contains Windows Package Manager (winget) information.
-type HeartbeatWinget struct {
-	Available                   bool   `json:"available"`
-	Version                     string `json:"version,omitempty"`
-	BinaryPath                  string `json:"binary_path,omitempty"`
-	SystemLevel                 bool   `json:"system_level"`
-	HelperAvailable             bool   `json:"helper_available"`               // Available via helper in user context
-	PowerShell7Available        bool   `json:"powershell7_available"`          // PowerShell 7 is installed
-	WinGetClientModuleAvailable bool   `json:"winget_client_module_available"` // Microsoft.WinGet.Client module is available
-}
-
-// HeartbeatProxmox contains Proxmox host information.
-type HeartbeatProxmox struct {
-	IsProxmox      bool   `json:"is_proxmox"`
-	Version        string `json:"version,omitempty"`
-	Release        string `json:"release,omitempty"`
-	KernelVersion  string `json:"kernel_version,omitempty"`
-	ClusterName    string `json:"cluster_name,omitempty"`
-	NodeName       string `json:"node_name,omitempty"`
-	RepositoryType string `json:"repository_type,omitempty"`
-}
-
-// HeartbeatHyperV contains Hyper-V host information.
-type HeartbeatHyperV struct {
-	IsHyperV       bool   `json:"is_hyperv"`
-	Version        string `json:"version,omitempty"`
-	HostName       string `json:"host_name,omitempty"`
-	VMCount        int    `json:"vm_count,omitempty"`
-	ClusterEnabled bool   `json:"cluster_enabled,omitempty"`
-}
-
-// HeartbeatStats contains the stats in the format expected by the backend.
-// Matches Python agent format for API compatibility.
-type HeartbeatStats struct {
-	CPUPercent    float64             `json:"cpu_percent"`
-	MemoryPercent float64             `json:"memory_percent"`
-	MemoryUsed    uint64              `json:"memory_used"`
-	MemoryTotal   uint64              `json:"memory_total"`
-	Disk          []HeartbeatDisk     `json:"disk,omitempty"`
-	NetworkIO     *HeartbeatNetworkIO `json:"network_io,omitempty"`
-	UptimeSeconds uint64              `json:"uptime_seconds,omitempty"`
-	ProcessCount  int                 `json:"process_count,omitempty"`
-	Timezone      string              `json:"timezone,omitempty"`
-}
-
-// HeartbeatDisk contains disk statistics for heartbeat.
-type HeartbeatDisk struct {
-	Device      string  `json:"device"`
-	Mountpoint  string  `json:"mountpoint"`
-	Total       uint64  `json:"total"`
-	Used        uint64  `json:"used"`
-	Free        uint64  `json:"free"`
-	UsedPercent float64 `json:"used_percent"`
-}
-
-// HeartbeatNetworkIO contains network I/O statistics.
-type HeartbeatNetworkIO struct {
-	BytesSent   uint64 `json:"bytes_sent"`
-	BytesRecv   uint64 `json:"bytes_recv"`
-	PacketsSent uint64 `json:"packets_sent"`
-	PacketsRecv uint64 `json:"packets_recv"`
-}
-
-// OsqueryResponse is the format expected by the backend for osquery results.
-type OsqueryResponse struct {
-	Action    string      `json:"action"`
-	ScanType  string      `json:"scan_type"`
-	Data      interface{} `json:"data"`
-	RequestID string      `json:"request_id,omitempty"`
-}
-
-// ActionHandler is a function that handles a specific action.
-type ActionHandler func(ctx context.Context, data json.RawMessage) (interface{}, error)
 
 // Handler manages WebSocket communication.
 type Handler struct {
@@ -196,6 +50,17 @@ type Handler struct {
 	sendCh          chan []byte
 	done            chan struct{}
 	mu              sync.RWMutex
+
+	// msgSem is a buffered semaphore that caps concurrently-executing message
+	// handler goroutines spawned by readPump. Acquiring the slot before the
+	// goroutine is spawned creates natural backpressure — if the server floods
+	// the agent with messages, WebSocket reads will stall instead of spawning
+	// unbounded goroutines (memory DoS).
+	msgSem chan struct{}
+
+	// maintenanceMode indicates whether the agent is currently in operator-managed
+	// maintenance. Accessed via atomic.Bool from IsInMaintenance / SetMaintenance.
+	maintenanceMode atomic.Bool
 
 	// Certificate renewal tracking
 	lastCertCheck time.Time
@@ -255,24 +120,18 @@ type Handler struct {
 	processService *process.DefaultProcessService
 
 	// Backup services for backup orchestration
-	backupOrchestrator           *backup.Orchestrator
-	restoreOrchestrator          *backup.RestoreOrchestrator
-	collectorRegistry            *backup.CollectorRegistry
-	restorerRegistry             *backup.RestorerRegistry
-	capabilityDetector           *backup.CapabilityDetector
-	lastBackupCapsHash           string
-	cachedBackupCaps             *backup.BackupCapabilities
-	streamingOrchestrator        *backup.StreamingOrchestrator
-	streamingCollectorRegistry   *backup.StreamingCollectorRegistry
+	backupOrchestrator         *backup.Orchestrator
+	restoreOrchestrator        *backup.RestoreOrchestrator
+	collectorRegistry          *backup.CollectorRegistry
+	restorerRegistry           *backup.RestorerRegistry
+	capabilityDetector         *backup.CapabilityDetector
+	lastBackupCapsHash         string
+	cachedBackupCaps           *backup.BackupCapabilities
+	streamingOrchestrator      *backup.StreamingOrchestrator
+	streamingCollectorRegistry *backup.StreamingCollectorRegistry
 
 	// Winget upgrade service for package upgrades
 	wingetUpgradeService *wingetservice.UpgradeService
-}
-
-// SelfHealingWatchdog is the interface for the self-healing watchdog.
-type SelfHealingWatchdog interface {
-	RecordConnectionSuccess()
-	RecordConnectionFailure()
 }
 
 // New creates a new Handler.
@@ -405,36 +264,37 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	wingetUpgradeService := wingetservice.NewUpgradeService(logger)
 
 	h := &Handler{
-		cfg:               cfg,
-		paths:             paths,
-		tlsConfig:         tlsConfig,
-		monitor:           monitor.New(),
-		logger:            logger,
-		handlers:          make(map[string]ActionHandler),
-		terminalManager:   actions.NewTerminalManager(),
-		uploadManager:     uploadManager,
-		sendCh:            make(chan []byte, 256),
-		done:              make(chan struct{}),
-		updater:           updater.New(logger),
-		tamperProtection:  tamperProtection,
-		inventoryWatcher:  inventoryWatcher,
-		adaptiveHeartbeat: adaptiveHeartbeat,
-		thresholdMonitor:  thresholdMonitor,
-		rateLimiter:       rateLimiter,
-		antiReplay:        antiReplay,
-		auditLogger:       auditLogger,
-		softwareServices:  softwareServices,
-		validationService:    validationService,
-		complianceService:    complianceService,
-		processService:       processService,
-		backupOrchestrator:           backupOrchestrator,
-		restoreOrchestrator:          restoreOrchestrator,
-		collectorRegistry:            collectorRegistry,
-		restorerRegistry:             restorerRegistry,
-		capabilityDetector:           capabilityDetector,
-		streamingOrchestrator:        streamingOrchestrator,
-		streamingCollectorRegistry:   streamingCollectorRegistry,
-		wingetUpgradeService:         wingetUpgradeService,
+		cfg:                        cfg,
+		paths:                      paths,
+		tlsConfig:                  tlsConfig,
+		monitor:                    monitor.New(),
+		logger:                     logger,
+		handlers:                   make(map[string]ActionHandler),
+		terminalManager:            actions.NewTerminalManager(),
+		uploadManager:              uploadManager,
+		sendCh:                     make(chan []byte, 256),
+		done:                       make(chan struct{}),
+		msgSem:                     make(chan struct{}, MaxConcurrentHandlers),
+		updater:                    updater.New(logger),
+		tamperProtection:           tamperProtection,
+		inventoryWatcher:           inventoryWatcher,
+		adaptiveHeartbeat:          adaptiveHeartbeat,
+		thresholdMonitor:           thresholdMonitor,
+		rateLimiter:                rateLimiter,
+		antiReplay:                 antiReplay,
+		auditLogger:                auditLogger,
+		softwareServices:           softwareServices,
+		validationService:          validationService,
+		complianceService:          complianceService,
+		processService:             processService,
+		backupOrchestrator:         backupOrchestrator,
+		restoreOrchestrator:        restoreOrchestrator,
+		collectorRegistry:          collectorRegistry,
+		restorerRegistry:           restorerRegistry,
+		capabilityDetector:         capabilityDetector,
+		streamingOrchestrator:      streamingOrchestrator,
+		streamingCollectorRegistry: streamingCollectorRegistry,
+		wingetUpgradeService:       wingetUpgradeService,
 	}
 
 	h.registerHandlers()
@@ -539,119 +399,6 @@ func (h *Handler) SetWingetHelperAvailable(available bool) {
 	if available {
 		h.logger.Debug("winget helper availability updated", "available", available)
 	}
-}
-
-// Default delay before scheduling a reboot after policy execution.
-const defaultRebootDelaySeconds = 30
-
-// ScheduleReboot schedules a system reboot after the default delay (30 seconds).
-// This consolidates the reboot scheduling logic used across multiple handlers,
-// allowing pending operations to complete before the system restarts.
-// The reboot runs in a background goroutine and logs the reason for auditing.
-func (h *Handler) ScheduleReboot(reason string) {
-	go func() {
-		time.Sleep(defaultRebootDelaySeconds * time.Second)
-		h.logger.Info("initiating scheduled reboot", "reason", reason)
-		if err := actions.RestartSystem(context.Background(), false, 0); err != nil {
-			h.logger.Error("failed to schedule reboot", "error", err, "reason", reason)
-		}
-	}()
-}
-
-// sendThresholdAlert sends a threshold alert to the backend.
-func (h *Handler) sendThresholdAlert(alert monitor.ThresholdAlert) {
-	h.logger.Warn("threshold alert triggered",
-		"metric", alert.Metric,
-		"value", alert.CurrentValue,
-		"threshold", alert.Threshold,
-		"severity", alert.Severity,
-		"duration_seconds", alert.DurationSeconds,
-	)
-	h.SendRaw(map[string]interface{}{
-		"action":           "threshold_alert",
-		"metric":           alert.Metric,
-		"current_value":    alert.CurrentValue,
-		"threshold":        alert.Threshold,
-		"severity":         alert.Severity,
-		"duration_seconds": alert.DurationSeconds,
-		"timestamp":        alert.Timestamp.Format(time.RFC3339),
-		"message":          alert.Message,
-	})
-}
-
-// sendLogsPush proactively sends important logs to the backend.
-// Called when error/warn threshold is reached.
-func (h *Handler) sendLogsPush(logs []actions.LogEntry) {
-	if len(logs) == 0 {
-		return
-	}
-
-	h.logger.Info("proactively pushing important logs to backend",
-		"log_count", len(logs),
-	)
-
-	h.SendRaw(map[string]interface{}{
-		"action":    "logs_push",
-		"logs":      logs,
-		"count":     len(logs),
-		"timestamp": time.Now().Format(time.RFC3339),
-		"push_type": "threshold",
-	})
-
-	// Mark current log file as uploaded for rotation tracking
-	logging.MarkCurrentLogUploaded()
-}
-
-// sendSoftwareChanges sends software inventory changes to the backend.
-func (h *Handler) sendSoftwareChanges(changes []monitor.SoftwareChange) {
-	h.logger.Info("software changes detected", "count", len(changes))
-	h.SendRaw(map[string]interface{}{
-		"action":      "inventory_change",
-		"change_type": "software_change",
-		"changes":     changes,
-		"hash":        h.inventoryWatcher.GetSoftwareHash(),
-	})
-}
-
-// sendServiceChanges sends service state changes to the backend.
-func (h *Handler) sendServiceChanges(changes []monitor.ServiceChange) {
-	h.logger.Info("service changes detected", "count", len(changes))
-	h.SendRaw(map[string]interface{}{
-		"action":      "inventory_change",
-		"change_type": "service_change",
-		"changes":     changes,
-		"hash":        h.inventoryWatcher.GetServiceHash(),
-	})
-}
-
-// sendMaintenanceStatus sends maintenance mode status to the backend.
-func (h *Handler) sendMaintenanceStatus(enabled bool, reason string) {
-	h.SendRaw(map[string]interface{}{
-		"action":  "set_maintenance",
-		"enabled": enabled,
-		"reason":  reason,
-	})
-}
-
-// sendTamperAlert sends a tamper detection alert to the backend.
-func (h *Handler) sendTamperAlert(event tamper.TamperEvent) {
-	h.SendRaw(map[string]interface{}{
-		"action":    "tamper_alert",
-		"type":      event.Type,
-		"path":      event.Path,
-		"details":   event.Details,
-		"timestamp": event.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
-	})
-}
-
-// installWatchdog installs the platform-specific watchdog service.
-func (h *Handler) installWatchdog() error {
-	return tamper.InstallWatchdog()
-}
-
-// uninstallWatchdog removes the platform-specific watchdog service.
-func (h *Handler) uninstallWatchdog() error {
-	return tamper.UninstallWatchdog()
 }
 
 // Note: registerHandlers is defined in actions.go
@@ -785,575 +532,6 @@ func (h *Handler) Run(ctx context.Context) error {
 	return firstErr
 }
 
-// drainSendChannel removes all pending messages from the send channel.
-// This prevents goroutines from blocking when the connection is lost.
-func (h *Handler) drainSendChannel() {
-	for {
-		select {
-		case <-h.sendCh:
-			// Discard message
-		default:
-			return
-		}
-	}
-}
-
-// readPump handles incoming messages.
-func (h *Handler) readPump(ctx context.Context) error {
-	h.mu.RLock()
-	conn := h.conn
-	h.mu.RUnlock()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		_, message, err := conn.ReadMessage()
-		if err != nil {
-			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				return nil
-			}
-			return fmt.Errorf("reading message: %w", err)
-		}
-
-		go h.handleMessage(ctx, message)
-	}
-}
-
-// writePump handles outgoing messages.
-func (h *Handler) writePump(ctx context.Context) error {
-	ticker := time.NewTicker(pingPeriod)
-	defer ticker.Stop()
-
-	h.mu.RLock()
-	conn := h.conn
-	h.mu.RUnlock()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case message := <-h.sendCh:
-			conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-				return fmt.Errorf("writing message: %w", err)
-			}
-		case <-ticker.C:
-			conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				return fmt.Errorf("writing ping: %w", err)
-			}
-		}
-	}
-}
-
-// heartbeatPump sends periodic heartbeats with adaptive intervals.
-func (h *Handler) heartbeatPump(ctx context.Context) error {
-	// Send initial heartbeat
-	snapshot := h.sendHeartbeatWithSnapshot(ctx)
-
-	// Initialize last cert check if not set
-	if h.lastCertCheck.IsZero() {
-		h.lastCertCheck = time.Now()
-	}
-
-	// Get initial interval
-	nextInterval := h.adaptiveHeartbeat.GetNextInterval(snapshot)
-	timer := time.NewTimer(nextInterval)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			snapshot = h.sendHeartbeatWithSnapshot(ctx)
-
-			// Get next adaptive interval
-			nextInterval = h.adaptiveHeartbeat.GetNextInterval(snapshot)
-			timer.Reset(nextInterval)
-
-			h.logger.Debug("adaptive heartbeat",
-				"interval", nextInterval,
-				"activity", h.adaptiveHeartbeat.GetActivityLevel().String(),
-			)
-
-			// Check for certificate renewal (every 24 hours like Python agent)
-			if h.cfg.IsMTLSEnabled() && time.Since(h.lastCertCheck) >= certCheckInterval {
-				h.checkAndRenewCertificates(ctx)
-			}
-		}
-	}
-}
-
-// sendHeartbeatWithSnapshot sends a heartbeat and returns a snapshot for adaptive calculation.
-func (h *Handler) sendHeartbeatWithSnapshot(ctx context.Context) *monitor.SystemSnapshot {
-	stats, err := h.monitor.GetStats(ctx)
-	if err != nil {
-		h.logger.Error("getting stats for heartbeat", "error", err)
-		h.adaptiveHeartbeat.RecordError()
-		return nil
-	}
-
-	h.adaptiveHeartbeat.RecordSuccess()
-
-	// Record connection success for self-healing watchdog
-	// This resets the connection timeout on each successful heartbeat
-	h.recordConnectionSuccess()
-
-	// Calculate average disk usage for snapshot
-	var avgDiskPercent float64
-	if len(stats.Disk) > 0 {
-		for _, d := range stats.Disk {
-			avgDiskPercent += d.UsedPercent
-		}
-		avgDiskPercent /= float64(len(stats.Disk))
-	}
-
-	// Create snapshot for adaptive calculation
-	snapshot := &monitor.SystemSnapshot{
-		CPUPercent:    stats.CPU.UsagePercent,
-		MemoryPercent: stats.Memory.UsedPercent,
-		DiskPercent:   avgDiskPercent,
-		Timestamp:     time.Now(),
-	}
-
-	// Determine heartbeat type based on activity
-	heartbeatType := h.adaptiveHeartbeat.GetHeartbeatType()
-
-	// Force full heartbeat periodically to ensure Proxmox/winget data is sent.
-	// Also force full on first heartbeat (counter == 1) after connection.
-	// Thread-safe access to fullHeartbeatCounter
-	h.mu.Lock()
-	h.fullHeartbeatCounter++
-	counterVal := h.fullHeartbeatCounter
-	if counterVal >= fullHeartbeatInterval || counterVal == 1 {
-		heartbeatType = monitor.HeartbeatFull
-		if counterVal >= fullHeartbeatInterval {
-			h.fullHeartbeatCounter = 0
-		}
-	}
-	h.mu.Unlock()
-
-	// Send appropriate heartbeat based on type
-	h.sendHeartbeatByType(ctx, stats, heartbeatType)
-
-	return snapshot
-}
-
-// checkAndRenewCertificates checks if certificates need renewal.
-func (h *Handler) checkAndRenewCertificates(ctx context.Context) {
-	h.logger.Info("performing periodic certificate check")
-	h.lastCertCheck = time.Now()
-
-	// Attempt certificate renewal
-	if err := h.renewCertificates(ctx); err != nil {
-		h.logger.Warn("certificate renewal check failed", "error", err)
-		return
-	}
-
-	h.logger.Info("certificate check completed successfully")
-}
-
-// renewCertificates attempts to renew certificates from the server.
-func (h *Handler) renewCertificates(ctx context.Context) error {
-	client := &http.Client{
-		Timeout: httpClientTimeout,
-		Transport: &http.Transport{
-			TLSClientConfig: h.tlsConfig,
-		},
-	}
-
-	url := h.cfg.GetServer() + "/api/v1/agents/" + h.cfg.GetUUID() + "/renew-cert"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
-	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
-	}
-	req.Header.Set("X-Agent-UUID", h.cfg.GetUUID())
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("sending request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// 304 Not Modified means certificates are still valid
-	if resp.StatusCode == http.StatusNotModified {
-		h.logger.Debug("certificates are still valid")
-		return nil
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("renewal failed with status %d", resp.StatusCode)
-	}
-
-	// Parse and save new certificates
-	var renewResp struct {
-		CACert     string `json:"ca_cert"`
-		ClientCert string `json:"client_cert"`
-		ClientKey  string `json:"client_key"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&renewResp); err != nil {
-		return fmt.Errorf("parsing response: %w", err)
-	}
-
-	// Only save if we got new certificates
-	if renewResp.CACert != "" && renewResp.ClientCert != "" && renewResp.ClientKey != "" {
-		h.logger.Info("received new certificates, saving...")
-
-		certPaths := mtls.CertPaths{
-			CACert:     h.paths.CACert,
-			ClientCert: h.paths.ClientCert,
-			ClientKey:  h.paths.ClientKey,
-		}
-
-		if err := mtls.SaveCertificates(certPaths,
-			[]byte(renewResp.CACert),
-			[]byte(renewResp.ClientCert),
-			[]byte(renewResp.ClientKey),
-		); err != nil {
-			return fmt.Errorf("saving certificates: %w", err)
-		}
-
-		h.logger.Info("certificates renewed and saved successfully")
-	}
-
-	return nil
-}
-
-// hashStruct creates a SHA256 hash of a struct for delta comparison.
-// Returns empty string if marshaling fails.
-func hashStruct(v interface{}) string {
-	if v == nil {
-		return ""
-	}
-	data, err := json.Marshal(v)
-	if err != nil {
-		return ""
-	}
-	hash := sha256.Sum256(data)
-	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for efficiency
-}
-
-// getSerialNumber retrieves and caches the hardware serial number using osquery.
-// The serial number is fetched once and cached since it doesn't change.
-// Thread-safe: uses mutex for cached value access.
-func (h *Handler) getSerialNumber(ctx context.Context) string {
-	h.mu.RLock()
-	if h.serialNumberFetched {
-		serial := h.cachedSerialNumber
-		h.mu.RUnlock()
-		return serial
-	}
-	h.mu.RUnlock()
-
-	h.logger.Info("fetching hardware serial number from osquery")
-
-	client := osquery.New()
-	if !client.IsAvailable() {
-		h.logger.Warn("osquery not available, cannot fetch serial number")
-		h.mu.Lock()
-		h.serialNumberFetched = true
-		h.mu.Unlock()
-		return ""
-	}
-
-	result, err := client.GetSystemInfo(ctx)
-	if err != nil {
-		h.logger.Warn("failed to get system info for serial number", "error", err)
-		h.mu.Lock()
-		h.serialNumberFetched = true
-		h.mu.Unlock()
-		return ""
-	}
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if len(result.Rows) > 0 {
-		if serial, ok := result.Rows[0]["hardware_serial"]; ok && serial != "" {
-			h.cachedSerialNumber = serial
-			h.logger.Info("hardware serial number detected", "serial_number", serial)
-		} else {
-			h.logger.Warn("hardware_serial field empty or not found in osquery system_info")
-		}
-	} else {
-		h.logger.Warn("osquery system_info returned no rows")
-	}
-
-	h.serialNumberFetched = true
-	return h.cachedSerialNumber
-}
-
-// sendHeartbeat sends a heartbeat message in the format expected by the backend.
-// Optimized: Only sends Proxmox/winget info when changed (delta-based).
-func (h *Handler) sendHeartbeat(ctx context.Context) {
-	stats, err := h.monitor.GetStats(ctx)
-	if err != nil {
-		h.logger.Error("getting stats for heartbeat", "error", err)
-		return
-	}
-
-	// Build base heartbeat message
-	heartbeat := h.buildBaseHeartbeat(ctx, stats)
-
-	// Add platform-specific info (delta-based)
-	h.addProxmoxInfo(ctx, &heartbeat)
-	h.addHyperVInfo(ctx, &heartbeat)
-	h.addDockerInfo(ctx, &heartbeat)
-	h.addWingetInfo(ctx, &heartbeat)
-	h.addBackupCapabilities(ctx, &heartbeat)
-
-	// Send heartbeat
-	h.SendRaw(heartbeat)
-
-	// Check thresholds and send proactive alerts
-	h.thresholdMonitor.Update(stats)
-
-	// Update last heartbeat time
-	h.cfg.SetLastHeartbeat(time.Now().UTC().Format(time.RFC3339))
-
-	// Periodically save config
-	if h.incrementHeartbeatCount() {
-		if err := h.cfg.Save(); err != nil {
-			h.logger.Warn("failed to save config with heartbeat", "error", err)
-		}
-	}
-}
-
-// sendHeartbeatByType sends a heartbeat based on the adaptive heartbeat type.
-// Minimal heartbeats only send alive status, stats sends basic metrics,
-// and full sends complete system information.
-func (h *Handler) sendHeartbeatByType(ctx context.Context, stats *monitor.Stats, heartbeatType monitor.HeartbeatType) {
-	switch heartbeatType {
-	case monitor.HeartbeatMinimal:
-		// Minimal heartbeat - just alive status
-		h.SendRaw(map[string]interface{}{
-			"action":        "heartbeat",
-			"type":          "minimal",
-			"agent_version": version.Version,
-			"alive":         true,
-			"timestamp":     time.Now().Unix(),
-		})
-
-	case monitor.HeartbeatStats:
-		// Stats heartbeat - basic metrics without disk details
-		h.SendRaw(map[string]interface{}{
-			"action":        "heartbeat",
-			"type":          "stats",
-			"agent_version": version.Version,
-			"stats": map[string]interface{}{
-				"cpu_percent":    stats.CPU.UsagePercent,
-				"memory_percent": stats.Memory.UsedPercent,
-				"memory_used":    stats.Memory.Used,
-				"memory_total":   stats.Memory.Total,
-				"uptime_seconds": stats.Uptime,
-				"process_count":  stats.ProcessCount,
-				"timezone":       stats.Timezone,
-			},
-		})
-
-	case monitor.HeartbeatFull:
-		// Full heartbeat - use existing sendHeartbeat logic
-		h.sendHeartbeat(ctx)
-		return
-	}
-
-	// Update last heartbeat time in config
-	h.cfg.SetLastHeartbeat(time.Now().UTC().Format(time.RFC3339))
-
-	// Periodically save config to persist LastHeartbeat
-	// Thread-safe access to heartbeatCount
-	h.mu.Lock()
-	h.heartbeatCount++
-	shouldSave := h.heartbeatCount >= configSaveInterval
-	if shouldSave {
-		h.heartbeatCount = 0
-	}
-	h.mu.Unlock()
-
-	if shouldSave {
-		if err := h.cfg.Save(); err != nil {
-			h.logger.Warn("failed to save config with heartbeat", "error", err)
-		}
-	}
-}
-
-// handleMessage processes an incoming message.
-func (h *Handler) handleMessage(ctx context.Context, data []byte) {
-	var msg Message
-	if err := json.Unmarshal(data, &msg); err != nil {
-		h.logger.Error("parsing message", "error", err)
-		return
-	}
-	// Store raw message for handlers that need to parse additional fields
-	msg.Raw = data
-
-	h.logger.Debug("received message", "action", msg.Action, "request_id", msg.RequestID, "scan_type", msg.ScanType)
-
-	// Security Layer 1: Rate limiting
-	if !h.rateLimiter.Allow(msg.Action) {
-		h.logger.Warn("rate limit exceeded",
-			"action", msg.Action,
-			"request_id", msg.RequestID,
-		)
-		h.auditLogger.LogRateLimit(ctx, msg.Action, 0, 0)
-		h.Send(Response{
-			Action:    msg.Action,
-			RequestID: msg.RequestID,
-			Success:   false,
-			Error:     "rate limit exceeded",
-		})
-		return
-	}
-
-	// Security Layer 2: Anti-replay protection (for requests with request_id)
-	if msg.RequestID != "" {
-		// Extract timestamp if present in message
-		var msgWithTime struct {
-			Timestamp int64 `json:"timestamp"`
-		}
-		json.Unmarshal(data, &msgWithTime)
-
-		requestTime := time.Now()
-		if msgWithTime.Timestamp > 0 {
-			requestTime = time.Unix(msgWithTime.Timestamp, 0)
-		}
-
-		if err := h.antiReplay.ValidateRequest(msg.RequestID, requestTime); err != nil {
-			h.logger.Warn("replay detection triggered",
-				"action", msg.Action,
-				"request_id", msg.RequestID,
-				"error", err,
-			)
-			h.auditLogger.LogReplayAttempt(ctx, msg.RequestID, requestTime)
-			h.Send(Response{
-				Action:    msg.Action,
-				RequestID: msg.RequestID,
-				Success:   false,
-				Error:     "request validation failed",
-			})
-			return
-		}
-	}
-
-	handler, ok := h.handlers[msg.Action]
-	if !ok {
-		h.logger.Warn("unknown action", "action", msg.Action)
-		h.Send(Response{
-			Action:    msg.Action,
-			RequestID: msg.RequestID,
-			Success:   false,
-			Error:     fmt.Sprintf("unknown action: %s", msg.Action),
-		})
-		return
-	}
-
-	// Log handler dispatch for software installation actions
-	if msg.Action == "download_and_install_pkg" || msg.Action == "download_and_install_msi" ||
-		msg.Action == "download_and_install_cask" || msg.Action == "install_software" {
-		h.logger.Info("dispatching software installation action", "action", msg.Action)
-	}
-
-	// Determine what data to pass to the handler
-	// Some actions have fields at the root level rather than in a nested "data" object
-	var handlerData json.RawMessage
-	rootLevelActions := map[string]bool{
-		// osquery
-		"run_osquery": true,
-		"osquery":     true,
-		// Terminal actions - fields are at root level (rows, cols, data, etc.)
-		"terminal":        true,
-		"terminal_input":  true,
-		"terminal_resize": true,
-		"start_terminal":  true,
-		"stop_terminal":   true,
-		"terminal_stop":   true,
-		"terminal_output": true,
-		// File browser actions - path, old_path, new_path at root
-		"list_dir":      true,
-		"create_folder": true,
-		"create_dir":    true,
-		"delete_entry":  true,
-		"rename_entry":  true,
-		"zip_entry":     true,
-		"unzip_entry":   true,
-		"download_file": true,
-		"chmod":         true,
-		"chown":         true,
-		// Upload actions - path, data, offset, is_last at root
-		"upload_chunk":   true,
-		"start_upload":   true,
-		"finish_upload":  true,
-		"cancel_upload":  true,
-		"download_chunk": true,
-		"download_url":   true,
-		// Compliance checks - policy_id, checks at root
-		"run_compliance_check": true,
-		// Software installation actions - all fields at root
-		"install_software":          true,
-		"download_and_install_msi":  true,
-		"download_and_install_pkg":  true,
-		"download_and_install_cask": true,
-		"cancel_software_install":   true,
-		// Software uninstallation actions - all fields at root
-		"uninstall_software":        true,
-		"uninstall_msi":             true,
-		"uninstall_pkg":             true,
-		"uninstall_cask":            true,
-		"uninstall_deb":             true,
-		"uninstall_rpm":             true,
-		"cancel_software_uninstall": true,
-	}
-	if rootLevelActions[msg.Action] {
-		handlerData = msg.Raw
-	} else if len(msg.Data) > 0 {
-		handlerData = msg.Data
-	} else {
-		// If no data field, pass the raw message so handlers can parse root-level fields
-		handlerData = msg.Raw
-	}
-
-	result, err := handler(ctx, handlerData)
-
-	// For run_osquery, use the OsqueryResponse format expected by the backend
-	if msg.Action == "run_osquery" {
-		osqResp := OsqueryResponse{
-			Action:    "run_osquery",
-			ScanType:  msg.ScanType,
-			Data:      result,
-			RequestID: msg.RequestID,
-		}
-		if err != nil {
-			osqResp.Data = map[string]string{"error": err.Error()}
-		}
-		h.SendRaw(osqResp)
-		return
-	}
-
-	// Map request actions to response actions where needed
-	responseAction := msg.Action
-	if mapped, ok := actionToResponseAction[msg.Action]; ok {
-		responseAction = mapped
-	}
-
-	resp := Response{
-		Action:    responseAction,
-		RequestID: msg.RequestID,
-		Success:   err == nil,
-		Data:      result,
-	}
-	if err != nil {
-		resp.Error = err.Error()
-	}
-
-	h.Send(resp)
-}
-
 // Send marshals and sends a Response to the server via WebSocket.
 // Thread-safe: uses a buffered channel for non-blocking sends.
 // If the send channel is full, the message is dropped with a warning log.
@@ -1397,6 +575,16 @@ func (h *Handler) Close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	// Signal all background goroutines (e.g. ScheduleReboot timers) that the
+	// agent is shutting down. Closing is idempotent: guarded by a select to
+	// avoid a double-close panic if Close() is ever invoked twice.
+	select {
+	case <-h.done:
+		// already closed
+	default:
+		close(h.done)
+	}
+
 	// Stop inventory watcher
 	if h.inventoryWatcher != nil {
 		h.inventoryWatcher.Stop()
@@ -1421,22 +609,13 @@ func (h *Handler) Close() error {
 	CloseProxmoxClient()
 
 	if h.conn != nil {
-		h.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		return h.conn.Close()
+		if wErr := h.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")); wErr != nil {
+			h.logger.Debug("writing websocket close frame", "error", wErr)
+		}
+		if cErr := h.conn.Close(); cErr != nil {
+			h.logger.Warn("closing websocket connection", "error", cErr)
+			return cErr
+		}
 	}
 	return nil
-}
-
-// Basic handler implementations
-
-func (h *Handler) handlePing(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	return map[string]string{"pong": "ok"}, nil
-}
-
-func (h *Handler) handleGetSystemStats(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	return h.monitor.GetStats(ctx)
-}
-
-func (h *Handler) handleHeartbeat(ctx context.Context, data json.RawMessage) (interface{}, error) {
-	return h.monitor.GetStats(ctx)
 }
