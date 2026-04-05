@@ -116,7 +116,7 @@ jobs:
           tar -czvf slimrmm-agent_${VERSION}_linux_amd64.tar.gz slimrmm-agent
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: binary-linux-amd64
           path: slimrmm-agent*
@@ -157,7 +157,7 @@ jobs:
           tar -czvf slimrmm-agent_${VERSION}_linux_arm64.tar.gz slimrmm-agent
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: binary-linux-arm64
           path: slimrmm-agent*
@@ -197,7 +197,7 @@ jobs:
           Compress-Archive -Path slimrmm-agent.exe,slimrmm-helper.exe -DestinationPath "slimrmm-agent_${VERSION}_windows_amd64.zip"
 
       - name: Upload Windows binaries
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: binary-windows-amd64-exe
           path: |
@@ -205,7 +205,7 @@ jobs:
             slimrmm-helper.exe
 
       - name: Upload Windows zip
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: binary-windows-amd64
           path: "*.zip"
@@ -246,7 +246,7 @@ jobs:
           tar -czvf slimrmm-agent_${VERSION}_darwin_arm64.tar.gz slimrmm-agent
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: binary-darwin-arm64
           path: slimrmm-agent*
@@ -297,7 +297,7 @@ jobs:
           dpkg-deb --build ${PKGROOT} slimrmm-agent_${VERSION}_amd64.deb
 
       - name: Upload DEB artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: package-deb
           path: "*.deb"
@@ -352,7 +352,7 @@ jobs:
           mv *.rpm slimrmm-agent_${VERSION}_amd64.rpm
 
       - name: Upload RPM artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: package-rpm
           path: "*.rpm"
@@ -617,7 +617,7 @@ jobs:
           fi
 
       - name: Upload PKG artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: package-pkg
           path: "*.pkg"
@@ -655,7 +655,7 @@ jobs:
           & "${env:WIX}bin\light.exe" -ext WixUtilExtension slimrmm-agent.wixobj -o "slimrmm-agent_${version}_windows_amd64.msi"
 
       - name: Upload MSI artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: package-msi
           path: "*.msi"
