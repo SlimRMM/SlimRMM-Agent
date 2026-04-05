@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,12 +28,42 @@ import (
 )
 
 const (
-	GitHubAPIURL    = "https://api.github.com/repos/slimrmm/slimrmm-agent/releases/latest"
+	GitHubAPIURL        = "https://api.github.com/repos/slimrmm/slimrmm-agent/releases/latest"
 	UpdateCheckInterval = 1 * time.Hour
-	MaxDownloadSize = 100 * 1024 * 1024 // 100 MB
-	HealthCheckTimeout = 30 * time.Second
-	HealthCheckRetries = 3
+	MaxDownloadSize     = 100 * 1024 * 1024 // 100 MB
+	// MaxChecksumFileSize caps checksums.txt reads to prevent OOM.
+	MaxChecksumFileSize int64 = 1 * 1024 * 1024 // 1 MB
+	HealthCheckTimeout        = 30 * time.Second
+	HealthCheckRetries        = 3
 )
+
+// Unsigned updates are NEVER allowed. Every verification path is FATAL:
+//   - checksums file fetch failure -> fatal
+//   - missing asset entry in checksums -> fatal
+//   - hash mismatch -> fatal
+// There is no escape hatch. Production builds must always be signed.
+
+var (
+	updaterTransport     *http.Transport
+	updaterTransportOnce sync.Once
+)
+
+// httpTransport returns a process-wide HTTP transport used by the updater.
+// It enforces TLS 1.2 and configures modest connection pooling.
+func httpTransport() *http.Transport {
+	updaterTransportOnce.Do(func() {
+		updaterTransport = &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+			TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+			},
+		}
+	})
+	return updaterTransport
+}
 
 // GitHubRelease represents a GitHub release.
 type GitHubRelease struct {
@@ -57,12 +88,12 @@ type UpdateInfo struct {
 
 // UpdateResult contains the result of an update operation.
 type UpdateResult struct {
-	Success      bool   `json:"success"`
-	OldVersion   string `json:"old_version"`
-	NewVersion   string `json:"new_version"`
-	RolledBack   bool   `json:"rolled_back"`
-	Error        string `json:"error,omitempty"`
-	RestartNeeded bool  `json:"restart_needed"`
+	Success       bool   `json:"success"`
+	OldVersion    string `json:"old_version"`
+	NewVersion    string `json:"new_version"`
+	RolledBack    bool   `json:"rolled_back"`
+	Error         string `json:"error,omitempty"`
+	RestartNeeded bool   `json:"restart_needed"`
 }
 
 // MaintenanceCallback is called to notify the backend about maintenance mode changes.
@@ -148,7 +179,7 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*UpdateInfo, error) {
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", "SlimRMM-Agent/"+version.Version)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second, Transport: httpTransport()}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching release info: %w", err)
@@ -309,24 +340,38 @@ func (u *Updater) PerformUpdate(ctx context.Context, info *UpdateInfo) (*UpdateR
 	}
 	u.logger.Info("downloaded update", "path", archivePath)
 
-	// Verify checksum before extraction (supply chain security)
+	// Make sure the downloaded archive is cleaned up on every error path.
+	archiveCleanup := func() {
+		if rmErr := os.Remove(archivePath); rmErr != nil && !os.IsNotExist(rmErr) {
+			u.logger.Warn("failed to remove archive", "path", archivePath, "error", rmErr)
+		}
+	}
+	defer archiveCleanup()
+
+	// Verify checksum before extraction (supply chain security).
+	// All three failure paths are FATAL with no bypass:
+	//   - missing/unreadable checksums file -> fatal
+	//   - asset not listed in checksums -> fatal
+	//   - hash mismatch -> fatal
 	checksums, err := u.GetChecksumFromRelease(ctx, info.Version)
 	if err != nil {
-		u.logger.Warn("could not fetch checksums, skipping verification", "error", err)
-	} else {
-		expectedHash, ok := checksums[info.AssetName]
-		if !ok {
-			result.Error = "checksum not found for asset"
-			u.logError("update failed", result.Error)
-			return result, errors.New(result.Error)
-		}
-		if err := VerifyChecksum(archivePath, expectedHash); err != nil {
-			result.Error = fmt.Sprintf("checksum verification failed: %v", err)
-			u.logError("update failed", result.Error)
-			return result, errors.New(result.Error)
-		}
-		u.logger.Info("checksum verified", "hash", expectedHash)
+		result.Error = fmt.Sprintf("fetching checksums failed: %v", err)
+		u.logError("update failed", result.Error)
+		return result, errors.New(result.Error)
 	}
+	expectedHash, ok := checksums[info.AssetName]
+	if !ok {
+		result.Error = fmt.Sprintf("checksum not found for asset %s", info.AssetName)
+		u.logError("update failed", result.Error)
+		return result, errors.New(result.Error)
+	}
+	if err := VerifyChecksum(archivePath, expectedHash); err != nil {
+		// Hash mismatch is fatal.
+		result.Error = fmt.Sprintf("checksum verification failed: %v", err)
+		u.logError("update failed", result.Error)
+		return result, errors.New(result.Error)
+	}
+	u.logger.Info("checksum verified", "hash", expectedHash)
 
 	// Extract new binary
 	newBinaryPath := filepath.Join(tempDir, "slimrmm-agent")
@@ -513,7 +558,7 @@ func (u *Updater) downloadFile(ctx context.Context, url, destPath string) error 
 	}
 	req.Header.Set("User-Agent", "SlimRMM-Agent/"+version.Version)
 
-	client := &http.Client{Timeout: 10 * time.Minute}
+	client := &http.Client{Timeout: 10 * time.Minute, Transport: httpTransport()}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -1311,7 +1356,7 @@ func (u *Updater) GetChecksumFromRelease(ctx context.Context, version string) (m
 		return nil, err
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second, Transport: httpTransport()}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -1322,7 +1367,7 @@ func (u *Updater) GetChecksumFromRelease(ctx context.Context, version string) (m
 		return nil, fmt.Errorf("checksum fetch failed: %d", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxChecksumFileSize))
 	if err != nil {
 		return nil, err
 	}
