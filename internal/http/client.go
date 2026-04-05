@@ -3,9 +3,15 @@ package http
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -14,6 +20,76 @@ import (
 // MaxErrorBodySize is the maximum size of error response bodies to prevent DoS.
 // Error messages shouldn't need more than 64KB.
 const MaxErrorBodySize = 64 * 1024
+
+// MaxResponseSize is the maximum in-memory response body size (100 MiB).
+// Protects against OOM caused by malicious or misconfigured servers.
+// Untyped so callers can compare against int or int64 naturally.
+const MaxResponseSize = 100 * 1024 * 1024
+
+// MaxDownloadSize is the maximum download-to-file size (500 MiB).
+const MaxDownloadSize = 500 * 1024 * 1024
+
+var (
+	sharedTransport     *http.Transport
+	sharedTransportOnce sync.Once
+)
+
+// SharedTransport returns a process-wide HTTP transport with sane connection
+// pooling and a TLS 1.2 minimum floor. It is safe for concurrent use.
+func SharedTransport() *http.Transport {
+	sharedTransportOnce.Do(func() {
+		sharedTransport = &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+			TLSClientConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+			},
+		}
+	})
+	return sharedTransport
+}
+
+// newHTTPClient returns an *http.Client that uses the shared transport and
+// the given request timeout.
+func newHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: SharedTransport(),
+		Timeout:   timeout,
+	}
+}
+
+// VerifyCertPin returns a VerifyPeerCertificate callback that validates the
+// peer's leaf certificate SPKI against a list of hex-encoded SHA-256 pin
+// hashes. If pinHashes is empty the callback always fails (defence in depth).
+func VerifyCertPin(pinHashes []string) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	// Normalise pins once.
+	pins := make(map[string]struct{}, len(pinHashes))
+	for _, p := range pinHashes {
+		pins[p] = struct{}{}
+	}
+	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		if len(pins) == 0 {
+			return fmt.Errorf("certificate pinning: no pins configured")
+		}
+		if len(rawCerts) == 0 {
+			return fmt.Errorf("certificate pinning: peer sent no certificates")
+		}
+		for _, raw := range rawCerts {
+			cert, err := x509.ParseCertificate(raw)
+			if err != nil {
+				continue
+			}
+			sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+			got := hex.EncodeToString(sum[:])
+			if _, ok := pins[got]; ok {
+				return nil
+			}
+		}
+		return fmt.Errorf("certificate pinning: no peer cert matched configured pins")
+	}
+}
 
 // ProgressCallback is called during downloads/uploads with progress updates.
 // progress is a value between 0 and 100.
@@ -35,10 +111,10 @@ type Client interface {
 type DownloadOption func(*downloadConfig)
 
 type downloadConfig struct {
-	timeout        time.Duration
-	token          string
-	progressFunc   ProgressCallback
-	progressStep   int // Report progress every N percent
+	timeout      time.Duration
+	token        string
+	progressFunc ProgressCallback
+	progressStep int // Report progress every N percent
 }
 
 // WithDownloadTimeout sets the download timeout.
@@ -121,9 +197,7 @@ func (c *DefaultClient) Download(ctx context.Context, url string, opts ...Downlo
 		req.Header.Set("Authorization", "Bearer "+cfg.token)
 	}
 
-	client := &http.Client{
-		Timeout: cfg.timeout,
-	}
+	client := newHTTPClient(cfg.timeout)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -137,13 +211,19 @@ func (c *DefaultClient) Download(ctx context.Context, url string, opts ...Downlo
 		return nil, fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// For successful responses, use Content-Length if available to validate size
-	// The actual data is read with a buffer in DownloadToFile; here we trust the timeout
-	return io.ReadAll(resp.Body)
+	// Cap in-memory response size to guard against OOM from hostile servers.
+	return io.ReadAll(io.LimitReader(resp.Body, MaxResponseSize))
 }
 
 // DownloadToFile downloads data from a URL to a file.
 func (c *DefaultClient) DownloadToFile(ctx context.Context, url, destPath string, opts ...DownloadOption) error {
+	// Validate destination path BEFORE hitting the network so a compromised
+	// server cannot coerce us into overwriting e.g. /etc/passwd via a crafted
+	// destPath. createFile() re-validates as defense-in-depth.
+	if err := validateDestPath(destPath); err != nil {
+		return fmt.Errorf("destination path validation failed: %w", err)
+	}
+
 	cfg := &downloadConfig{
 		timeout:      10 * time.Minute,
 		progressStep: 10,
@@ -161,9 +241,7 @@ func (c *DefaultClient) DownloadToFile(ctx context.Context, url, destPath string
 		req.Header.Set("Authorization", "Bearer "+cfg.token)
 	}
 
-	client := &http.Client{
-		Timeout: cfg.timeout,
-	}
+	client := newHTTPClient(cfg.timeout)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -176,6 +254,18 @@ func (c *DefaultClient) DownloadToFile(ctx context.Context, url, destPath string
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBodySize))
 		return fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
 	}
+
+	// Reject oversized responses based on the advertised Content-Length,
+	// before we create the destination file.
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		if n, parseErr := strconv.ParseInt(cl, 10, 64); parseErr == nil && n > MaxDownloadSize {
+			return fmt.Errorf("download too large: Content-Length %d exceeds max %d", n, MaxDownloadSize)
+		}
+	}
+
+	// Limit the body reader so a lying server cannot exceed MaxDownloadSize.
+	// We allow +1 byte so we can detect overflow.
+	limited := io.LimitReader(resp.Body, MaxDownloadSize+1)
 
 	// Import filesystem service for file creation
 	// Note: We use a simple file creation here to avoid circular imports
@@ -191,8 +281,11 @@ func (c *DefaultClient) DownloadToFile(ctx context.Context, url, destPath string
 
 	buf := make([]byte, 32*1024) // 32KB buffer
 	for {
-		n, readErr := resp.Body.Read(buf)
+		n, readErr := limited.Read(buf)
 		if n > 0 {
+			if downloaded+int64(n) > MaxDownloadSize {
+				return fmt.Errorf("download too large: exceeds max %d bytes", MaxDownloadSize)
+			}
 			_, writeErr := out.Write(buf[:n])
 			if writeErr != nil {
 				return fmt.Errorf("writing file: %w", writeErr)
@@ -239,9 +332,7 @@ func (c *DefaultClient) Upload(ctx context.Context, url string, data []byte, opt
 	req.Header.Set("Content-Type", cfg.contentType)
 	req.ContentLength = int64(len(data))
 
-	client := &http.Client{
-		Timeout: cfg.timeout,
-	}
+	client := newHTTPClient(cfg.timeout)
 
 	resp, err := client.Do(req)
 	if err != nil {
