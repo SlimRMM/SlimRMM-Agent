@@ -120,7 +120,12 @@ func (m *UploadManager) cleanupStaleSessions() {
 // StartUpload starts a new upload session.
 func (m *UploadManager) StartUpload(sessionID, path string, totalSize int64) error {
 	validator := pathval.New()
-	if err := validator.Validate(filepath.Dir(path)); err != nil {
+	// Validate the FULL path (not just parent dir) with symlink resolution to
+	// prevent TOCTOU path-traversal attacks where an attacker could place a
+	// symlink pointing to a sensitive file (e.g. /etc/passwd) between the
+	// validation and the file creation. ValidateWithSymlinkResolution walks
+	// parent directories for paths that do not yet exist (typical for uploads).
+	if err := validator.ValidateWithSymlinkResolution(path); err != nil {
 		return fmt.Errorf("path validation failed: %w", err)
 	}
 
@@ -140,7 +145,10 @@ func (m *UploadManager) StartUpload(sessionID, path string, totalSize int64) err
 		return fmt.Errorf("creating directory: %w", err)
 	}
 
-	file, err := os.Create(path)
+	// O_EXCL ensures we fail if the file already exists - this prevents a
+	// race where an attacker plants a symlink at `path` after validation but
+	// before creation. A fresh upload session must always create a NEW file.
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("creating file: %w", err)
 	}
@@ -355,9 +363,10 @@ func DownloadChunk(path string, chunkIndex int) ([]byte, error) {
 
 // DownloadURL downloads a file from a URL.
 func DownloadURL(url, destPath string) (*DownloadResult, error) {
-	// Validate destination path
+	// Validate destination path (full path with symlink resolution to avoid
+	// TOCTOU attacks where a symlink is planted between validation and create).
 	pathValidator := pathval.New()
-	if err := pathValidator.Validate(filepath.Dir(destPath)); err != nil {
+	if err := pathValidator.ValidateWithSymlinkResolution(destPath); err != nil {
 		return nil, fmt.Errorf("path validation failed: %w", err)
 	}
 
