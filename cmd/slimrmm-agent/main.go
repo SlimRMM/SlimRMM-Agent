@@ -584,13 +584,17 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 	// Initialize platform-specific permissions
 	remotedesktop.InitializePermissions(logger)
 
+	// Setup context with cancellation early so background goroutines inherit it
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Ensure osquery is installed (auto-install if not present)
 	// This runs asynchronously to not block agent startup
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
+		osqCtx, osqCancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer osqCancel()
 
-		if err := osquery.EnsureInstalled(ctx, logger); err != nil {
+		if err := osquery.EnsureInstalled(osqCtx, logger); err != nil {
 			if err == osquery.ErrArchLinux {
 				logger.Warn("osquery auto-installation not available",
 					"reason", "Arch Linux requires manual installation",
@@ -606,17 +610,17 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 	// Ensure winget is installed system-wide (Windows only)
 	// This runs asynchronously to not block agent startup
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
+		wingetCtx, wingetCancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer wingetCancel()
 
-		if err := winget.EnsureInstalled(ctx, logger); err != nil {
+		if err := winget.EnsureInstalled(wingetCtx, logger); err != nil {
 			logger.Warn("winget auto-installation failed",
 				"error", err,
 				"note", "winget features may be unavailable until installed")
 		} else {
 			// After installation, ensure only system-wide version exists
 			// This removes any per-user installations that might exist
-			_ = winget.EnsureSystemOnly(ctx, logger)
+			_ = winget.EnsureSystemOnly(wingetCtx, logger)
 		}
 	}()
 
@@ -658,10 +662,6 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 	// Create handler
 	h := handler.New(cfg, paths, tlsConfig, logger)
 
-	// Setup context with cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// Create and start self-healing watchdog
 	watchdog := selfhealing.New(selfhealing.DefaultConfig(), logger)
 	h.SetSelfHealingWatchdog(watchdog)
@@ -688,19 +688,17 @@ func cmdRun(paths config.Paths, logger *slog.Logger) int {
 
 // runAgentLoop contains the main connection loop logic, shared between cmdRun and Windows service mode
 func runAgentLoop(ctx context.Context, h *handler.Handler, cfg *config.Config, logger *slog.Logger) int {
-	// Connection loop with exponential backoff and jitter
-	// Jitter prevents thundering herd when many agents reconnect simultaneously
+	// Connection loop with exponential backoff and full jitter
+	// Full jitter (AWS-style) prevents thundering herd when many agents reconnect simultaneously
 	const (
 		initialReconnectDelay = 5 * time.Second
 		maxReconnectDelay     = 5 * time.Minute
 		backoffMultiplier     = 2.0
-		jitterFactor          = 0.3 // Add up to 30% random jitter
 	)
 
-	// addJitter adds random jitter to delay to prevent thundering herd
+	// addJitter applies AWS-style full jitter: random value in [0, delay)
 	addJitter := func(delay time.Duration) time.Duration {
-		jitter := time.Duration(float64(delay) * jitterFactor * rand.Float64())
-		return delay + jitter
+		return time.Duration(float64(delay) * rand.Float64())
 	}
 
 	reconnectDelay := initialReconnectDelay
@@ -775,7 +773,7 @@ func (r *agentRunner) Run(ctx context.Context) error {
 
 	// Ensure osquery is installed (auto-install if not present)
 	go func() {
-		osqCtx, osqCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		osqCtx, osqCancel := context.WithTimeout(ctx, 10*time.Minute)
 		defer osqCancel()
 
 		if err := osquery.EnsureInstalled(osqCtx, r.logger); err != nil {
@@ -787,7 +785,7 @@ func (r *agentRunner) Run(ctx context.Context) error {
 
 	// Ensure winget is installed system-wide (Windows only)
 	go func() {
-		wingetCtx, wingetCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		wingetCtx, wingetCancel := context.WithTimeout(ctx, 10*time.Minute)
 		defer wingetCancel()
 
 		if err := winget.EnsureInstalled(wingetCtx, r.logger); err != nil {
