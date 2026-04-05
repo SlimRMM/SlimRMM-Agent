@@ -306,11 +306,26 @@ func (v *Validator) ValidateWithSymlinkResolution(path string) error {
 
 	// If resolution changed the path, re-check the resolved path against
 	// the forbidden lists to ensure a symlink did not redirect us into
-	// a sensitive location.
+	// a sensitive location, and also verify that it still lies within
+	// the allowed paths so a symlink cannot be used to escape the
+	// allowlist.
 	if resolved != cleaned {
 		if pathMatchesForbidden(resolved, v.forbiddenPaths, v.forbiddenPatterns) {
 			return fmt.Errorf("%w: symlink resolution redirected %q to forbidden target %q",
 				ErrSymlinkTraversal, cleaned, resolved)
+		}
+		if len(v.allowedPaths) > 0 {
+			allowed := false
+			for _, allowedPath := range v.allowedPaths {
+				if strings.HasPrefix(resolved, allowedPath) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return fmt.Errorf("%w: symlink resolution redirected %q outside allowed paths to %q",
+					ErrSymlinkTraversal, cleaned, resolved)
+			}
 		}
 	}
 
