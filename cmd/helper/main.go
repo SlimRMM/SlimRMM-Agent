@@ -814,11 +814,12 @@ func scanWingetUpdates(providedPath string) (*Message, []byte) {
 		// Don't return error, try to parse output anyway
 	}
 
-	// Parse output - split on both \n and \r to handle Windows line endings
-	// and progress indicator resets (winget uses \r for spinner animation)
-	lines := strings.FieldsFunc(outputStr, func(r rune) bool {
-		return r == '\n' || r == '\r'
-	})
+	// Parse output - handle winget's mixed \r/\r\n output correctly.
+	// Winget uses \r for progress spinner animation AND \r\n for real line breaks.
+	// First normalize \r\n to \n, then convert remaining bare \r to \n.
+	cleaned := strings.ReplaceAll(outputStr, "\r\n", "\n")
+	cleaned = strings.ReplaceAll(cleaned, "\r", "\n")
+	lines := strings.Split(cleaned, "\n")
 	headerFound := false
 	separatorFound := false
 
@@ -912,12 +913,13 @@ func parseWingetUpdateLine(line string) *WingetUpdate {
 		return nil
 	}
 
-	// Find the package ID by scanning for a field that matches winget ID format
+	// Find the package ID by scanning for a field that matches winget ID format.
+	// Take the LAST match (prefer rightmost dot-containing field, as name fields
+	// may also accidentally match the ID pattern).
 	idIdx := -1
 	for i := 1; i <= lastIdx-2; i++ {
 		if isWingetPackageID(fields[i]) {
-			idIdx = i
-			break
+			idIdx = i // Don't break - take the LAST match
 		}
 	}
 
@@ -968,34 +970,24 @@ func parseWingetUpdateLine(line string) *WingetUpdate {
 // isWingetPackageID checks if a string looks like a winget package ID.
 // Winget package IDs follow the format "Publisher.Package" (e.g., "Microsoft.VisualStudioCode").
 func isWingetPackageID(s string) bool {
-	// Must contain at least one dot
 	if !strings.Contains(s, ".") {
 		return false
 	}
-
-	// Must not start or end with a dot
-	if strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") {
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 {
 		return false
 	}
-
-	// Must not start with a digit (version numbers start with digits)
-	if len(s) > 0 && s[0] >= '0' && s[0] <= '9' {
-		return false
-	}
-
-	// Must not be wrapped in parentheses like "(19875)"
-	if strings.HasPrefix(s, "(") || strings.HasSuffix(s, ")") {
-		return false
-	}
-
-	// Should only contain valid characters (letters, digits, dots, underscores, hyphens)
-	for _, c := range s {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') {
+	for _, p := range parts {
+		if p == "" {
 			return false
 		}
 	}
-
+	// Must not contain spaces or special characters (except dots, dashes, underscores, plus)
+	for _, r := range s {
+		if r != '.' && r != '-' && r != '_' && r != '+' && !('a' <= r && r <= 'z') && !('A' <= r && r <= 'Z') && !('0' <= r && r <= '9') {
+			return false
+		}
+	}
 	return true
 }
 
