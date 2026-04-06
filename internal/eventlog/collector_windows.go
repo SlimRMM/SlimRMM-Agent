@@ -56,8 +56,8 @@ func (c *WindowsCollector) Collect(channel string, since time.Time) ([]EventEntr
 	cmd := exec.Command("wevtutil", "qe", channel,
 		"/q:"+xpath,
 		"/f:xml",
+		"/rd:true",
 		"/c:500",
-		"/uni:true",
 	)
 
 	output, err := cmd.Output()
