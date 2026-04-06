@@ -466,29 +466,49 @@ func (s *Session) captureLoop() {
 				ticker.Reset(time.Second / time.Duration(settings.FPS))
 			}
 
-			frame, err := s.capture.CaptureFrame(monitorID)
+			// Try to get pre-encoded JPEG directly (avoids decode+re-encode in helper mode)
+			var jpegData []byte
+			var frameWidth, frameHeight int
+
+			preEncoded, w, h, err := s.capture.CaptureFrameJPEG(monitorID)
 			if err != nil {
 				s.logger.Error("capturing frame", "error", err)
 				continue
 			}
 
-			// Calculate scale based on viewport size instead of fixed preset
-			scale := s.calculateScale(frame.Bounds().Dx(), frame.Bounds().Dy(), viewportW, viewportH)
-			if scale < 1.0 {
-				frame = ScaleImage(frame, scale)
-			}
+			if preEncoded != nil {
+				// Helper mode: JPEG bytes already available, skip encoding
+				jpegData = preEncoded
+				frameWidth = w
+				frameHeight = h
+			} else {
+				// Direct mode: capture raw frame and encode to JPEG
+				frame, err := s.capture.CaptureFrame(monitorID)
+				if err != nil {
+					s.logger.Error("capturing frame", "error", err)
+					continue
+				}
 
-			jpegData, err := s.encoder.Encode(frame)
-			if err != nil {
-				s.logger.Error("encoding frame", "error", err)
-				continue
+				// Calculate scale based on viewport size instead of fixed preset
+				scale := s.calculateScale(frame.Bounds().Dx(), frame.Bounds().Dy(), viewportW, viewportH)
+				if scale < 1.0 {
+					frame = ScaleImage(frame, scale)
+				}
+
+				jpegData, err = s.encoder.Encode(frame)
+				if err != nil {
+					s.logger.Error("encoding frame", "error", err)
+					continue
+				}
+				frameWidth = frame.Bounds().Dx()
+				frameHeight = frame.Bounds().Dy()
 			}
 
 			msg, _ := json.Marshal(map[string]interface{}{
 				"action": "remote_desktop_frame",
 				"frame":  base64.StdEncoding.EncodeToString(jpegData),
-				"width":  frame.Bounds().Dx(),
-				"height": frame.Bounds().Dy(),
+				"width":  frameWidth,
+				"height": frameHeight,
 			})
 
 			if err := s.sendCallback(msg); err != nil {
@@ -500,8 +520,8 @@ func (s *Session) captureLoop() {
 			frameCount++
 			if frameCount <= 3 || frameCount%500 == 0 {
 				s.logger.Info("frame sent", "frame", frameCount, "size", len(jpegData),
-					"width", frame.Bounds().Dx(), "height", frame.Bounds().Dy(),
-					"scale", scale, "viewport", fmt.Sprintf("%dx%d", viewportW, viewportH))
+					"width", frameWidth, "height", frameHeight,
+					"viewport", fmt.Sprintf("%dx%d", viewportW, viewportH))
 			}
 		}
 	}

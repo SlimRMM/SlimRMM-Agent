@@ -282,6 +282,12 @@ func (sc *ScreenCapture) CaptureFrame(monitorID int) (*image.RGBA, error) {
 	return img, nil
 }
 
+// CaptureFrameJPEG returns nil on macOS since there is no helper process
+// providing pre-encoded JPEG data. The caller should fall back to CaptureFrame + Encode.
+func (sc *ScreenCapture) CaptureFrameJPEG(monitorID int) (jpegData []byte, width, height int, err error) {
+	return nil, 0, 0, nil
+}
+
 // CaptureAll captures all monitors as a single image.
 func (sc *ScreenCapture) CaptureAll() (*image.RGBA, error) {
 	// For now, just capture the primary monitor

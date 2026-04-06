@@ -207,6 +207,13 @@ type WingetInstallResult struct {
 }
 
 func main() {
+	// Set DPI awareness for correct screen capture on high-DPI displays
+	if shcore := windows.NewLazySystemDLL("shcore.dll"); shcore != nil {
+		if proc := shcore.NewProc("SetProcessDpiAwareness"); proc != nil {
+			proc.Call(2) // PROCESS_PER_MONITOR_DPI_AWARE = 2
+		}
+	}
+
 	// Parse flags
 	var sessionID string
 	var updateMode bool

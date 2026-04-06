@@ -150,24 +150,9 @@ func (sc *ScreenCapture) CaptureFrame(monitorID int) (*image.RGBA, error) {
 
 // captureViaHelper captures screen through the helper process
 func (sc *ScreenCapture) captureViaHelper(monitorID int) (*image.RGBA, error) {
-	data, resp, err := sc.helperClient.CaptureScreen(monitorID, 90, 1.0)
+	data, resp, err := sc.captureViaHelperRaw(monitorID)
 	if err != nil {
-		// Try to reconnect via manager and retry once
-		log.Printf("Capture failed, reconnecting helper via manager: %v", err)
-		newClient, reconnectErr := helper.GetManager().Reconnect()
-		if reconnectErr != nil {
-			return nil, fmt.Errorf("helper reconnect failed: %w", reconnectErr)
-		}
-		// Update our reference to the new client
-		sc.helperClient = newClient
-		data, resp, err = sc.helperClient.CaptureScreen(monitorID, 90, 1.0)
-		if err != nil {
-			return nil, fmt.Errorf("capture after reconnect: %w", err)
-		}
-	}
-
-	if resp.Format != "jpeg" {
-		return nil, fmt.Errorf("unexpected format: %s", resp.Format)
+		return nil, err
 	}
 
 	// Decode JPEG
@@ -181,7 +166,50 @@ func (sc *ScreenCapture) captureViaHelper(monitorID int) (*image.RGBA, error) {
 	rgba := image.NewRGBA(bounds)
 	draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
 
+	_ = resp // dimensions available in resp if needed
 	return rgba, nil
+}
+
+// captureViaHelperRaw captures screen through the helper process and returns raw JPEG bytes.
+func (sc *ScreenCapture) captureViaHelperRaw(monitorID int) ([]byte, *helper.FrameResponse, error) {
+	data, resp, err := sc.helperClient.CaptureScreen(monitorID, 90, 1.0)
+	if err != nil {
+		// Try to reconnect via manager and retry once
+		log.Printf("Capture failed, reconnecting helper via manager: %v", err)
+		newClient, reconnectErr := helper.GetManager().Reconnect()
+		if reconnectErr != nil {
+			return nil, nil, fmt.Errorf("helper reconnect failed: %w", reconnectErr)
+		}
+		// Update our reference to the new client
+		sc.helperClient = newClient
+		data, resp, err = sc.helperClient.CaptureScreen(monitorID, 90, 1.0)
+		if err != nil {
+			return nil, nil, fmt.Errorf("capture after reconnect: %w", err)
+		}
+	}
+
+	if resp.Format != "jpeg" {
+		return nil, nil, fmt.Errorf("unexpected format: %s", resp.Format)
+	}
+
+	return data, resp, nil
+}
+
+// CaptureFrameJPEG returns pre-encoded JPEG bytes when available (helper mode),
+// avoiding a wasteful decode+re-encode cycle. Returns nil jpegData when the
+// caller should fall back to CaptureFrame + Encode (direct capture mode).
+func (sc *ScreenCapture) CaptureFrameJPEG(monitorID int) (jpegData []byte, width, height int, err error) {
+	if !sc.useHelper || sc.helperClient == nil {
+		// Direct mode: no pre-encoded JPEG available
+		return nil, 0, 0, nil
+	}
+
+	data, resp, err := sc.captureViaHelperRaw(monitorID)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	return data, resp.Width, resp.Height, nil
 }
 
 // captureDirectly captures screen using kbinani/screenshot
