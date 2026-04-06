@@ -286,8 +286,12 @@ jobs:
           Section: admin
           Priority: optional
           Architecture: amd64
+          Depends: libxtst6, libx11-6, libxi6, libxinerama1, libxcursor1, libxrandr2
           Maintainer: Kiefer Networks <info@slimrmm.io>
           Description: SlimRMM Remote Monitoring & Management Agent
+           Remote monitoring and management agent for Linux, macOS, and Windows.
+           Provides system monitoring, remote desktop, terminal access, file
+           management, software deployment, and compliance checking.
           EOF
 
           cp build/linux/postinstall.sh ${PKGROOT}/DEBIAN/postinst
@@ -344,6 +348,12 @@ jobs:
             --url "https://slimrmm.io" \
             --maintainer "Kiefer Networks <info@slimrmm.io>" \
             --license "Proprietary" \
+            --depends libXtst \
+            --depends libX11 \
+            --depends libXi \
+            --depends libXinerama \
+            --depends libXcursor \
+            --depends libXrandr \
             --after-install build/linux/postinstall.sh \
             --before-remove build/linux/preremove.sh \
             -C ${PKGROOT} \
