@@ -2584,6 +2584,9 @@ func (h *Handler) tryWingetUserContextUpdate(ctx context.Context, req wingetManu
 	h.logger.Info("trying winget update in user context first", "package_id", req.PackageID)
 	updateCtx.sendOutput("Trying user context...\n")
 
+	helperCtx, helperCancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer helperCancel()
+
 	helperClient, helperErr := helper.GetManager().Acquire()
 	if helperErr != nil {
 		h.logger.Debug("helper not available, trying system context directly", "error", helperErr)
@@ -2591,7 +2594,25 @@ func (h *Handler) tryWingetUserContextUpdate(ctx context.Context, req wingetManu
 	}
 	defer helper.GetManager().Release()
 
-	result, err := helperClient.UpgradeWingetPackage(updateCtx.WingetPath, req.PackageID)
+	type helperResult struct {
+		result *helper.WingetUpgradeResult
+		err    error
+	}
+	helperCh := make(chan helperResult, 1)
+	go func() {
+		r, e := helperClient.UpgradeWingetPackage(updateCtx.WingetPath, req.PackageID)
+		helperCh <- helperResult{r, e}
+	}()
+
+	var result *helper.WingetUpgradeResult
+	var err error
+	select {
+	case <-helperCtx.Done():
+		h.logger.Warn("helper winget upgrade timed out", "package_id", req.PackageID)
+		return nil // Fall back to system context
+	case hr := <-helperCh:
+		result, err = hr.result, hr.err
+	}
 	if err != nil || result == nil {
 		return nil // Fall back to system context
 	}
@@ -2892,6 +2913,15 @@ func (h *Handler) handleExecuteWingetUpdates(ctx context.Context, data json.RawM
 	var results []wingetUpdateResult
 	var succeeded, failed int
 
+	// Calculate per-package timeout
+	perPackageTimeout := timeout / time.Duration(len(packagesToUpdate))
+	if perPackageTimeout < 2*time.Minute {
+		perPackageTimeout = 2 * time.Minute
+	}
+	if perPackageTimeout > 15*time.Minute {
+		perPackageTimeout = 15 * time.Minute
+	}
+
 	for i, packageID := range packagesToUpdate {
 		// Send progress
 		h.SendRaw(map[string]interface{}{
@@ -2903,8 +2933,10 @@ func (h *Handler) handleExecuteWingetUpdates(ctx context.Context, data json.RawM
 			"status":       "running",
 		})
 
-		// Execute upgrade
-		result := h.executeWingetUpgradeByID(ctx, wingetPath, packageID, req.ExecutionID)
+		// Execute upgrade with per-package timeout
+		pkgCtx, pkgCancel := context.WithTimeout(ctx, perPackageTimeout)
+		result := h.executeWingetUpgradeByID(pkgCtx, wingetPath, packageID, req.ExecutionID)
+		pkgCancel()
 		results = append(results, result)
 
 		if result.Status == "success" {

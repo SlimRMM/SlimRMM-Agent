@@ -4,8 +4,10 @@ package actions
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -151,7 +153,9 @@ Write-Output "Windows Update completed successfully"
 
 	// Run pre-command if set (e.g., apt-get update)
 	if preCmd != nil {
-		preCmd.Run()
+		if err := preCmd.Run(); err != nil {
+			slog.Warn("pre-command failed", "error", err)
+		}
 	}
 
 	start := time.Now()
@@ -172,10 +176,15 @@ Write-Output "Windows Update completed successfully"
 		result.Stderr = err.Error()
 	}
 
-	// Schedule reboot if requested
-	if reboot && err == nil {
+	// Schedule reboot if requested and patches were actually installed successfully
+	patchesInstalled := err == nil && result.ExitCode == 0 && strings.TrimSpace(result.Stdout) != ""
+	if reboot && err == nil && patchesInstalled {
+		slog.Info("scheduling reboot after successful patch installation",
+			"patches_installed", patchesInstalled,
+			"delay", "60s")
 		go func() {
 			time.Sleep(60 * time.Second)
+			slog.Info("executing scheduled post-patch reboot")
 			RestartSystem(context.Background(), false, 0)
 		}()
 	}

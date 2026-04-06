@@ -401,8 +401,9 @@ func getAptUpdates(ctx context.Context) (*UpdateList, error) {
 	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C")
 	output, err := cmd.Output()
 	if err == nil {
-		// Parse output: Inst package (version ...)
-		instRe := regexp.MustCompile(`^Inst (\S+) \[([^\]]*)\] \((\S+)`)
+		// Parse output: Inst package [current] (available ...) or Inst package (available ...)
+		instRe := regexp.MustCompile(`Inst\s+(\S+)\s+\[([^\]]*)\]\s+\((\S+)`)
+		instReFallback := regexp.MustCompile(`Inst\s+(\S+)\s+\((\S+)`)
 		scanner := bufio.NewScanner(bytes.NewReader(output))
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -425,6 +426,27 @@ func getAptUpdates(ctx context.Context) (*UpdateList, error) {
 				}
 
 				updates.Updates = append(updates.Updates, update)
+			} else {
+				// Fallback format: Inst name (available ...)
+				fbMatches := instReFallback.FindStringSubmatch(line)
+				if len(fbMatches) >= 3 {
+					update := Update{
+						Name:    fbMatches[1],
+						Version: fbMatches[2],
+						Source:  "apt",
+					}
+
+					// Categorize
+					if strings.Contains(strings.ToLower(line), "security") {
+						update.Category = "security"
+					} else if strings.HasPrefix(fbMatches[1], "linux-") {
+						update.Category = "kernel"
+					} else {
+						update.Category = "standard"
+					}
+
+					updates.Updates = append(updates.Updates, update)
+				}
 			}
 		}
 
@@ -507,10 +529,14 @@ func getDnfUpdates(ctx context.Context) (*UpdateList, error) {
 	for scanner.Scan() {
 		parts := strings.Fields(scanner.Text())
 		if len(parts) >= 2 {
+			category := "standard"
+			if strings.Contains(strings.ToLower(parts[0]), "security") {
+				category = "security"
+			}
 			updates.Updates = append(updates.Updates, Update{
 				Name:     parts[0],
 				Version:  parts[1],
-				Category: "standard",
+				Category: category,
 				Source:   "dnf",
 			})
 		}
@@ -538,7 +564,9 @@ func getPacmanUpdates(ctx context.Context) (*UpdateList, error) {
 
 	// Sync database first
 	slog.Info("syncing pacman database")
-	exec.CommandContext(ctx, "pacman", "-Sy").Run()
+	if syncErr := exec.CommandContext(ctx, "pacman", "-Sy").Run(); syncErr != nil {
+		slog.Warn("pacman database sync failed", "error", syncErr)
+	}
 
 	// Check for official repo updates
 	slog.Info("running pacman -Qu")
@@ -756,9 +784,17 @@ if (-not $moduleInstalled) {
                 foreach ($Cat in $Update.Categories) {
                     if ($Cat.Name -match "Security|Critical") { $Category = "security"; break }
                 }
+                $kb = ""
+                foreach ($KBArticle in $Update.KBArticleIDs) {
+                    $kb = "KB$KBArticle"
+                    break
+                }
+                if (-not $kb -and $Update.Title -match '\((KB\d+)\)') {
+                    $kb = $Matches[1]
+                }
                 $Updates += @{
                     Title = $Update.Title
-                    KB = ""
+                    KB = $kb
                     Size = $Update.MaxDownloadSize
                     Category = $Category
                 }
@@ -856,6 +892,15 @@ if ($UpdatesArray.Count -gt 0) {
 		if kb, ok := raw["KB"].(string); ok && kb != "" {
 			update.KB = kb
 		}
+		// Extract KB from title if not set (e.g., "Security Update (KB5001234)")
+		if update.KB == "" && update.Name != "" {
+			if idx := strings.Index(update.Name, "(KB"); idx != -1 {
+				end := strings.Index(update.Name[idx:], ")")
+				if end != -1 {
+					update.KB = update.Name[idx+1 : idx+end]
+				}
+			}
+		}
 		if category, ok := raw["Category"].(string); ok {
 			update.Category = category
 		}
@@ -952,8 +997,10 @@ func getWingetUpdates(ctx context.Context) (*UpdateList, error) {
 	userUpdates, helperSuccess := scanWingetViaHelper()
 	updates.WingetHelperSuccess = helperSuccess
 	for _, u := range userUpdates {
-		if u.KB != "" && !seenIDs[u.KB] {
-			seenIDs[u.KB] = true
+		if u.KB == "" || !seenIDs[u.KB] {
+			if u.KB != "" {
+				seenIDs[u.KB] = true
+			}
 			updates.Updates = append(updates.Updates, u)
 		}
 	}
@@ -961,8 +1008,10 @@ func getWingetUpdates(ctx context.Context) (*UpdateList, error) {
 	// Then scan in system context (as SYSTEM service) to catch system-wide packages
 	systemUpdates := scanWingetDirect(ctx)
 	for _, u := range systemUpdates {
-		if u.KB != "" && !seenIDs[u.KB] {
-			seenIDs[u.KB] = true
+		if u.KB == "" || !seenIDs[u.KB] {
+			if u.KB != "" {
+				seenIDs[u.KB] = true
+			}
 			updates.Updates = append(updates.Updates, u)
 		}
 	}
@@ -1091,16 +1140,20 @@ func scanWingetDirect(ctx context.Context) []Update {
 			continue
 		}
 
-		// Skip summary lines (English and German, case-insensitive)
-		lowerTrimmed := strings.ToLower(trimmedLine)
-		if strings.Contains(lowerTrimmed, "upgrades available") || strings.Contains(lowerTrimmed, "upgrade available") ||
-			strings.Contains(lowerTrimmed, "no installed package") || strings.Contains(lowerTrimmed, "keine installierten") ||
-			strings.Contains(lowerTrimmed, "aktualisierungen verfügbar") || strings.Contains(lowerTrimmed, "aktualisierung verfügbar") ||
-			strings.Contains(lowerTrimmed, "aktualisierungen verf") { // Handle encoding issues
-			continue
-		}
-
 		if headerFound && separatorFound {
+			// Skip lines that don't look like update entries.
+			// A valid update line should contain at least one dot-separated package ID.
+			hasPkgID := false
+			for _, field := range strings.Fields(trimmedLine) {
+				if isWingetPackageID(field) {
+					hasPkgID = true
+					break
+				}
+			}
+			if !hasPkgID {
+				continue
+			}
+
 			if update := parseWingetLine(trimmedLine); update != nil {
 				updates = append(updates, *update)
 			}
@@ -1134,13 +1187,12 @@ func parseWingetLine(line string) *Update {
 		source = fields[len(fields)-1]
 	}
 
-	// Find the package ID by looking for the "Publisher.Package" pattern
-	// Package IDs contain a dot and are usually alphanumeric with dots/underscores
+	// Find the package ID by looking for the "Publisher.Package" pattern.
+	// Prefer the LAST matching field (more likely to be the actual ID after the display name).
 	pkgIDIdx := -1
 	for i, field := range fields {
 		if isWingetPackageID(field) {
 			pkgIDIdx = i
-			break
 		}
 	}
 
@@ -1166,36 +1218,40 @@ func parseWingetLine(line string) *Update {
 		return nil
 	}
 
-	// Split version fields in half - first half is current, second half is available
-	// This handles cases like "6.6.6 (19875) 6.7.2 (26346)"
-	midpoint := len(versionFields) / 2
-	currentVerParts := versionFields[:midpoint]
-	availableVerParts := versionFields[midpoint:]
-
-	// Handle odd number of version fields (more common case)
-	// Try to find where the version split occurs by looking for version-like patterns
-	if len(versionFields) >= 2 {
-		// Find version-looking fields from the end
-		// Available version is typically at the end before source
-		availableVer := findVersionString(versionFields, true)
-		currentVer := findVersionString(versionFields, false)
-
-		if availableVer != "" && currentVer != "" {
-			return &Update{
-				Name:       name,
-				Version:    availableVer,
-				CurrentVer: currentVer,
-				Category:   "standard",
-				Source:     source,
-				KB:         pkgID,
-				Context:    "system",
+	// Find the split between current and available version.
+	// A version string starts with a digit. Look for two consecutive version-like groups.
+	// Find indices where a new version-like token starts (digit as first char).
+	var versionStarts []int
+	for i, f := range versionFields {
+		if len(f) > 0 && f[0] >= '0' && f[0] <= '9' {
+			// Check if this starts a new version group (not a continuation like "(19875)")
+			// A new version group starts after a non-parenthetical field or at position 0
+			if i == 0 {
+				versionStarts = append(versionStarts, i)
+			} else {
+				// Previous field ended a group, this starts a new one
+				prev := versionFields[i-1]
+				if !strings.HasSuffix(prev, ")") || !strings.HasPrefix(prev, "(") {
+					// Check if previous was a paren group belonging to earlier version
+					// Only count as new start if previous field was NOT a digit-starting field's companion
+					versionStarts = append(versionStarts, i)
+				}
 			}
 		}
 	}
 
-	// Fallback: join version parts
-	currentVer := strings.Join(currentVerParts, " ")
-	availableVer := strings.Join(availableVerParts, " ")
+	var currentVer, availableVer string
+	if len(versionStarts) >= 2 {
+		// Two version groups found: first is current, second is available
+		splitIdx := versionStarts[len(versionStarts)-1]
+		currentVer = strings.Join(versionFields[:splitIdx], " ")
+		availableVer = strings.Join(versionFields[splitIdx:], " ")
+	} else if len(versionStarts) == 1 {
+		// Only one version-like group: treat entire thing as available version
+		availableVer = strings.Join(versionFields, " ")
+	} else {
+		return nil
+	}
 
 	if !containsDigit(currentVer) || !containsDigit(availableVer) {
 		return nil
@@ -1236,60 +1292,26 @@ func isWingetPackageID(s string) bool {
 		return false
 	}
 
-	// Should contain only alphanumeric, dots, underscores, and hyphens
-	for _, c := range s {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') {
+	// Must have at least 2 dot-separated parts (Publisher.Package)
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 {
+		return false
+	}
+
+	// Each part should be non-empty and contain only alphanumeric, underscores, and hyphens
+	for _, p := range parts {
+		if p == "" {
 			return false
+		}
+		for _, c := range p {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+				(c >= '0' && c <= '9') || c == '_' || c == '-') {
+				return false
+			}
 		}
 	}
 
 	return true
-}
-
-// findVersionString extracts a version string from version fields.
-// If fromEnd is true, it finds the last version-like field; otherwise the first.
-func findVersionString(fields []string, fromEnd bool) string {
-	// Look for fields that start with a digit (version numbers)
-	var versionParts []string
-
-	if fromEnd {
-		// Collect version parts from the end
-		for i := len(fields) - 1; i >= 0; i-- {
-			field := fields[i]
-			// Stop when we find something that doesn't look like a version part
-			if len(field) > 0 && (field[0] >= '0' && field[0] <= '9' || field[0] == '(') {
-				versionParts = append([]string{field}, versionParts...)
-			} else {
-				break
-			}
-		}
-		// Take only the last version (available)
-		// Typical: ["6.6.6", "(19875)", "6.7.2", "(26346)"] -> want "6.7.2 (26346)"
-		if len(versionParts) >= 2 {
-			midpoint := len(versionParts) / 2
-			return strings.Join(versionParts[midpoint:], " ")
-		}
-	} else {
-		// Collect version parts from the start
-		for _, field := range fields {
-			if len(field) > 0 && (field[0] >= '0' && field[0] <= '9' || field[0] == '(') {
-				versionParts = append(versionParts, field)
-			} else {
-				break
-			}
-		}
-		// Take only the first version (current)
-		if len(versionParts) >= 2 {
-			midpoint := len(versionParts) / 2
-			return strings.Join(versionParts[:midpoint], " ")
-		}
-	}
-
-	if len(versionParts) > 0 {
-		return strings.Join(versionParts, " ")
-	}
-	return ""
 }
 
 // containsDigit checks if a string contains at least one digit.
