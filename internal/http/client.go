@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	"log/slog"
 )
 
 // MaxErrorBodySize is the maximum size of error response bodies to prevent DoS.
@@ -171,11 +171,11 @@ func WithUploadProgress(fn ProgressCallback) UploadOption {
 
 // DefaultClient is the default HTTP client implementation.
 type DefaultClient struct {
-	logger *logrus.Logger
+	logger *slog.Logger
 }
 
 // NewClient creates a new HTTP client.
-func NewClient(logger *logrus.Logger) *DefaultClient {
+func NewClient(logger *slog.Logger) *DefaultClient {
 	return &DefaultClient{logger: logger}
 }
 
