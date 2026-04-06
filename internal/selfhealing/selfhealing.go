@@ -122,6 +122,13 @@ func (w *Watchdog) GetLastConnectionTime() time.Time {
 	return w.lastSuccessfulConnection.Load().(time.Time)
 }
 
+// GetRestartCount returns the number of consecutive restarts.
+func (w *Watchdog) GetRestartCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.consecutiveRestarts
+}
+
 // IsHealthy returns true if the agent is considered healthy.
 func (w *Watchdog) IsHealthy() bool {
 	lastConn := w.GetLastConnectionTime()
@@ -188,9 +195,11 @@ func (w *Watchdog) triggerRestart(reason string) {
 	w.lastRestartAttempt = time.Now()
 	w.consecutiveRestarts++
 
-	w.logger.Warn("initiating service restart",
+	w.logger.Warn("WATCHDOG: initiating service restart",
 		"reason", reason,
-		"attempt", w.consecutiveRestarts,
+		"restart_count", w.consecutiveRestarts,
+		"max_restarts", MaxConsecutiveRestarts,
+		"last_connection", w.GetLastConnectionTime(),
 	)
 
 	// Perform restart asynchronously to allow current operation to complete
@@ -237,14 +246,25 @@ func (w *Watchdog) performRestart() {
 		return
 	}
 
+	w.mu.Lock()
+	restartCount := w.consecutiveRestarts
+	w.mu.Unlock()
+
 	if err != nil {
-		w.logger.Error("service restart failed", "error", err)
+		w.logger.Error("WATCHDOG: service restart failed",
+			"error", err,
+			"restart_count", restartCount,
+		)
 	} else {
-		w.logger.Info("service restart initiated successfully")
+		w.logger.Info("WATCHDOG: service restart initiated successfully",
+			"restart_count", restartCount,
+			"reason", "connection_timeout",
+		)
 	}
 
 	// Exit this process - the service manager will start a new one
-	os.Exit(0)
+	// Exit code 1 signals the service manager that a restart is needed
+	os.Exit(1)
 }
 
 // TriggerImmediateRestart forces an immediate restart (for panic recovery).

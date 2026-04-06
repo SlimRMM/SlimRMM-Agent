@@ -47,131 +47,100 @@ func (p *Protection) unprotectFilePlatform(path string) error {
 	return syscall.SetFileAttributes(pathPtr, newAttrs)
 }
 
-// InstallWatchdog installs a Windows service that monitors the agent.
+// InstallWatchdog installs a scheduled task that monitors the agent service.
+// Uses Task Scheduler instead of a Windows service because PowerShell scripts
+// cannot implement the Service Control Manager (SCM) interface required by
+// Windows services, causing "service cannot start" errors in production.
 func InstallWatchdog() error {
-	// Create a PowerShell-based watchdog script with proper error handling
-	// and timeout-aware service restart capabilities
-	watchdogScript := `
-# SlimRMM Agent Watchdog Script
-# Monitors the agent service and restarts it if stopped
+	// Create the watchdog PowerShell script
+	scriptPath := filepath.Join(os.Getenv("ProgramFiles"), "SlimRMM", "watchdog.ps1")
+	script := `
+$serviceName = "SlimRMMAgent"
+$logFile = "C:\ProgramData\SlimRMM\log\watchdog.log"
 
-$ErrorActionPreference = 'SilentlyContinue'
-$ServiceName = 'SlimRMMAgent'
-$CheckInterval = 10
-
-while ($true) {
-    try {
-        $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        if ($svc) {
-            if ($svc.Status -ne 'Running') {
-                # Log restart attempt
-                $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-                $logPath = Join-Path $env:ProgramData 'SlimRMM\log\watchdog.log'
-                $logDir = Split-Path $logPath -Parent
-                if (-not (Test-Path $logDir)) {
-                    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
-                }
-                Add-Content -Path $logPath -Value "[$timestamp] Service status: $($svc.Status), attempting restart"
-
-                # Attempt to start the service with timeout
-                Start-Service -Name $ServiceName -ErrorAction Stop
-                $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-
-                $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-                Add-Content -Path $logPath -Value "[$timestamp] Service restarted successfully"
-            }
-        }
-    } catch {
-        $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-        $logPath = Join-Path $env:ProgramData 'SlimRMM\log\watchdog.log'
-        Add-Content -Path $logPath -Value "[$timestamp] Error: $($_.Exception.Message)"
-    }
-    Start-Sleep -Seconds $CheckInterval
+$status = (Get-Service -Name $serviceName -ErrorAction SilentlyContinue).Status
+if ($status -ne "Running") {
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Add-Content -Path $logFile -Value "$timestamp - Service not running (status: $status), restarting..."
+    Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 5
+    $newStatus = (Get-Service -Name $serviceName -ErrorAction SilentlyContinue).Status
+    Add-Content -Path $logFile -Value "$timestamp - Restart result: $newStatus"
 }
 `
-
-	programFiles := os.Getenv("ProgramFiles")
-	if programFiles == "" {
-		programFiles = `C:\Program Files`
-	}
-
-	slimrmmDir := filepath.Join(programFiles, "SlimRMM")
-	watchdogPath := filepath.Join(slimrmmDir, "watchdog.ps1")
-
-	// Write watchdog script with restrictive permissions
-	if err := os.WriteFile(watchdogPath, []byte(watchdogScript), 0600); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(script), 0644); err != nil {
 		return fmt.Errorf("failed to write watchdog script: %w", err)
 	}
 
-	// Use PowerShell to create the watchdog service
-	psCreateService := fmt.Sprintf(`
-		$ErrorActionPreference = 'Stop'
-		try {
-			# Remove existing service if present
-			$existing = Get-Service -Name 'slimrmm-watchdog' -ErrorAction SilentlyContinue
-			if ($existing) {
-				Stop-Service -Name 'slimrmm-watchdog' -Force -ErrorAction SilentlyContinue
-				if (Get-Command Remove-Service -ErrorAction SilentlyContinue) {
-					Remove-Service -Name 'slimrmm-watchdog'
-				} else {
-					& sc.exe delete 'slimrmm-watchdog' | Out-Null
-				}
-				Start-Sleep -Seconds 2
-			}
+	// Create scheduled task instead of service
+	taskName := "SlimRMM-Watchdog"
 
-			# Create new service with PowerShell execution
-			$binPath = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%s"'
-			New-Service -Name 'slimrmm-watchdog' -BinaryPathName $binPath -DisplayName 'SlimRMM Agent Watchdog' -StartupType Automatic -Description 'Monitors and restarts SlimRMM Agent if stopped unexpectedly' | Out-Null
+	// Remove existing task
+	exec.Command("schtasks", "/Delete", "/TN", taskName, "/F").Run()
 
-			# Configure failure recovery
-			& sc.exe failure 'slimrmm-watchdog' reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null
-
-			# Start the service
-			Start-Service -Name 'slimrmm-watchdog' -ErrorAction Stop
-			Write-Output 'SUCCESS'
-		} catch {
-			Write-Error $_.Exception.Message
-			exit 1
-		}
-	`, watchdogPath)
-
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psCreateService)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to create watchdog service: %s", string(output))
+	// Create task that runs every 1 minute
+	cmd := exec.Command("schtasks", "/Create",
+		"/TN", taskName,
+		"/TR", fmt.Sprintf(`powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%s"`, scriptPath),
+		"/SC", "MINUTE",
+		"/MO", "1",
+		"/RU", "SYSTEM",
+		"/RL", "HIGHEST",
+		"/F",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create scheduled task: %w (output: %s)", err, string(output))
 	}
+
+	// Protect the scheduled task from non-admin modification
+	// Hide the task and set ACL so only SYSTEM and Administrators can modify it
+	psProtectTask := fmt.Sprintf(`
+		$ErrorActionPreference = 'SilentlyContinue'
+		# Set restrictive ACL on the scheduled task XML definition
+		$taskPath = Join-Path $env:SystemRoot 'System32\Tasks\%s'
+		if (Test-Path $taskPath) {
+			$acl = Get-Acl $taskPath
+			$acl.SetAccessRuleProtection($true, $false)
+			$adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule('BUILTIN\Administrators', 'FullControl', 'Allow')
+			$systemRule = New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\SYSTEM', 'FullControl', 'Allow')
+			$acl.AddAccessRule($adminRule)
+			$acl.AddAccessRule($systemRule)
+			Set-Acl -Path $taskPath -AclObject $acl
+		}
+
+		# Also protect the watchdog script file with restrictive ACL
+		$scriptPath = '%s'
+		if (Test-Path $scriptPath) {
+			$acl = Get-Acl $scriptPath
+			$acl.SetAccessRuleProtection($true, $false)
+			$adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule('BUILTIN\Administrators', 'FullControl', 'Allow')
+			$systemRule = New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\SYSTEM', 'FullControl', 'Allow')
+			$acl.AddAccessRule($adminRule)
+			$acl.AddAccessRule($systemRule)
+			Set-Acl -Path $scriptPath -AclObject $acl
+		}
+	`, taskName, scriptPath)
+
+	aclCmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psProtectTask)
+	aclCmd.Run() // Best-effort ACL protection
 
 	return nil
 }
 
-// UninstallWatchdog removes the watchdog service.
+// UninstallWatchdog removes the watchdog scheduled task.
 func UninstallWatchdog() error {
-	// Use PowerShell for reliable service removal with force stop
-	psUninstall := `
-		$ErrorActionPreference = 'SilentlyContinue'
-		$svc = Get-Service -Name 'slimrmm-watchdog' -ErrorAction SilentlyContinue
-		if ($svc) {
-			Stop-Service -Name 'slimrmm-watchdog' -Force -ErrorAction SilentlyContinue
-			$svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30)) 2>$null
-			if (Get-Command Remove-Service -ErrorAction SilentlyContinue) {
-				Remove-Service -Name 'slimrmm-watchdog' -ErrorAction SilentlyContinue
-			} else {
-				& sc.exe delete 'slimrmm-watchdog' 2>&1 | Out-Null
-			}
-		}
-		Write-Output 'SUCCESS'
-	`
+	// Remove scheduled task
+	exec.Command("schtasks", "/Delete", "/TN", "SlimRMM-Watchdog", "/F").Run()
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psUninstall)
-	cmd.Run() // Ignore errors - service may not exist
+	// Also remove old service if exists (backward compat)
+	exec.Command("sc", "stop", "slimrmm-watchdog").Run()
+	exec.Command("sc", "delete", "slimrmm-watchdog").Run()
 
-	// Remove watchdog script (both .bat legacy and .ps1 new)
-	programFiles := os.Getenv("ProgramFiles")
-	if programFiles == "" {
-		programFiles = `C:\Program Files`
-	}
-	slimrmmDir := filepath.Join(programFiles, "SlimRMM")
-	os.Remove(filepath.Join(slimrmmDir, "watchdog.bat")) // Remove legacy batch file
-	os.Remove(filepath.Join(slimrmmDir, "watchdog.ps1")) // Remove PowerShell script
+	// Remove script
+	scriptPath := filepath.Join(os.Getenv("ProgramFiles"), "SlimRMM", "watchdog.ps1")
+	os.Remove(scriptPath)
+
 	return nil
 }
 

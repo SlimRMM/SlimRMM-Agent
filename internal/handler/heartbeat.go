@@ -191,6 +191,7 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 
 	// Send heartbeat
 	h.SendRaw(heartbeat)
+	h.recordConnectionSuccess()
 
 	// Check thresholds and send proactive alerts
 	h.thresholdMonitor.Update(stats)
@@ -220,6 +221,7 @@ func (h *Handler) sendHeartbeatByType(ctx context.Context, stats *monitor.Stats,
 			"alive":         true,
 			"timestamp":     time.Now().Unix(),
 		})
+		h.recordConnectionSuccess()
 
 	case monitor.HeartbeatStats:
 		// Stats heartbeat - basic metrics without disk details
@@ -237,6 +239,7 @@ func (h *Handler) sendHeartbeatByType(ctx context.Context, stats *monitor.Stats,
 				"timezone":       stats.Timezone,
 			},
 		})
+		h.recordConnectionSuccess()
 
 	case monitor.HeartbeatFull:
 		// Full heartbeat - use existing sendHeartbeat logic

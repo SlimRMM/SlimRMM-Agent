@@ -198,4 +198,5 @@ type ActionHandler func(ctx context.Context, data json.RawMessage) (interface{},
 type SelfHealingWatchdog interface {
 	RecordConnectionSuccess()
 	RecordConnectionFailure()
+	GetRestartCount() int
 }

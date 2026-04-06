@@ -62,6 +62,12 @@ type Protection struct {
 	fileHashes map[string]string
 	mu         sync.RWMutex
 
+	// lastKnownBinaryHash stores the hash of the agent binary at last shutdown.
+	lastKnownBinaryHash string
+
+	// configPath is the path to the agent config file.
+	configPath string
+
 	// Callbacks
 	onTamperDetected func(event TamperEvent)
 	onServiceStop    func() bool // Returns true if stop is allowed
@@ -99,6 +105,7 @@ func New(config Config, logger *slog.Logger) *Protection {
 		config:     config,
 		logger:     logger,
 		fileHashes: make(map[string]string),
+		configPath: GetConfigPath(),
 		stopCh:     make(chan struct{}),
 	}
 }
@@ -118,11 +125,38 @@ func (p *Protection) SetServiceStopCallback(cb func() bool) {
 	p.onServiceStop = cb
 }
 
+// verifyStartupIntegrity verifies the agent binary hasn't been modified since last known good state.
+func (p *Protection) verifyStartupIntegrity() {
+	binaryPath := GetBinaryPath()
+	if p.lastKnownBinaryHash != "" {
+		currentHash, err := p.hashFile(binaryPath)
+		if err == nil && currentHash != p.lastKnownBinaryHash {
+			p.logger.Error("agent binary modified since last shutdown",
+				"expected", p.lastKnownBinaryHash,
+				"actual", currentHash)
+			p.reportTamper(TamperEvent{
+				Type:      TamperTypeFileModified,
+				Path:      binaryPath,
+				Details:   "Binary modified between restarts",
+				Timestamp: time.Now(),
+			})
+		}
+	}
+}
+
 // Start begins the tamper protection monitoring.
 func (p *Protection) Start() error {
 	if !p.config.Enabled {
 		p.logger.Info("tamper protection is disabled")
 		return nil
+	}
+
+	// Verify binary integrity before anything else
+	p.verifyStartupIntegrity()
+
+	// Ensure config file is in the protected paths
+	if p.configPath != "" {
+		p.config.ProtectedPaths = append(p.config.ProtectedPaths, p.configPath)
 	}
 
 	// Calculate initial hashes for protected files
@@ -145,6 +179,14 @@ func (p *Protection) Start() error {
 
 // Stop stops the tamper protection monitoring.
 func (p *Protection) Stop() {
+	// Store the current binary hash for startup integrity verification
+	binaryPath := GetBinaryPath()
+	if hash, err := p.hashFile(binaryPath); err == nil {
+		p.mu.Lock()
+		p.lastKnownBinaryHash = hash
+		p.mu.Unlock()
+	}
+
 	close(p.stopCh)
 	p.wg.Wait()
 	p.logger.Info("tamper protection stopped")
@@ -209,11 +251,18 @@ func (p *Protection) initializeFileHashes() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	binaryPath := GetBinaryPath()
+	configPath := GetConfigPath()
+
 	for _, path := range paths {
 		hash, err := p.hashFile(path)
 		if err != nil {
 			if !os.IsNotExist(err) {
-				p.logger.Warn("failed to hash file", "path", path, "error", err)
+				if path == binaryPath || path == configPath {
+					p.logger.Error("failed to hash critical file", "path", path, "error", err)
+				} else {
+					p.logger.Warn("failed to hash file", "path", path, "error", err)
+				}
 			}
 			continue
 		}
@@ -354,7 +403,7 @@ func (p *Protection) protectFiles() error {
 
 	for _, path := range paths {
 		if err := p.protectFile(path); err != nil {
-			p.logger.Debug("failed to protect file", "path", path, "error", err)
+			p.logger.Warn("failed to apply file protection", "path", path, "error", err)
 		}
 	}
 

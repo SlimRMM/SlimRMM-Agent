@@ -480,6 +480,22 @@ func (h *Handler) Connect(ctx context.Context) error {
 	// Notify self-healing watchdog of successful connection
 	h.recordConnectionSuccess()
 
+	// Report watchdog restart to backend if this connection follows a restart
+	if h.selfHealingWatchdog != nil {
+		if restartCount := h.selfHealingWatchdog.GetRestartCount(); restartCount > 0 {
+			h.logger.Warn("WATCHDOG: reporting restart recovery to backend",
+				"restart_count", restartCount,
+			)
+			h.SendRaw(map[string]interface{}{
+				"action": "watchdog_restart",
+				"data": map[string]interface{}{
+					"restart_count": restartCount,
+					"reason":        "connection_timeout",
+				},
+			})
+		}
+	}
+
 	h.logger.Info("connected to server")
 	return nil
 }
