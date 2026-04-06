@@ -61,8 +61,11 @@ type InputEvent struct {
 	Text      string  `json:"text"`
 }
 
-// SendCallback is the function type for sending messages to the frontend.
+// SendCallback is the function type for sending JSON text messages to the frontend.
 type SendCallback func(msg []byte) error
+
+// SendBinaryCallback is the function type for sending binary WebSocket frames to the frontend.
+type SendBinaryCallback func(data []byte) error
 
 // specialKeyMap maps JavaScript key names to robotgo key names.
 var specialKeyMap = map[string]string{

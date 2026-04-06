@@ -18,6 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
 	"github.com/slimrmm/slimrmm-agent/internal/config"
+	"github.com/slimrmm/slimrmm-agent/internal/eventlog"
 	"github.com/slimrmm/slimrmm-agent/internal/monitor"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/security/antireplay"
@@ -48,6 +49,7 @@ type Handler struct {
 	terminalManager *actions.TerminalManager
 	uploadManager   *actions.UploadManager
 	sendCh          chan []byte
+	sendBinaryCh    chan []byte
 	done            chan struct{}
 	mu              sync.RWMutex
 
@@ -132,6 +134,9 @@ type Handler struct {
 
 	// Winget upgrade service for package upgrades
 	wingetUpgradeService *wingetservice.UpgradeService
+
+	// Event log collection manager
+	eventLogManager *eventlog.Manager
 }
 
 // New creates a new Handler.
@@ -273,6 +278,7 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		terminalManager:            actions.NewTerminalManager(),
 		uploadManager:              uploadManager,
 		sendCh:                     make(chan []byte, 256),
+		sendBinaryCh:               make(chan []byte, 64),
 		done:                       make(chan struct{}),
 		msgSem:                     make(chan struct{}, MaxConcurrentHandlers),
 		updater:                    updater.New(logger),
@@ -296,6 +302,19 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		streamingCollectorRegistry: streamingCollectorRegistry,
 		wingetUpgradeService:       wingetUpgradeService,
 	}
+
+	// Initialize event log collection manager
+	h.eventLogManager = eventlog.NewManager(
+		paths.BaseDir,
+		func(events []eventlog.EventEntry) error {
+			h.SendRaw(map[string]interface{}{
+				"action": "event_logs_batch",
+				"events": events,
+			})
+			return nil
+		},
+		logger,
+	)
 
 	h.registerHandlers()
 
@@ -567,6 +586,18 @@ func (h *Handler) SendRaw(msg interface{}) {
 	}
 }
 
+// SendBinary sends a pre-built binary message through the write pump.
+// Used for binary WebSocket frames (e.g. remote desktop video frames).
+// Thread-safe: uses a buffered channel for non-blocking sends.
+// If the send channel is full, the message is dropped with a warning log.
+func (h *Handler) SendBinary(data []byte) {
+	select {
+	case h.sendBinaryCh <- data:
+	default:
+		h.logger.Warn("binary send channel full, dropping frame")
+	}
+}
+
 // Close gracefully shuts down the handler and closes the WebSocket connection.
 // It stops all background services including the inventory watcher, upload manager,
 // anti-replay protection, and audit logger. Sends a WebSocket close message
@@ -583,6 +614,11 @@ func (h *Handler) Close() error {
 		// already closed
 	default:
 		close(h.done)
+	}
+
+	// Stop event log manager
+	if h.eventLogManager != nil {
+		h.eventLogManager.Stop()
 	}
 
 	// Stop inventory watcher

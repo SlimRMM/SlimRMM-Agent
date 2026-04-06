@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/actions"
+	"github.com/slimrmm/slimrmm-agent/internal/eventlog"
 	"github.com/slimrmm/slimrmm-agent/internal/helper"
 	"github.com/slimrmm/slimrmm-agent/internal/i18n"
 	"github.com/slimrmm/slimrmm-agent/internal/logging"
@@ -187,6 +188,9 @@ func (h *Handler) registerHandlers() {
 	// Maintenance mode sync
 	h.handlers["set_maintenance_mode"] = h.handleSetMaintenanceMode
 	h.handlers["get_maintenance_status"] = h.handleGetMaintenanceStatus
+
+	// Event log collection
+	h.handlers["event_log_config"] = h.handleEventLogConfig
 }
 
 // Command handlers
@@ -3191,4 +3195,22 @@ func (h *Handler) handleGetSystemStats(ctx context.Context, data json.RawMessage
 
 func (h *Handler) handleHeartbeat(ctx context.Context, data json.RawMessage) (interface{}, error) {
 	return h.monitor.GetStats(ctx)
+}
+
+// handleEventLogConfig applies a new event log collection configuration from the backend.
+func (h *Handler) handleEventLogConfig(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	var cfg eventlog.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		// Try with nested "data" wrapper
+		var wrapper struct {
+			Data eventlog.Config `json:"data"`
+		}
+		if err2 := json.Unmarshal(data, &wrapper); err2 != nil {
+			return nil, fmt.Errorf("invalid event log config: %w", err)
+		}
+		cfg = wrapper.Data
+	}
+	h.eventLogManager.UpdateConfig(cfg)
+	h.logger.Info("event log config updated", "channels", cfg.Channels, "interval", cfg.PollIntervalSeconds, "enabled", cfg.Enabled)
+	return map[string]string{"status": "ok"}, nil
 }

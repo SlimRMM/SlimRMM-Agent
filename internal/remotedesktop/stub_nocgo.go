@@ -43,7 +43,7 @@ func GetMonitors() map[string]interface{} {
 }
 
 // StartSession returns an error when CGO is disabled.
-func StartSession(sessionID string, sendCallback SendCallback, logger *slog.Logger, viewportWidth, viewportHeight int) *StartResult {
+func StartSession(sessionID string, sendCallback SendCallback, sendBinaryCallback SendBinaryCallback, logger *slog.Logger, viewportWidth, viewportHeight int) *StartResult {
 	return &StartResult{
 		Success: false,
 		Error:   errCGODisabled,

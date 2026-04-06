@@ -54,7 +54,12 @@ func (h *Handler) handleStartRemoteDesktop(ctx context.Context, data json.RawMes
 		return nil
 	}
 
-	result := remotedesktop.StartSession(req.SessionID, sendCallback, h.logger, req.ViewportWidth, req.ViewportHeight)
+	sendBinaryCallback := func(data []byte) error {
+		h.SendBinary(data)
+		return nil
+	}
+
+	result := remotedesktop.StartSession(req.SessionID, sendCallback, sendBinaryCallback, h.logger, req.ViewportWidth, req.ViewportHeight)
 
 	if result.Success {
 		h.logger.Info("remote desktop session started successfully", "session_id", req.SessionID)

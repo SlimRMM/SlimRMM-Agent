@@ -4,8 +4,6 @@
 package remotedesktop
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -24,9 +22,10 @@ var (
 
 // Session represents an active remote desktop session.
 type Session struct {
-	sessionID       string
-	sendCallback    SendCallback
-	logger          *slog.Logger
+	sessionID          string
+	sendCallback       SendCallback
+	sendBinaryCallback SendBinaryCallback
+	logger             *slog.Logger
 	capture         *ScreenCapture
 	input           *InputController
 	encoder         *JPEGEncoder
@@ -318,7 +317,7 @@ func GetMonitors() map[string]interface{} {
 // StartSession starts a new remote desktop session.
 // viewportWidth and viewportHeight specify the client's viewport size for optimal scaling.
 // If 0, the native resolution is used.
-func StartSession(sessionID string, sendCallback SendCallback, logger *slog.Logger, viewportWidth, viewportHeight int) *StartResult {
+func StartSession(sessionID string, sendCallback SendCallback, sendBinaryCallback SendBinaryCallback, logger *slog.Logger, viewportWidth, viewportHeight int) *StartResult {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -349,7 +348,7 @@ func StartSession(sessionID string, sendCallback SendCallback, logger *slog.Logg
 		delete(activeSessions, sessionID)
 	}
 
-	session, err := newSession(sessionID, sendCallback, logger, viewportWidth, viewportHeight)
+	session, err := newSession(sessionID, sendCallback, sendBinaryCallback, logger, viewportWidth, viewportHeight)
 	if err != nil {
 		return &StartResult{
 			Success: false,
@@ -376,7 +375,7 @@ func StartSession(sessionID string, sendCallback SendCallback, logger *slog.Logg
 }
 
 // newSession creates a new session instance.
-func newSession(sessionID string, sendCallback SendCallback, logger *slog.Logger, viewportWidth, viewportHeight int) (*Session, error) {
+func newSession(sessionID string, sendCallback SendCallback, sendBinaryCallback SendBinaryCallback, logger *slog.Logger, viewportWidth, viewportHeight int) (*Session, error) {
 	capture, err := NewScreenCapture()
 	if err != nil {
 		return nil, fmt.Errorf("creating screen capture: %w", err)
@@ -404,9 +403,10 @@ func newSession(sessionID string, sendCallback SendCallback, logger *slog.Logger
 	)
 
 	return &Session{
-		sessionID:       sessionID,
-		sendCallback:    sendCallback,
-		logger:          logger,
+		sessionID:          sessionID,
+		sendCallback:       sendCallback,
+		sendBinaryCallback: sendBinaryCallback,
+		logger:             logger,
 		capture:         capture,
 		input:           input,
 		encoder:         encoder,
@@ -504,16 +504,10 @@ func (s *Session) captureLoop() {
 				frameHeight = frame.Bounds().Dy()
 			}
 
-			msg, _ := json.Marshal(map[string]interface{}{
-				"action": "remote_desktop_frame",
-				"frame":  base64.StdEncoding.EncodeToString(jpegData),
-				"width":  frameWidth,
-				"height": frameHeight,
-			})
-
-			if err := s.sendCallback(msg); err != nil {
+			binaryFrame := BuildBinaryFrame(frameWidth, frameHeight, jpegData)
+			if err := s.sendBinaryCallback(binaryFrame); err != nil {
 				if frameCount < 10 || frameCount%100 == 0 {
-					s.logger.Info("frame send error", "error", err, "frame", frameCount)
+					s.logger.Info("binary frame send error", "error", err, "frame", frameCount)
 				}
 			}
 
