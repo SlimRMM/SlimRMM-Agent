@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // wevtEvent represents a single Event element from wevtutil XML output.
@@ -56,6 +57,7 @@ func (c *WindowsCollector) Collect(channel string, since time.Time) ([]EventEntr
 		"/q:"+xpath,
 		"/f:xml",
 		"/c:500",
+		"/uni:true",
 	)
 
 	output, err := cmd.Output()
@@ -72,6 +74,10 @@ func (c *WindowsCollector) Collect(channel string, since time.Time) ([]EventEntr
 	if raw == "" {
 		return nil, since, nil
 	}
+
+	// Sanitize invalid UTF-8 bytes that wevtutil may produce on non-English
+	// Windows installations (e.g. German Umlaute in CP1252 encoding).
+	raw = sanitizeUTF8(raw)
 
 	// wevtutil outputs individual <Event> elements without a root wrapper.
 	// Wrap them so the XML decoder can parse them in one pass.
@@ -134,6 +140,27 @@ func (c *WindowsCollector) Collect(channel string, since time.Time) ([]EventEntr
 	}
 
 	return entries, latestTime, nil
+}
+
+// sanitizeUTF8 replaces invalid UTF-8 sequences with the Unicode replacement
+// character (U+FFFD). wevtutil on non-English Windows may emit event messages
+// encoded in the system's ANSI codepage (e.g. CP1252) instead of UTF-8.
+func sanitizeUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b.WriteRune('\uFFFD')
+		} else {
+			b.WriteRune(r)
+		}
+		i += size
+	}
+	return b.String()
 }
 
 // windowsLevelToString converts a Windows event level integer to a string.
