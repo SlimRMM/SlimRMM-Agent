@@ -11,7 +11,6 @@ require (
 	github.com/luthermonson/go-proxmox v0.3.1
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e
 	github.com/shirou/gopsutil/v3 v3.24.5
-	github.com/sirupsen/logrus v1.9.4
 	golang.design/x/clipboard v0.7.1
 	golang.org/x/sys v0.38.0
 )
@@ -37,6 +36,7 @@ require (
 	github.com/robotn/xgbutil v0.10.0 // indirect
 	github.com/shirou/gopsutil/v4 v4.25.12 // indirect
 	github.com/shoenig/go-m1cpu v0.1.7 // indirect
+	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/tailscale/win v0.0.0-20250627215312-f4da2b8ee071 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
