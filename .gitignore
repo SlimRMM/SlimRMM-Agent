@@ -3,6 +3,7 @@
 *.dll
 *.so
 *.dylib
+rmm-agent
 slimrmm-agent
 slimrmm-agent-*
 
@@ -27,6 +28,7 @@ vendor/
 *.swo
 
 # Build artifacts
+bin/
 dist/
 *.tar.gz
 *.zip
