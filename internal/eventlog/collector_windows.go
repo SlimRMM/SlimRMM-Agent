@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 )
 
-// wevtEvent represents a single Event element from wevtutil XML output.
+// wevtEvent represents a single Event element from wevtutil RenderedXml output.
 type wevtEvent struct {
 	System struct {
 		Provider struct {
@@ -30,6 +30,14 @@ type wevtEvent struct {
 			Value string `xml:",chardata"`
 		} `xml:"Data"`
 	} `xml:"EventData"`
+	RenderingInfo struct {
+		Message  string `xml:"Message"`
+		Level    string `xml:"Level"`
+		Task     string `xml:"Task"`
+		Opcode   string `xml:"Opcode"`
+		Channel  string `xml:"Channel"`
+		Provider string `xml:"Provider"`
+	} `xml:"RenderingInfo"`
 }
 
 // wevtEvents is a wrapper for parsing multiple Event elements.
@@ -55,7 +63,7 @@ func (c *WindowsCollector) Collect(channel string, since time.Time) ([]EventEntr
 
 	cmd := exec.Command("wevtutil", "qe", channel,
 		"/q:"+xpath,
-		"/f:xml",
+		"/f:RenderedXml",
 		"/rd:true",
 		"/c:500",
 	)
@@ -74,6 +82,11 @@ func (c *WindowsCollector) Collect(channel string, since time.Time) ([]EventEntr
 	if raw == "" {
 		return nil, since, nil
 	}
+
+	// RenderedXml wraps events with an xmlns attribute that can confuse Go's
+	// XML decoder. Strip it before parsing.
+	raw = strings.ReplaceAll(raw, ` xmlns='http://schemas.microsoft.com/win/2004/08/events/event'`, "")
+	raw = strings.ReplaceAll(raw, ` xmlns="http://schemas.microsoft.com/win/2004/08/events/event"`, "")
 
 	// Sanitize invalid UTF-8 bytes that wevtutil may produce on non-English
 	// Windows installations (e.g. German Umlaute in CP1252 encoding).
@@ -126,12 +139,30 @@ func (c *WindowsCollector) Collect(channel string, since time.Time) ([]EventEntr
 			messageParts = append(messageParts, val)
 		}
 
-		message := strings.Join(messageParts, " | ")
+		// Prefer the rendered message from RenderingInfo (human-readable)
+		message := strings.TrimSpace(evt.RenderingInfo.Message)
+		if message == "" {
+			// Fallback: build message from EventData fields
+			message = strings.Join(messageParts, " | ")
+		}
+
+		if evt.RenderingInfo.Task != "" {
+			rawData["_task"] = evt.RenderingInfo.Task
+		}
+		if evt.RenderingInfo.Opcode != "" {
+			rawData["_opcode"] = evt.RenderingInfo.Opcode
+		}
+
+		// Use RenderingInfo.Provider as fallback if System.Provider.Name is empty.
+		provider := evt.System.Provider.Name
+		if provider == "" {
+			provider = evt.RenderingInfo.Provider
+		}
 
 		entries = append(entries, EventEntry{
 			EventID:   evt.System.EventID,
 			Channel:   evt.System.Channel,
-			Provider:  evt.System.Provider.Name,
+			Provider:  provider,
 			Level:     windowsLevelToString(evt.System.Level),
 			Message:   message,
 			Timestamp: ts.UTC().Format(time.RFC3339),
