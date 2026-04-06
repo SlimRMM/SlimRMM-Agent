@@ -401,7 +401,8 @@ func DownloadURL(url, destPath string) (*DownloadResult, error) {
 	hasher := sha256.New()
 	writer := io.MultiWriter(file, hasher)
 
-	size, err := io.Copy(writer, resp.Body)
+	limitedBody := io.LimitReader(resp.Body, MaxFileSize)
+	size, err := io.Copy(writer, limitedBody)
 	if err != nil {
 		os.Remove(destPath)
 		return nil, fmt.Errorf("writing file: %w", err)

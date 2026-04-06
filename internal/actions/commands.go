@@ -5,9 +5,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -146,8 +146,8 @@ func ExecuteScript(ctx context.Context, scriptType, script string, timeout time.
 	}
 
 	// Log script execution with SHA256 hash for audit trail.
-	sum := sha256.Sum256([]byte(script))
-	_ = hex.EncodeToString(sum[:]) // hash computed for audit logging
+	scriptHash := sha256.Sum256([]byte(script))
+	slog.Info("executing script", "hash", fmt.Sprintf("%x", scriptHash), "type", scriptType)
 
 	// Basic script validation - check for dangerous patterns in the script content
 	if matched := containsDangerousScriptPattern(script); matched != "" {
