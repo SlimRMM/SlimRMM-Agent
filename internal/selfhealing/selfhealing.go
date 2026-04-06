@@ -17,7 +17,7 @@ import (
 const (
 	// DefaultConnectionTimeout is the maximum time without a successful connection
 	// before triggering a service restart.
-	DefaultConnectionTimeout = 30 * time.Minute
+	DefaultConnectionTimeout = 10 * time.Minute
 
 	// DefaultHealthCheckInterval is how often to check the connection health.
 	DefaultHealthCheckInterval = 1 * time.Minute
@@ -60,9 +60,9 @@ type Watchdog struct {
 	isConnected              atomic.Bool
 
 	// Restart tracking
-	lastRestartAttempt    time.Time
-	consecutiveRestarts   int
-	mu                    sync.Mutex
+	lastRestartAttempt  time.Time
+	consecutiveRestarts int
+	mu                  sync.Mutex
 
 	// Shutdown
 	done chan struct{}

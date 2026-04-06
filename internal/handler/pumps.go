@@ -34,9 +34,16 @@ func (h *Handler) readPump(ctx context.Context) error {
 		default:
 		}
 
+		// Enforce a hard read deadline independent of pong handling.
+		// This ensures that even if a reverse proxy (e.g. Caddy) keeps
+		// the TCP connection alive after the backend is stopped, the
+		// agent will detect the dead connection within pongWait and
+		// trigger a reconnect instead of hanging indefinitely.
+		conn.SetReadDeadline(time.Now().Add(pongWait))
+
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseServiceRestart) {
 				return nil
 			}
 			return fmt.Errorf("reading message: %w", err)
