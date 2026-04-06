@@ -352,13 +352,13 @@ func (c *Client) install(ctx context.Context) error {
 func installFromGitHub(ctx context.Context) error {
 	// PowerShell script to download and install winget with dependencies
 	script := `
-$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 Write-Host "Preparing for system-wide winget installation..."
 
 # Step 1: Remove ALL existing winget installations (per-user and provisioned)
 # This ensures only our new system-wide installation will exist
+# Removal failures are non-fatal - installation methods handle conflicts
 Write-Host "Removing existing winget installations..."
 
 try {
@@ -367,7 +367,11 @@ try {
         Where-Object { $_.DisplayName -eq "Microsoft.DesktopAppInstaller" }
     if ($provisioned) {
         Write-Host "Removing provisioned package: $($provisioned.PackageName)"
-        Remove-AppxProvisionedPackage -Online -PackageName $provisioned.PackageName -ErrorAction SilentlyContinue
+        try {
+            Remove-AppxProvisionedPackage -Online -PackageName $provisioned.PackageName -ErrorAction SilentlyContinue
+        } catch {
+            Write-Host "Could not remove provisioned package: $_ (continuing anyway)"
+        }
     }
 
     # Remove all per-user installations using -AllUsers flag
@@ -378,11 +382,11 @@ try {
         try {
             Remove-AppxPackage -Package $pkg.PackageFullName -AllUsers -ErrorAction SilentlyContinue
         } catch {
-            Write-Host "Could not remove $($pkg.PackageFullName): $_"
+            Write-Host "Could not remove $($pkg.PackageFullName): $_ (continuing anyway)"
         }
     }
 
-    Write-Host "Existing installations removed"
+    Write-Host "Existing installations cleanup finished"
 } catch {
     Write-Host "Warning during cleanup: $_ (continuing with installation)"
 }
@@ -457,16 +461,56 @@ try {
         Write-Host "UI.Xaml download/install failed (may already be installed): $_"
     }
 
-    # Install winget using Add-AppxProvisionedPackage for system-wide installation
+    # Install winget - try multiple methods
     Write-Host "Installing winget system-wide..."
-    if ($licensePath -and (Test-Path $licensePath)) {
-        Add-AppxProvisionedPackage -Online -PackagePath $msixPath -LicensePath $licensePath -ErrorAction Stop
-    } else {
-        # Try without license
-        Add-AppxProvisionedPackage -Online -PackagePath $msixPath -SkipLicense -ErrorAction Stop
+    $installed = $false
+
+    # Method 1: Add-AppxProvisionedPackage (preferred, system-wide)
+    try {
+        if ($licensePath -and (Test-Path $licensePath)) {
+            Add-AppxProvisionedPackage -Online -PackagePath $msixPath -LicensePath $licensePath -ErrorAction Stop
+        } else {
+            Add-AppxProvisionedPackage -Online -PackagePath $msixPath -SkipLicense -ErrorAction Stop
+        }
+        $installed = $true
+        Write-Host "winget installed via AppxProvisionedPackage"
+    } catch {
+        Write-Host "AppxProvisionedPackage failed: $_ (trying fallback...)"
     }
 
-    Write-Host "winget installation completed successfully"
+    # Method 2: Add-AppxPackage with ForceApplicationShutdown (fallback)
+    if (-not $installed) {
+        try {
+            Add-AppxPackage -Path $msixPath -ForceApplicationShutdown -ErrorAction Stop
+            $installed = $true
+            Write-Host "winget installed via Add-AppxPackage"
+        } catch {
+            Write-Host "Add-AppxPackage also failed: $_"
+        }
+    }
+
+    # Method 3: Register existing package from store cache (last resort)
+    if (-not $installed) {
+        try {
+            $storePackage = Get-ChildItem "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+            if ($storePackage) {
+                $manifest = Join-Path $storePackage.FullName "AppxManifest.xml"
+                if (Test-Path $manifest) {
+                    Add-AppxPackage -Register $manifest -DisableDevelopmentMode -ForceApplicationShutdown -ErrorAction Stop
+                    $installed = $true
+                    Write-Host "winget re-registered from existing package"
+                }
+            }
+        } catch {
+            Write-Host "Re-registration also failed: $_"
+        }
+    }
+
+    if ($installed) {
+        Write-Host "winget installation completed successfully"
+    } else {
+        throw "All winget installation methods failed"
+    }
 
 } finally {
     # Cleanup

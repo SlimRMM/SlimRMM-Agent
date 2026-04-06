@@ -236,10 +236,14 @@ func (h *Handler) handleWingetMaintenance(ctx context.Context, status winget.Sta
 		go h.cleanupWingetInstallations(ctx)
 	}
 
-	// Check for winget updates
+	// Check for winget updates (with backoff on repeated failures)
 	shouldCheckWingetUpdate := h.heartbeatCount%wingetUpdateInterval == 0
 	if status.Available && shouldCheckWingetUpdate {
-		go h.checkWingetUpdates(ctx)
+		if time.Now().Before(h.wingetUpdateBackoffUntil) {
+			// Silent skip during backoff
+		} else {
+			go h.checkWingetUpdates(ctx)
+		}
 	}
 
 	// Bootstrap PowerShell 7 and WinGet.Client module
@@ -285,9 +289,26 @@ func (h *Handler) checkWingetUpdates(parentCtx context.Context) {
 			h.logger.Debug("winget update check cancelled due to shutdown")
 			return
 		}
-		h.logger.Warn("winget auto-update check failed", "error", err)
+		h.wingetUpdateFailCount++
+		// Exponential backoff: 1h, 2h, 4h, 8h, max 24h
+		backoffHours := 1 << min(h.wingetUpdateFailCount-1, 4) // 1, 2, 4, 8, 16 -> capped at 24
+		if backoffHours > 24 {
+			backoffHours = 24
+		}
+		h.wingetUpdateBackoffUntil = time.Now().Add(time.Duration(backoffHours) * time.Hour)
+		h.logger.Warn("winget auto-update check failed, backing off",
+			"error", err,
+			"fail_count", h.wingetUpdateFailCount,
+			"backoff_hours", backoffHours,
+			"next_attempt", h.wingetUpdateBackoffUntil.Format(time.RFC3339))
 	} else if updated {
+		h.wingetUpdateFailCount = 0
+		h.wingetUpdateBackoffUntil = time.Time{}
 		h.logger.Info("winget was auto-updated to latest version")
+	} else {
+		// No update needed - reset failure counter
+		h.wingetUpdateFailCount = 0
+		h.wingetUpdateBackoffUntil = time.Time{}
 	}
 }
 

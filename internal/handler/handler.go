@@ -94,6 +94,10 @@ type Handler struct {
 	lastDockerHash  string
 	lastWingetHash  string
 
+	// Winget update failure tracking (exponential backoff on repeated failures)
+	wingetUpdateFailCount    int
+	wingetUpdateBackoffUntil time.Time
+
 	// Winget helper availability (updated by update scans)
 	wingetHelperAvailable bool
 

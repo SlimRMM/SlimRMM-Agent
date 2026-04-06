@@ -2555,6 +2555,17 @@ func (h *Handler) handleExecuteWingetUpdate(ctx context.Context, data json.RawMe
 		return response, nil
 	}
 
+	// Send progress: starting
+	h.SendRaw(map[string]interface{}{
+		"action": "winget_update_progress",
+		"data": map[string]interface{}{
+			"execution_id": req.ExecutionID,
+			"package_id":   req.PackageID,
+			"status":       "running",
+			"message":      "Starting update...",
+		},
+	})
+
 	// Create update context
 	updateCtx := newWingetUpdateContext(req.ExecutionID, req.PackageID, req.PackageName, h.wingetUpgradeService.GetBinaryPath(), h)
 
@@ -2593,6 +2604,15 @@ func (h *Handler) tryWingetUserContextUpdate(ctx context.Context, req wingetManu
 			response["reboot_scheduled"] = true
 			h.ScheduleReboot("winget update")
 		}
+		h.SendRaw(map[string]interface{}{
+			"action": "winget_update_progress",
+			"data": map[string]interface{}{
+				"execution_id": req.ExecutionID,
+				"package_id":   req.PackageID,
+				"status":       "completed",
+				"message":      "Update completed successfully.",
+			},
+		})
 		h.SendRaw(response)
 		h.logger.Info("winget update completed via user context",
 			"execution_id", req.ExecutionID,
@@ -2616,6 +2636,15 @@ func (h *Handler) tryWingetUserContextUpdate(ctx context.Context, req wingetManu
 		response["winget_log"] = result.WingetLog
 		h.logger.Info("winget log retrieved", "log_length", len(result.WingetLog))
 	}
+	h.SendRaw(map[string]interface{}{
+		"action": "winget_update_progress",
+		"data": map[string]interface{}{
+			"execution_id": req.ExecutionID,
+			"package_id":   req.PackageID,
+			"status":       "failed",
+			"message":      "Update failed.",
+		},
+	})
 	h.SendRaw(response)
 	h.logger.Error("winget update failed in user context",
 		"execution_id", req.ExecutionID,
@@ -2655,6 +2684,15 @@ func (h *Handler) runWingetSystemContextUpdate(ctx context.Context, req wingetMa
 
 	if err := cmd.Start(); err != nil {
 		response := updateCtx.buildFailedResponse("system", "", "", fmt.Sprintf("failed to start winget: %v", err))
+		h.SendRaw(map[string]interface{}{
+			"action": "winget_update_progress",
+			"data": map[string]interface{}{
+				"execution_id": req.ExecutionID,
+				"package_id":   req.PackageID,
+				"status":       "failed",
+				"message":      "Update failed.",
+			},
+		})
 		h.SendRaw(response)
 		return response, nil
 	}
@@ -2701,6 +2739,21 @@ func (h *Handler) runWingetSystemContextUpdate(ctx context.Context, req wingetMa
 		response["reboot_scheduled"] = true
 		h.ScheduleReboot("winget update")
 	}
+
+	progressStatus := status
+	progressMessage := "Update completed successfully."
+	if status == "failed" {
+		progressMessage = "Update failed."
+	}
+	h.SendRaw(map[string]interface{}{
+		"action": "winget_update_progress",
+		"data": map[string]interface{}{
+			"execution_id": req.ExecutionID,
+			"package_id":   req.PackageID,
+			"status":       progressStatus,
+			"message":      progressMessage,
+		},
+	})
 
 	h.SendRaw(response)
 
