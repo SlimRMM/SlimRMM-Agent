@@ -3,6 +3,7 @@ package compliance
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -269,6 +270,113 @@ func (c *Comparator) CompareRegistryResult(actual interface{}, expected interfac
 	default:
 		return ComparisonResult{Passed: false, Message: fmt.Sprintf("unsupported comparison operator: %s", operator)}
 	}
+}
+
+// CompareCommandResult compares command output against expected values.
+// Unlike CompareRegistryResult, this handles regex matching and trims
+// whitespace from command output for more robust comparisons.
+func (c *Comparator) CompareCommandResult(actual interface{}, expected interface{}, operator string) ComparisonResult {
+	// Trim whitespace from command output (commands often include trailing newlines)
+	actualStr := strings.TrimSpace(fmt.Sprintf("%v", actual))
+
+	// Handle existence operators first
+	switch operator {
+	case "exists", "not_empty":
+		if actualStr != "" {
+			return ComparisonResult{Passed: true, Message: fmt.Sprintf("command output exists: %q", actualStr)}
+		}
+		return ComparisonResult{Passed: false, Message: "command output is empty"}
+
+	case "not_exists", "empty":
+		if actualStr == "" {
+			return ComparisonResult{Passed: true, Message: "command output is empty (expected)"}
+		}
+		return ComparisonResult{Passed: false, Message: fmt.Sprintf("command output exists (%q) but should be empty", actualStr)}
+	}
+
+	if expected == nil {
+		return ComparisonResult{Passed: true, Message: "no expected result specified"}
+	}
+
+	expectedStr := strings.TrimSpace(fmt.Sprintf("%v", expected))
+
+	switch operator {
+	case "equals", "eq", "":
+		if actualStr == expectedStr {
+			return ComparisonResult{Passed: true, Message: fmt.Sprintf("command output %q matches expected %q", actualStr, expectedStr)}
+		}
+		return ComparisonResult{Passed: false, Message: fmt.Sprintf("command output %q does not match expected %q", actualStr, expectedStr)}
+
+	case "not_equals", "ne", "neq":
+		if actualStr != expectedStr {
+			return ComparisonResult{Passed: true, Message: fmt.Sprintf("command output %q does not equal %q (expected)", actualStr, expectedStr)}
+		}
+		return ComparisonResult{Passed: false, Message: fmt.Sprintf("command output %q equals %q but should not", actualStr, expectedStr)}
+
+	case "contains":
+		if strings.Contains(actualStr, expectedStr) {
+			return ComparisonResult{Passed: true, Message: fmt.Sprintf("command output contains %q", expectedStr)}
+		}
+		return ComparisonResult{Passed: false, Message: fmt.Sprintf("command output %q does not contain %q", actualStr, expectedStr)}
+
+	case "not_contains":
+		if !strings.Contains(actualStr, expectedStr) {
+			return ComparisonResult{Passed: true, Message: fmt.Sprintf("command output does not contain %q (expected)", expectedStr)}
+		}
+		return ComparisonResult{Passed: false, Message: fmt.Sprintf("command output %q contains %q but should not", actualStr, expectedStr)}
+
+	case "regex", "matches":
+		re, err := regexp.Compile(expectedStr)
+		if err != nil {
+			return ComparisonResult{Passed: false, Message: fmt.Sprintf("invalid regex pattern %q: %v", expectedStr, err)}
+		}
+		if re.MatchString(actualStr) {
+			return ComparisonResult{Passed: true, Message: fmt.Sprintf("command output matches pattern %q", expectedStr)}
+		}
+		return ComparisonResult{Passed: false, Message: fmt.Sprintf("command output %q does not match pattern %q", actualStr, expectedStr)}
+
+	case "gte", ">=":
+		return c.compareCommandNumeric(actualStr, expectedStr, ">=")
+	case "lte", "<=":
+		return c.compareCommandNumeric(actualStr, expectedStr, "<=")
+	case "gt", ">":
+		return c.compareCommandNumeric(actualStr, expectedStr, ">")
+	case "lt", "<":
+		return c.compareCommandNumeric(actualStr, expectedStr, "<")
+	case "eq_num", "==":
+		return c.compareCommandNumeric(actualStr, expectedStr, "==")
+
+	default:
+		return ComparisonResult{Passed: false, Message: fmt.Sprintf("unsupported comparison operator: %s", operator)}
+	}
+}
+
+// compareCommandNumeric compares two string values as numbers.
+func (c *Comparator) compareCommandNumeric(actualStr, expectedStr, op string) ComparisonResult {
+	actualFloat, err1 := toFloat64(actualStr)
+	expectedFloat, err2 := toFloat64(expectedStr)
+	if err1 != nil || err2 != nil {
+		return ComparisonResult{Passed: false, Message: fmt.Sprintf("cannot compare non-numeric values with %s operator", op)}
+	}
+
+	var passed bool
+	switch op {
+	case ">=":
+		passed = actualFloat >= expectedFloat
+	case "<=":
+		passed = actualFloat <= expectedFloat
+	case ">":
+		passed = actualFloat > expectedFloat
+	case "<":
+		passed = actualFloat < expectedFloat
+	case "==":
+		passed = actualFloat == expectedFloat
+	}
+
+	if passed {
+		return ComparisonResult{Passed: true, Message: fmt.Sprintf("command output %v %s %v", actualFloat, op, expectedFloat)}
+	}
+	return ComparisonResult{Passed: false, Message: fmt.Sprintf("command output %v not %s %v", actualFloat, op, expectedFloat)}
 }
 
 // toFloat64 converts a value to float64.

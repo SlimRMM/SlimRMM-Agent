@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // DefaultComplianceService implements ComplianceService using platform-specific
@@ -212,7 +213,9 @@ func (s *DefaultComplianceService) runOsqueryCheck(ctx context.Context, check *C
 		return result, nil
 	}
 
-	rows, err := s.queryExecutor.ExecuteQuery(ctx, check.Query)
+	queryCtx, queryCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer queryCancel()
+	rows, err := s.queryExecutor.ExecuteQuery(queryCtx, check.Query)
 	if err != nil {
 		result.Status = "error"
 		result.Message = fmt.Sprintf("query execution failed: %v", err)
@@ -292,8 +295,8 @@ func (s *DefaultComplianceService) runCommandCheck(ctx context.Context, check *C
 
 	result.ActualValue = output
 
-	// For command checks, compare the output string
-	comparison := s.comparator.CompareRegistryResult(output, check.ExpectedResult, check.Operator)
+	// For command checks, use dedicated command result comparator
+	comparison := s.comparator.CompareCommandResult(output, check.ExpectedResult, check.Operator)
 	result.Passed = comparison.Passed
 	result.Message = comparison.Message
 

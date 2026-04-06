@@ -836,16 +836,40 @@ func (h *Handler) handleExecutePatches(ctx context.Context, data json.RawMessage
 		response["status"] = "failed"
 		response["error_output"] = err.Error()
 		response["output"] = ""
-		response["patches_installed"] = []string{}
-		response["patches_failed"] = []string{}
+		response["patches_installed"] = []actions.PatchDetail{}
+		response["patches_failed"] = []actions.PatchDetail{}
+		response["reboot_required"] = false
 	} else if result != nil {
 		response["status"] = "completed"
 		response["output"] = result.Stdout
 		response["error_output"] = result.Stderr
-		// For now, we don't track individual patches
-		response["patches_installed"] = []string{}
-		response["patches_failed"] = []string{}
-		response["reboot_required"] = req.RebootConfig.Enabled
+
+		// Parse patch output to extract individual patch details
+		installedPatches, failedPatches := actions.ParsePatchOutput(result.Stdout)
+		if installedPatches == nil {
+			installedPatches = []actions.PatchDetail{}
+		}
+		if failedPatches == nil {
+			failedPatches = []actions.PatchDetail{}
+		}
+		response["patches_installed"] = installedPatches
+		response["patches_failed"] = failedPatches
+
+		// Evaluate reboot condition
+		rebootRequired := false
+		switch req.RebootConfig.Condition {
+		case "always":
+			rebootRequired = req.RebootConfig.Enabled
+		case "kernel_only":
+			rebootRequired = req.RebootConfig.Enabled && actions.HasKernelUpdate(result.Stdout)
+		case "if_required":
+			rebootRequired = req.RebootConfig.Enabled && actions.SystemRequiresReboot()
+		case "never":
+			rebootRequired = false
+		default:
+			rebootRequired = req.RebootConfig.Enabled
+		}
+		response["reboot_required"] = rebootRequired
 	}
 
 	h.SendRaw(response)
@@ -1949,6 +1973,11 @@ func (h *Handler) handleRunComplianceCheck(ctx context.Context, data json.RawMes
 		return nil, fmt.Errorf("invalid compliance check request: %w", err)
 	}
 
+	// Validate required fields
+	if req.PolicyID == "" {
+		return nil, fmt.Errorf("invalid compliance check request: policy_id is required")
+	}
+
 	h.logger.Info("running compliance checks",
 		"policy_id", req.PolicyID,
 		"check_count", len(req.Checks),
@@ -1976,6 +2005,15 @@ func (h *Handler) handleRunComplianceCheck(ctx context.Context, data json.RawMes
 	policyResult, err := h.complianceService.RunPolicyCheck(ctx, policyReq)
 	if err != nil {
 		return nil, fmt.Errorf("compliance check failed: %w", err)
+	}
+
+	// Validate that the returned policy_id matches the requested one
+	if policyResult.PolicyID != req.PolicyID {
+		h.logger.Error("policy_id mismatch in compliance result",
+			"requested", req.PolicyID,
+			"returned", policyResult.PolicyID,
+		)
+		return nil, fmt.Errorf("compliance check result policy_id mismatch: requested %q but got %q", req.PolicyID, policyResult.PolicyID)
 	}
 
 	// Convert service results back to wire format
