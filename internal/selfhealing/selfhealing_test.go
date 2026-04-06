@@ -182,8 +182,8 @@ func TestGetLastConnectionTime(t *testing.T) {
 }
 
 func TestConstants(t *testing.T) {
-	if DefaultConnectionTimeout != 30*time.Minute {
-		t.Errorf("DefaultConnectionTimeout = %v, want 30 minutes", DefaultConnectionTimeout)
+	if DefaultConnectionTimeout != 10*time.Minute {
+		t.Errorf("DefaultConnectionTimeout = %v, want 10 minutes", DefaultConnectionTimeout)
 	}
 	if DefaultHealthCheckInterval != time.Minute {
 		t.Errorf("DefaultHealthCheckInterval = %v, want 1 minute", DefaultHealthCheckInterval)
