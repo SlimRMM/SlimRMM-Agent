@@ -9,6 +9,12 @@ import (
 	"sync"
 )
 
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
+
 // JPEGEncoder encodes frames to JPEG format for WebSocket transport.
 type JPEGEncoder struct {
 	quality int
@@ -33,13 +39,18 @@ func (e *JPEGEncoder) Encode(img *image.RGBA) ([]byte, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	var buf bytes.Buffer
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufferPool.Put(buf)
+
 	opts := &jpeg.Options{Quality: e.quality}
-	if err := jpeg.Encode(&buf, img, opts); err != nil {
+	if err := jpeg.Encode(buf, img, opts); err != nil {
 		return nil, err
 	}
 
-	return buf.Bytes(), nil
+	result := make([]byte, buf.Len())
+	copy(result, buf.Bytes())
+	return result, nil
 }
 
 // SetQuality updates the JPEG quality (1-100).

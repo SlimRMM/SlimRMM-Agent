@@ -460,7 +460,7 @@ func getMonitors() []Monitor {
 			Top:     bounds.Min.Y,
 			Width:   bounds.Dx(),
 			Height:  bounds.Dy(),
-			Primary: i == 0,
+			Primary: bounds.Min.X == 0 && bounds.Min.Y == 0,
 		})
 	}
 

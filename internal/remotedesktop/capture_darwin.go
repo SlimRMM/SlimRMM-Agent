@@ -185,7 +185,7 @@ func (sc *ScreenCapture) updateMonitors() {
 			Width:   int(width),
 			Height:  int(height),
 			Name:    fmt.Sprintf("Monitor %d", i+1),
-			Primary: i == 0,
+			Primary: int(x) == 0 && int(y) == 0,
 		})
 	}
 }
