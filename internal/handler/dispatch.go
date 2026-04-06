@@ -7,6 +7,57 @@ import (
 	"time"
 )
 
+// rootLevelActions lists actions whose fields are at the root level of the JSON
+// message rather than nested in a "data" object. Defined at package level to
+// avoid allocating a new map on every incoming message.
+var rootLevelActions = map[string]bool{
+	// osquery
+	"run_osquery": true,
+	"osquery":     true,
+	// Terminal actions - fields are at root level (rows, cols, data, etc.)
+	"terminal":        true,
+	"terminal_input":  true,
+	"terminal_resize": true,
+	"start_terminal":  true,
+	"stop_terminal":   true,
+	"terminal_stop":   true,
+	"terminal_output": true,
+	// File browser actions - path, old_path, new_path at root
+	"list_dir":      true,
+	"create_folder": true,
+	"create_dir":    true,
+	"delete_entry":  true,
+	"rename_entry":  true,
+	"zip_entry":     true,
+	"unzip_entry":   true,
+	"download_file": true,
+	"chmod":         true,
+	"chown":         true,
+	// Upload actions - path, data, offset, is_last at root
+	"upload_chunk":   true,
+	"start_upload":   true,
+	"finish_upload":  true,
+	"cancel_upload":  true,
+	"download_chunk": true,
+	"download_url":   true,
+	// Compliance checks - policy_id, checks at root
+	"run_compliance_check": true,
+	// Software installation actions - all fields at root
+	"install_software":          true,
+	"download_and_install_msi":  true,
+	"download_and_install_pkg":  true,
+	"download_and_install_cask": true,
+	"cancel_software_install":   true,
+	// Software uninstallation actions - all fields at root
+	"uninstall_software":        true,
+	"uninstall_msi":             true,
+	"uninstall_pkg":             true,
+	"uninstall_cask":            true,
+	"uninstall_deb":             true,
+	"uninstall_rpm":             true,
+	"cancel_software_uninstall": true,
+}
+
 // handleMessage processes an incoming message.
 func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 	// Defence-in-depth: reject deeply nested JSON before handing it to
@@ -97,53 +148,6 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 	// Determine what data to pass to the handler
 	// Some actions have fields at the root level rather than in a nested "data" object
 	var handlerData json.RawMessage
-	rootLevelActions := map[string]bool{
-		// osquery
-		"run_osquery": true,
-		"osquery":     true,
-		// Terminal actions - fields are at root level (rows, cols, data, etc.)
-		"terminal":        true,
-		"terminal_input":  true,
-		"terminal_resize": true,
-		"start_terminal":  true,
-		"stop_terminal":   true,
-		"terminal_stop":   true,
-		"terminal_output": true,
-		// File browser actions - path, old_path, new_path at root
-		"list_dir":      true,
-		"create_folder": true,
-		"create_dir":    true,
-		"delete_entry":  true,
-		"rename_entry":  true,
-		"zip_entry":     true,
-		"unzip_entry":   true,
-		"download_file": true,
-		"chmod":         true,
-		"chown":         true,
-		// Upload actions - path, data, offset, is_last at root
-		"upload_chunk":   true,
-		"start_upload":   true,
-		"finish_upload":  true,
-		"cancel_upload":  true,
-		"download_chunk": true,
-		"download_url":   true,
-		// Compliance checks - policy_id, checks at root
-		"run_compliance_check": true,
-		// Software installation actions - all fields at root
-		"install_software":          true,
-		"download_and_install_msi":  true,
-		"download_and_install_pkg":  true,
-		"download_and_install_cask": true,
-		"cancel_software_install":   true,
-		// Software uninstallation actions - all fields at root
-		"uninstall_software":        true,
-		"uninstall_msi":             true,
-		"uninstall_pkg":             true,
-		"uninstall_cask":            true,
-		"uninstall_deb":             true,
-		"uninstall_rpm":             true,
-		"cancel_software_uninstall": true,
-	}
 	if rootLevelActions[msg.Action] {
 		handlerData = msg.Raw
 	} else if len(msg.Data) > 0 {
