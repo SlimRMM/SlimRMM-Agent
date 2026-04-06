@@ -732,13 +732,14 @@ func runAgentLoop(ctx context.Context, h *handler.Handler, cfg *config.Config, l
 		cfg.SetLastConnection(time.Now().UTC().Format(time.RFC3339))
 		cfg.Save()
 
-		if err := h.Run(ctx); err != nil {
+		err := h.Run(ctx)
+		h.Close()
+		if err != nil {
 			if ctx.Err() != nil {
 				return 0
 			}
 			delayWithJitter := addJitter(reconnectDelay)
 			logger.Error("handler error", "error", err, "retry_in", delayWithJitter.Round(time.Second))
-			h.Close()
 
 			select {
 			case <-ctx.Done():
