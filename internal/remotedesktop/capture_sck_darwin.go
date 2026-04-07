@@ -4,10 +4,10 @@ package remotedesktop
 
 /*
 #cgo CFLAGS: -x objective-c -Wno-deprecated-declarations -fobjc-arc
-// We weak-link ScreenCaptureKit so the binary can load on older macOS versions
-// that lack the framework.  The -weak_framework flag tells the linker to mark
-// the dependency as optional.
-#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework AppKit -weak_framework ScreenCaptureKit -framework CoreMedia -framework CoreVideo
+// Link against standard frameworks. ScreenCaptureKit availability is checked
+// at runtime via @available(macOS 12.3, *) so we don't need to link it.
+// The SDK header check (#if SCK_SDK_AVAILABLE) guards compile-time usage.
+#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework AppKit -framework CoreMedia -framework CoreVideo
 
 // Conditionally compile ScreenCaptureKit code only when the SDK header is
 // available.  On older SDKs or when cross-compiling the code gracefully
