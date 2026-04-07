@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -43,6 +45,9 @@ const (
 	MsgTypeWingetUpgradeResult = "winget_upgrade_result"
 	MsgTypeWingetInstall       = "winget_install"
 	MsgTypeWingetInstallResult = "winget_install_result"
+	MsgTypeStartStreaming      = "start_streaming"
+	MsgTypeStopStreaming       = "stop_streaming"
+	MsgTypeStreamFrame         = "stream_frame"
 )
 
 // Message is the IPC message format
@@ -64,6 +69,14 @@ type FrameResponse struct {
 	Height   int    `json:"height"`
 	Format   string `json:"format"`
 	DataSize int    `json:"data_size"`
+}
+
+// StreamingRequest requests continuous screen capture streaming
+type StreamingRequest struct {
+	MonitorID int     `json:"monitor_id"`
+	Quality   int     `json:"quality"`
+	FPS       int     `json:"fps"`
+	Scale     float64 `json:"scale"`
 }
 
 // InputEvent represents mouse/keyboard input
@@ -164,6 +177,7 @@ var (
 	procCreateProcessAsUserW         = advapi32.NewProc("CreateProcessAsUserW")
 	procDuplicateTokenEx             = advapi32.NewProc("DuplicateTokenEx")
 	procWaitNamedPipeW               = kernel32.NewProc("WaitNamedPipeW")
+	procProcessIdToSessionId         = kernel32.NewProc("ProcessIdToSessionId")
 )
 
 // Windows constants
@@ -283,9 +297,17 @@ func (c *Client) startHelperInSession(helperPath string, sessionID uint32) error
 		uintptr(unsafe.Pointer(&userToken)),
 	)
 	if ret == 0 {
-		// If WTSQueryUserToken fails, try to run directly (may work if already in user session)
-		log.Printf("WTSQueryUserToken failed: %v, trying direct start", err)
-		return c.startHelperDirect(helperPath)
+		log.Printf("WTSQueryUserToken failed: %v", err)
+		slog.Info("Trying winlogon token for pre-login screen capture")
+		winlogonToken, winlogonErr := getWinlogonToken(sessionID)
+		if winlogonErr == nil {
+			userToken = windows.Token(winlogonToken)
+			slog.Info("Using winlogon token for session", "session", sessionID)
+		} else {
+			slog.Warn("Winlogon token also failed", "error", winlogonErr)
+			// Continue with existing direct start fallback
+			return c.startHelperDirect(helperPath)
+		}
 	}
 	defer windows.CloseHandle(windows.Handle(userToken))
 
@@ -358,6 +380,63 @@ func (c *Client) startHelperInSession(helperPath string, sessionID uint32) error
 	// The helper needs to start, initialize screenshot library, and create the named pipe
 	time.Sleep(1000 * time.Millisecond)
 	return nil
+}
+
+// getWinlogonToken retrieves a token from winlogon.exe running in the specified session.
+// This is used as a fallback when WTSQueryUserToken fails (e.g., at the pre-login/lock screen)
+// to allow screen capture of the login screen.
+func getWinlogonToken(sessionID uint32) (windows.Token, error) {
+	// Create a snapshot of all processes
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return 0, fmt.Errorf("CreateToolhelp32Snapshot: %w", err)
+	}
+	defer windows.CloseHandle(snapshot)
+
+	var pe windows.ProcessEntry32
+	pe.Size = uint32(unsafe.Sizeof(pe))
+
+	err = windows.Process32First(snapshot, &pe)
+	if err != nil {
+		return 0, fmt.Errorf("Process32First: %w", err)
+	}
+
+	for {
+		// Convert the ExeFile field to a string
+		exeName := windows.UTF16ToString(pe.ExeFile[:])
+		if strings.EqualFold(exeName, "winlogon.exe") {
+			// Check if this winlogon.exe is in the target session
+			var procSessionID uint32
+			ret, _, _ := procProcessIdToSessionId.Call(
+				uintptr(pe.ProcessID),
+				uintptr(unsafe.Pointer(&procSessionID)),
+			)
+			if ret != 0 && procSessionID == sessionID {
+				// Open the process
+				handle, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION, false, pe.ProcessID)
+				if err != nil {
+					return 0, fmt.Errorf("OpenProcess winlogon (PID %d): %w", pe.ProcessID, err)
+				}
+				defer windows.CloseHandle(handle)
+
+				// Open the process token
+				var token windows.Token
+				err = windows.OpenProcessToken(handle, TOKEN_DUPLICATE|TOKEN_QUERY, &token)
+				if err != nil {
+					return 0, fmt.Errorf("OpenProcessToken winlogon (PID %d): %w", pe.ProcessID, err)
+				}
+
+				return token, nil
+			}
+		}
+
+		err = windows.Process32Next(snapshot, &pe)
+		if err != nil {
+			break
+		}
+	}
+
+	return 0, fmt.Errorf("winlogon.exe not found in session %d", sessionID)
 }
 
 // startHelperDirect starts helper as child process (fallback)
@@ -587,6 +666,51 @@ func (c *Client) SendInput(event InputEvent) error {
 
 	payload, _ := json.Marshal(event)
 	return c.sendMessage(&Message{Type: MsgTypeInput, Payload: payload})
+}
+
+// StartStreaming requests the helper to begin continuous frame delivery
+func (c *Client) StartStreaming(req StreamingRequest) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected {
+		return fmt.Errorf("not connected")
+	}
+
+	payload, _ := json.Marshal(req)
+	return c.sendMessage(&Message{Type: MsgTypeStartStreaming, Payload: payload})
+}
+
+// StopStreaming requests the helper to stop continuous frame delivery
+func (c *Client) StopStreaming() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected {
+		return fmt.Errorf("not connected")
+	}
+
+	return c.sendMessage(&Message{Type: MsgTypeStopStreaming})
+}
+
+// ReadStreamFrame reads a single streaming frame from the helper.
+// Returns the JPEG data, width, height, and any error.
+func (c *Client) ReadStreamFrame() ([]byte, int, int, error) {
+	msg, binaryData, err := c.readMessage()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if msg.Type == MsgTypeError {
+		return nil, 0, 0, fmt.Errorf("helper error: %s", msg.Payload)
+	}
+	if msg.Type != MsgTypeStreamFrame {
+		return nil, 0, 0, fmt.Errorf("unexpected message type: %s", msg.Type)
+	}
+	var resp FrameResponse
+	if err := json.Unmarshal(msg.Payload, &resp); err != nil {
+		return nil, 0, 0, fmt.Errorf("unmarshal frame response: %w", err)
+	}
+	return binaryData, resp.Width, resp.Height, nil
 }
 
 // ScanWingetUpdates requests the helper to scan for winget updates in the user context

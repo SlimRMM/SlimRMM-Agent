@@ -8,6 +8,7 @@ require (
 	github.com/go-vgo/robotgo v1.0.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/kbinani/screenshot v0.0.0-20250624051815-089614a94018
+	github.com/kirides/go-d3d v1.0.1
 	github.com/luthermonson/go-proxmox v0.3.1
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e
 	github.com/shirou/gopsutil/v3 v3.24.5

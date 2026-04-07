@@ -217,6 +217,8 @@ func (sc *ScreenCapture) GetMonitor(monitorID int) *Monitor {
 }
 
 // CaptureFrame captures a single frame from the specified monitor.
+// It tries ScreenCaptureKit first (macOS 14.0+ with SCScreenshotManager),
+// then falls back to the legacy CGWindowListCreateImage path.
 func (sc *ScreenCapture) CaptureFrame(monitorID int) (*image.RGBA, error) {
 	sc.mu.RLock()
 	var monitor *Monitor
@@ -247,6 +249,17 @@ func (sc *ScreenCapture) CaptureFrame(monitorID int) (*image.RGBA, error) {
 		return nil, fmt.Errorf("monitor %d not found", monitorID)
 	}
 
+	// Try ScreenCaptureKit first (macOS 14.0+ with SCScreenshotManager).
+	// displayIndex is 0-based; monitorID is 1-based.
+	if IsScreenCaptureKitAvailable() {
+		img, err := CaptureWithSCK(monitorID - 1)
+		if err == nil {
+			return img, nil
+		}
+		// Fall through to legacy CGWindowListCreateImage on any error.
+	}
+
+	// Legacy path: CGWindowListCreateImage
 	var outWidth, outHeight, outBytesPerRow C.int
 	data := C.CaptureRect(
 		C.int(monitor.Left),
@@ -292,6 +305,22 @@ func (sc *ScreenCapture) CaptureFrameJPEG(monitorID int) (jpegData []byte, width
 func (sc *ScreenCapture) CaptureAll() (*image.RGBA, error) {
 	// For now, just capture the primary monitor
 	return sc.CaptureFrame(1)
+}
+
+// IsUsingHelper returns false on macOS (no helper process).
+func (sc *ScreenCapture) IsUsingHelper() bool { return false }
+
+// StartStreaming is not supported on macOS.
+func (sc *ScreenCapture) StartStreaming(monitorID, quality, fps int) error {
+	return fmt.Errorf("streaming not supported on this platform")
+}
+
+// StopStreaming is a no-op on macOS.
+func (sc *ScreenCapture) StopStreaming() {}
+
+// ReadStreamFrame is not supported on macOS.
+func (sc *ScreenCapture) ReadStreamFrame() ([]byte, int, int, error) {
+	return nil, 0, 0, fmt.Errorf("streaming not supported on this platform")
 }
 
 // ConfigureInputController is a no-op on macOS (helper only used on Windows)

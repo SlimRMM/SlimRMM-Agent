@@ -26,6 +26,7 @@ type Session struct {
 	sendCallback       SendCallback
 	sendBinaryCallback SendBinaryCallback
 	logger             *slog.Logger
+	sessionManager  *SessionManager
 	capture         *ScreenCapture
 	input           *InputController
 	encoder         *JPEGEncoder
@@ -348,13 +349,20 @@ func StartSession(sessionID string, sendCallback SendCallback, sendBinaryCallbac
 		delete(activeSessions, sessionID)
 	}
 
+	sm := NewSessionManager(logger)
+	if err := sm.StartSession(); err != nil {
+		return &StartResult{Success: false, Error: fmt.Sprintf("session manager: %v", err)}
+	}
+
 	session, err := newSession(sessionID, sendCallback, sendBinaryCallback, logger, viewportWidth, viewportHeight)
 	if err != nil {
+		sm.StopSession()
 		return &StartResult{
 			Success: false,
 			Error:   fmt.Sprintf("creating session: %v", err),
 		}
 	}
+	session.sessionManager = sm
 
 	monitors := session.capture.GetMonitors()
 
@@ -440,6 +448,57 @@ func (s *Session) captureLoop() {
 	settings := QualityPresets[s.quality]
 	s.mu.RUnlock()
 
+	// On Windows with helper, use streaming mode for continuous frames
+	if s.capture.IsUsingHelper() {
+		s.streamingLoop(settings)
+		return
+	}
+
+	// Direct capture mode (all platforms without helper)
+	s.tickerLoop(settings)
+}
+
+// streamingLoop reads continuous frames from the helper pipe (Windows streaming mode).
+func (s *Session) streamingLoop(settings QualitySettings) {
+	err := s.capture.StartStreaming(s.selectedMonitor, settings.JPEGQuality, settings.FPS)
+	if err != nil {
+		s.logger.Error("failed to start streaming", "error", err)
+		// Fall back to regular capture loop
+		s.tickerLoop(settings)
+		return
+	}
+	defer s.capture.StopStreaming()
+	s.logger.Info("streaming mode started", "fps", settings.FPS, "quality", settings.JPEGQuality)
+
+	frameCount := 0
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		default:
+		}
+
+		jpegData, w, h, err := s.capture.ReadStreamFrame()
+		if err != nil {
+			s.logger.Error("stream frame error", "error", err)
+			return
+		}
+
+		binaryFrame := BuildBinaryFrame(w, h, jpegData)
+		if err := s.sendBinaryCallback(binaryFrame); err != nil {
+			if frameCount < 10 || frameCount%100 == 0 {
+				s.logger.Warn("frame send error", "error", err, "frame", frameCount)
+			}
+		}
+		frameCount++
+		if frameCount <= 3 || frameCount%500 == 0 {
+			s.logger.Info("streaming frame", "frame", frameCount, "size", len(jpegData), "resolution", fmt.Sprintf("%dx%d", w, h))
+		}
+	}
+}
+
+// tickerLoop captures frames on a timer (used for direct capture or as fallback).
+func (s *Session) tickerLoop(settings QualitySettings) {
 	ticker := time.NewTicker(time.Second / time.Duration(settings.FPS))
 	defer ticker.Stop()
 
@@ -563,6 +622,10 @@ func (s *Session) Stop() {
 	s.running = false
 	close(s.stopCh)
 
+	if s.sessionManager != nil {
+		s.sessionManager.StopSession()
+	}
+
 	if s.capture != nil {
 		s.capture.Close()
 		s.capture = nil
@@ -649,6 +712,22 @@ func (s *Session) SetQuality(quality string) {
 	}
 
 	s.logger.Info("quality changed", "quality", quality, "fps", settings.FPS, "jpeg_quality", settings.JPEGQuality)
+}
+
+// UpdateStreamingQuality updates quality and signals the streaming loop to apply changes immediately.
+// On Windows with helper mode, this stops current streaming so it restarts with new parameters.
+// On other platforms, the capture loop picks up the new quality on the next tick.
+func (s *Session) UpdateStreamingQuality(quality string) {
+	s.SetQuality(quality)
+
+	// For immediate effect on Windows helper mode, stop current streaming so it restarts
+	s.mu.RLock()
+	capture := s.capture
+	s.mu.RUnlock()
+
+	if capture != nil && capture.IsUsingHelper() {
+		capture.StopStreaming()
+	}
 }
 
 // SetMonitor switches to a different monitor.
@@ -808,6 +887,13 @@ func StopAllSessions() {
 		session.Stop()
 		delete(activeSessions, id)
 	}
+}
+
+// GetSession returns an active session by ID, or nil if not found.
+func GetSession(sessionID string) *Session {
+	sessionsMu.RLock()
+	defer sessionsMu.RUnlock()
+	return activeSessions[sessionID]
 }
 
 // GetActiveSessions returns the number of active sessions.

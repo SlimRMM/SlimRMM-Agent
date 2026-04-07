@@ -34,6 +34,12 @@ func (m *Manager) Acquire() (*Client, error) {
 // Release is a no-op on non-Windows platforms.
 func (m *Manager) Release() {}
 
+// Pin is a no-op on non-Windows platforms.
+func (m *Manager) Pin() {}
+
+// Unpin is a no-op on non-Windows platforms.
+func (m *Manager) Unpin() {}
+
 // ForceStop is a no-op on non-Windows platforms.
 func (m *Manager) ForceStop() {}
 

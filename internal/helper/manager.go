@@ -22,6 +22,7 @@ type Manager struct {
 	idleTimeout  time.Duration
 	idleTimer    *time.Timer
 	shuttingDown atomic.Bool
+	pinned       atomic.Bool
 }
 
 var (
@@ -94,9 +95,34 @@ func (m *Manager) Release() {
 	}
 }
 
+// Pin prevents the helper from being shut down due to idle timeout.
+// Use this during active Remote Desktop sessions.
+func (m *Manager) Pin() {
+	m.pinned.Store(true)
+	m.mu.Lock()
+	if m.idleTimer != nil {
+		m.idleTimer.Stop()
+		m.idleTimer = nil
+	}
+	m.mu.Unlock()
+}
+
+// Unpin allows the helper to be shut down again after idle timeout.
+// If no references remain, an idle shutdown is scheduled immediately.
+func (m *Manager) Unpin() {
+	m.pinned.Store(false)
+	if atomic.LoadInt32(&m.refCount) <= 0 {
+		m.scheduleIdleShutdown()
+	}
+}
+
 // scheduleIdleShutdown schedules the helper to be stopped after idle timeout.
 // Must be called with mu held.
 func (m *Manager) scheduleIdleShutdown() {
+	if m.pinned.Load() {
+		return
+	}
+
 	if m.idleTimer != nil {
 		m.idleTimer.Stop()
 	}

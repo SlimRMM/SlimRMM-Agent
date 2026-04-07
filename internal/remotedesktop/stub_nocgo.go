@@ -13,6 +13,12 @@ const errCGODisabled = "remote desktop requires CGO to be enabled"
 // Session stub for non-CGO builds.
 type Session struct{}
 
+// UpdateStreamingQuality is a no-op when CGO is disabled.
+func (s *Session) UpdateStreamingQuality(quality string) {}
+
+// SetQuality is a no-op when CGO is disabled.
+func (s *Session) SetQuality(quality string) {}
+
 // HasDisplayServer always returns false when CGO is disabled.
 func HasDisplayServer() bool {
 	return false
@@ -100,6 +106,11 @@ func GetSessionMonitors(sessionID string) map[string]interface{} {
 
 // StopAllSessions is a no-op when CGO is disabled.
 func StopAllSessions() {}
+
+// GetSession returns nil when CGO is disabled.
+func GetSession(sessionID string) *Session {
+	return nil
+}
 
 // GetActiveSessions returns 0 when CGO is disabled.
 func GetActiveSessions() int {

@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -22,11 +23,15 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"github.com/kbinani/screenshot"
+	"github.com/kirides/go-d3d/d3d11"
+	"github.com/kirides/go-d3d/outputduplication"
 	"github.com/lxn/win"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
 	"golang.org/x/sys/windows"
@@ -106,6 +111,9 @@ const (
 	MsgTypeWingetUpgradeResult = "winget_upgrade_result"
 	MsgTypeWingetInstall       = "winget_install"
 	MsgTypeWingetInstallResult = "winget_install_result"
+	MsgTypeStartStreaming      = "start_streaming"
+	MsgTypeStopStreaming       = "stop_streaming"
+	MsgTypeStreamFrame         = "stream_frame"
 )
 
 // Message is the IPC message format
@@ -206,6 +214,17 @@ type WingetInstallResult struct {
 	WingetLog string `json:"winget_log,omitempty"`
 }
 
+// StreamingRequest requests continuous screen capture streaming
+type StreamingRequest struct {
+	MonitorID int     `json:"monitor_id"`
+	Quality   int     `json:"quality"`
+	FPS       int     `json:"fps"`
+	Scale     float64 `json:"scale"`
+}
+
+// streaming indicates whether frame streaming is active
+var streaming atomic.Bool
+
 func main() {
 	// Set DPI awareness for correct screen capture on high-DPI displays
 	if shcore := windows.NewLazySystemDLL("shcore.dll"); shcore != nil {
@@ -284,9 +303,12 @@ func main() {
 			continue
 		}
 
-		response, frameData := handleMessage(msg)
+		response, frameData := handleMessage(msg, pipe)
 		if response != nil {
-			if err := writeMessage(pipe, response, frameData); err != nil {
+			pipeMu.Lock()
+			err := writeMessage(pipe, response, frameData)
+			pipeMu.Unlock()
+			if err != nil {
 				log.Printf("Error writing response: %v", err)
 			}
 		}
@@ -396,7 +418,11 @@ func writeMessage(pipe windows.Handle, msg *Message, extraData []byte) error {
 	return windows.WriteFile(pipe, fullMsg, &bytesWritten, nil)
 }
 
-func handleMessage(msg *Message) (*Message, []byte) {
+// pipeMu protects pipe writes so that the streaming goroutine and the main loop
+// do not interleave messages on the same handle.
+var pipeMu sync.Mutex
+
+func handleMessage(msg *Message, pipe windows.Handle) (*Message, []byte) {
 	switch msg.Type {
 	case MsgTypePing:
 		return &Message{Type: MsgTypePong}, nil
@@ -446,7 +472,71 @@ func handleMessage(msg *Message) (*Message, []byte) {
 		}
 		return installWingetPackage(req.WingetPath, req.PackageID, req.Version, req.Scope, req.Silent)
 
+	case MsgTypeStartStreaming:
+		var req StreamingRequest
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			errPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
+			return &Message{Type: MsgTypeError, Payload: errPayload}, nil
+		}
+		log.Printf("Starting streaming: monitor=%d quality=%d fps=%d", req.MonitorID, req.Quality, req.FPS)
+		streaming.Store(true)
+		go func() {
+			fps := req.FPS
+			if fps <= 0 {
+				fps = 30
+			}
+			if fps > 60 {
+				fps = 60
+			}
+			quality := req.Quality
+			if quality <= 0 {
+				quality = 80
+			}
+			captureReq := CaptureRequest{
+				MonitorID: req.MonitorID,
+				Quality:   quality,
+				Scale:     req.Scale,
+			}
+			ticker := time.NewTicker(time.Second / time.Duration(fps))
+			defer ticker.Stop()
+
+			for streaming.Load() {
+				<-ticker.C
+				if !streaming.Load() {
+					break
+				}
+
+				frameMsg, jpegData := captureScreen(captureReq)
+				if frameMsg == nil {
+					continue
+				}
+				if frameMsg.Type == MsgTypeError {
+					log.Printf("streaming capture error: %s", string(frameMsg.Payload))
+					continue
+				}
+
+				// Re-wrap as stream_frame type
+				streamMsg := &Message{Type: MsgTypeStreamFrame, Payload: frameMsg.Payload}
+				pipeMu.Lock()
+				if err := writeMessage(pipe, streamMsg, jpegData); err != nil {
+					pipeMu.Unlock()
+					log.Printf("streaming write error: %v", err)
+					streaming.Store(false)
+					break
+				}
+				pipeMu.Unlock()
+			}
+			log.Printf("Streaming stopped")
+		}()
+		return nil, nil
+
+	case MsgTypeStopStreaming:
+		streaming.Store(false)
+		log.Printf("Streaming stop requested")
+		return nil, nil
+
 	case MsgTypeQuit:
+		streaming.Store(false)
 		return nil, nil
 
 	default:
@@ -474,8 +564,160 @@ func getMonitors() []Monitor {
 	return monitors
 }
 
+// ----- DXGI Desktop Duplication (high-performance capture) -----
+
+// dxgiState holds persistent DXGI resources for a single monitor.
+// Reusing these across frames avoids re-creating D3D11 devices on every capture.
+type dxgiState struct {
+	device    *d3d11.ID3D11Device
+	deviceCtx *d3d11.ID3D11DeviceContext
+	dup       *outputduplication.OutputDuplicator
+	img       *image.RGBA // reusable image buffer
+	outputIdx uint
+}
+
+var (
+	// dxgiStates is keyed by monitor index (0-based)
+	dxgiStates   = make(map[int]*dxgiState)
+	dxgiStatesMu sync.Mutex
+
+	// dxgiFailed tracks monitors where DXGI init failed so we don't retry every frame
+	dxgiFailed   = make(map[int]bool)
+	dxgiFailedMu sync.Mutex
+
+	// jpegBufPool reuses byte buffers for JPEG encoding to reduce allocations
+	jpegBufPool = sync.Pool{
+		New: func() interface{} {
+			return bytes.NewBuffer(make([]byte, 0, 512*1024)) // 512KB initial capacity
+		},
+	}
+)
+
+// initDXGI initialises DXGI output duplication for the given monitor index.
+func initDXGI(monitorIdx int) (*dxgiState, error) {
+	device, deviceCtx, err := d3d11.NewD3D11Device()
+	if err != nil {
+		return nil, fmt.Errorf("D3D11 device creation failed: %w", err)
+	}
+
+	dup, err := outputduplication.NewIDXGIOutputDuplication(device, deviceCtx, uint(monitorIdx))
+	if err != nil {
+		device.Release()
+		deviceCtx.Release()
+		return nil, fmt.Errorf("DXGI output duplication failed for monitor %d: %w", monitorIdx, err)
+	}
+
+	// Get the bounds so we can pre-allocate the image buffer
+	bounds, err := dup.GetBounds()
+	if err != nil {
+		dup.Release()
+		device.Release()
+		deviceCtx.Release()
+		return nil, fmt.Errorf("DXGI GetBounds failed: %w", err)
+	}
+
+	st := &dxgiState{
+		device:    device,
+		deviceCtx: deviceCtx,
+		dup:       dup,
+		img:       image.NewRGBA(bounds),
+		outputIdx: uint(monitorIdx),
+	}
+
+	return st, nil
+}
+
+// releaseDXGI cleans up DXGI resources for a monitor.
+func releaseDXGI(monitorIdx int) {
+	dxgiStatesMu.Lock()
+	st, ok := dxgiStates[monitorIdx]
+	if ok {
+		delete(dxgiStates, monitorIdx)
+	}
+	dxgiStatesMu.Unlock()
+
+	if st != nil {
+		st.dup.Release()
+		st.deviceCtx.Release()
+		st.device.Release()
+	}
+}
+
+// captureScreenDXGI captures a frame via DXGI Desktop Duplication.
+// Returns the RGBA image or an error. The caller should fall back to GDI on error.
+func captureScreenDXGI(monitorIdx int) (*image.RGBA, error) {
+	dxgiFailedMu.Lock()
+	if dxgiFailed[monitorIdx] {
+		dxgiFailedMu.Unlock()
+		return nil, fmt.Errorf("DXGI previously failed for monitor %d", monitorIdx)
+	}
+	dxgiFailedMu.Unlock()
+
+	dxgiStatesMu.Lock()
+	st, ok := dxgiStates[monitorIdx]
+	if !ok {
+		// First time – initialise
+		var err error
+		st, err = initDXGI(monitorIdx)
+		if err != nil {
+			dxgiStatesMu.Unlock()
+			// Mark as failed so we don't retry every frame
+			dxgiFailedMu.Lock()
+			dxgiFailed[monitorIdx] = true
+			dxgiFailedMu.Unlock()
+			return nil, err
+		}
+		dxgiStates[monitorIdx] = st
+	}
+	dxgiStatesMu.Unlock()
+
+	// Capture with 100ms timeout
+	st.dup.DrawPointer = true
+	if err := st.dup.GetImage(st.img, 100); err != nil {
+		// If it's a transient "no image yet" error, return it directly (caller retries)
+		if err == outputduplication.ErrNoImageYet {
+			return nil, err
+		}
+		// Permanent-looking error – tear down DXGI for this monitor and let caller fall back to GDI
+		log.Printf("DXGI capture error for monitor %d: %v – releasing resources", monitorIdx, err)
+		releaseDXGI(monitorIdx)
+		dxgiFailedMu.Lock()
+		dxgiFailed[monitorIdx] = true
+		dxgiFailedMu.Unlock()
+		return nil, err
+	}
+
+	return st.img, nil
+}
+
+// captureScreenGDI captures via kbinani/screenshot (GDI BitBlt). Works reliably in Session 1.
+func captureScreenGDI(monitorIdx int) (*image.RGBA, error) {
+	bounds := screenshot.GetDisplayBounds(monitorIdx)
+	img, err := screenshot.CaptureRect(bounds)
+	if err != nil {
+		return nil, fmt.Errorf("GDI capture failed: %w", err)
+	}
+	return img, nil
+}
+
+// encodeJPEG encodes an image to JPEG using a pooled buffer to reduce allocations.
+func encodeJPEG(img image.Image, quality int) ([]byte, error) {
+	buf := jpegBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer jpegBufPool.Put(buf)
+
+	if err := jpeg.Encode(buf, img, &jpeg.Options{Quality: quality}); err != nil {
+		return nil, err
+	}
+
+	// Copy out of the pooled buffer so it's safe after Put
+	result := make([]byte, buf.Len())
+	copy(result, buf.Bytes())
+	return result, nil
+}
+
 func captureScreen(req CaptureRequest) (*Message, []byte) {
-	// Validate monitor ID
+	// Validate monitor ID (IDs are 1-based in the protocol)
 	n := screenshot.NumActiveDisplays()
 	idx := req.MonitorID - 1
 	if idx < 0 || idx >= n {
@@ -483,12 +725,18 @@ func captureScreen(req CaptureRequest) (*Message, []byte) {
 		return &Message{Type: MsgTypeError, Payload: errPayload}, nil
 	}
 
-	// Capture screen
-	bounds := screenshot.GetDisplayBounds(idx)
-	img, err := screenshot.CaptureRect(bounds)
+	// Try DXGI first, fall back to GDI
+	var img *image.RGBA
+	var err error
+
+	img, err = captureScreenDXGI(idx)
 	if err != nil {
-		errPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
-		return &Message{Type: MsgTypeError, Payload: errPayload}, nil
+		// DXGI failed – fall back to GDI silently (only log on first occurrence)
+		img, err = captureScreenGDI(idx)
+		if err != nil {
+			errPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
+			return &Message{Type: MsgTypeError, Payload: errPayload}, nil
+		}
 	}
 
 	// Scale if needed
@@ -496,15 +744,14 @@ func captureScreen(req CaptureRequest) (*Message, []byte) {
 		img = scaleImage(img, req.Scale)
 	}
 
-	// Encode as JPEG
+	// Encode as JPEG with configurable quality
 	quality := req.Quality
 	if quality <= 0 || quality > 100 {
 		quality = 70
 	}
 
-	var buf []byte
-	writer := &sliceWriter{buf: &buf}
-	if err := jpeg.Encode(writer, img, &jpeg.Options{Quality: quality}); err != nil {
+	buf, err := encodeJPEG(img, quality)
+	if err != nil {
 		errPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
 		return &Message{Type: MsgTypeError, Payload: errPayload}, nil
 	}
@@ -518,16 +765,6 @@ func captureScreen(req CaptureRequest) (*Message, []byte) {
 
 	payload, _ := json.Marshal(resp)
 	return &Message{Type: MsgTypeFrame, Payload: payload}, buf
-}
-
-// sliceWriter implements io.Writer for a byte slice
-type sliceWriter struct {
-	buf *[]byte
-}
-
-func (w *sliceWriter) Write(p []byte) (n int, err error) {
-	*w.buf = append(*w.buf, p...)
-	return len(p), nil
 }
 
 func scaleImage(img *image.RGBA, scale float64) *image.RGBA {

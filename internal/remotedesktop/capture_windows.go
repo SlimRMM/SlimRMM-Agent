@@ -329,6 +329,33 @@ func (sc *ScreenCapture) IsUsingHelper() bool {
 	return sc.useHelper
 }
 
+// StartStreaming begins continuous frame streaming via the helper process.
+func (sc *ScreenCapture) StartStreaming(monitorID, quality, fps int) error {
+	if !sc.useHelper || sc.helperClient == nil {
+		return fmt.Errorf("streaming requires helper process")
+	}
+	return sc.helperClient.StartStreaming(helper.StreamingRequest{
+		MonitorID: monitorID,
+		Quality:   quality,
+		FPS:       fps,
+	})
+}
+
+// StopStreaming stops continuous frame streaming.
+func (sc *ScreenCapture) StopStreaming() {
+	if sc.useHelper && sc.helperClient != nil {
+		sc.helperClient.StopStreaming()
+	}
+}
+
+// ReadStreamFrame reads a single frame from the streaming pipe.
+func (sc *ScreenCapture) ReadStreamFrame() ([]byte, int, int, error) {
+	if !sc.useHelper || sc.helperClient == nil {
+		return nil, 0, 0, fmt.Errorf("not in streaming mode")
+	}
+	return sc.helperClient.ReadStreamFrame()
+}
+
 // ConfigureInputController sets up the input controller to use the helper if needed
 func (sc *ScreenCapture) ConfigureInputController(ic *InputController) {
 	if sc.useHelper && sc.helperClient != nil {

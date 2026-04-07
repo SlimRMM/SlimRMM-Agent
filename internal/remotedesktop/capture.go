@@ -176,6 +176,22 @@ func ScaleImage(img *image.RGBA, scale float64) *image.RGBA {
 	return scaled
 }
 
+// IsUsingHelper returns false on Linux (no helper process).
+func (sc *ScreenCapture) IsUsingHelper() bool { return false }
+
+// StartStreaming is not supported on Linux.
+func (sc *ScreenCapture) StartStreaming(monitorID, quality, fps int) error {
+	return fmt.Errorf("streaming not supported on this platform")
+}
+
+// StopStreaming is a no-op on Linux.
+func (sc *ScreenCapture) StopStreaming() {}
+
+// ReadStreamFrame is not supported on Linux.
+func (sc *ScreenCapture) ReadStreamFrame() ([]byte, int, int, error) {
+	return nil, 0, 0, fmt.Errorf("streaming not supported on this platform")
+}
+
 // ConfigureInputController is a no-op on Linux (helper only used on Windows)
 func (sc *ScreenCapture) ConfigureInputController(ic *InputController) {
 	// No helper needed on Linux
