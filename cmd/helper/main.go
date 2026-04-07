@@ -1,6 +1,6 @@
 // SlimRMM Desktop Helper
 // This helper runs in the user's interactive session to capture screen
-// and inject input when the main agent service requests remote desktop.
+// and inject input when the main agent service requests system operations.
 //
 //go:build windows
 

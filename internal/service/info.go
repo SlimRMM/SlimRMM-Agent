@@ -4,9 +4,7 @@ package service
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
-	"strings"
 
 	"github.com/slimrmm/slimrmm-agent/internal/config"
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
@@ -26,7 +24,6 @@ type AgentInfo struct {
 
 	// macOS specific
 	FullDiskAccess bool `json:"full_disk_access,omitempty"`
-	ScreenSharing  bool `json:"screen_sharing,omitempty"`
 }
 
 // GetAgentInfo returns the current agent information.
@@ -47,7 +44,6 @@ func GetAgentInfo(cfg *config.Config) *AgentInfo {
 	// Check macOS-specific permissions
 	if runtime.GOOS == "darwin" {
 		info.FullDiskAccess = checkFullDiskAccess()
-		info.ScreenSharing = checkScreenSharingEnabled()
 	}
 
 	return info
@@ -74,7 +70,6 @@ func (i *AgentInfo) PrintInfo() {
 		fmt.Println("macOS Permissions")
 		fmt.Println("-----------------")
 		fmt.Printf("Full Disk Access:  %s\n", permissionStatus(i.FullDiskAccess))
-		fmt.Printf("Screen Recording:  %s\n", permissionStatus(i.ScreenSharing))
 	}
 }
 
@@ -121,45 +116,3 @@ func checkFullDiskAccess() bool {
 	return false
 }
 
-// checkScreenSharingEnabled checks if Screen Recording permission is granted on macOS.
-func checkScreenSharingEnabled() bool {
-	if runtime.GOOS != "darwin" {
-		return false
-	}
-
-	// Use CGPreflightScreenCaptureAccess via a simple test
-	// This checks if the current app has screen recording permission
-	cmd := exec.Command("osascript", "-e", `
-		use framework "CoreGraphics"
-		set hasAccess to current application's CGPreflightScreenCaptureAccess()
-		if hasAccess then
-			return "granted"
-		else
-			return "denied"
-		end if
-	`)
-
-	output, err := cmd.Output()
-	if err != nil {
-		// Fallback: check TCC database (may not work without FDA)
-		return checkTCCScreenCapture()
-	}
-
-	return strings.TrimSpace(string(output)) == "granted"
-}
-
-// checkTCCScreenCapture checks the TCC database for screen capture permission.
-func checkTCCScreenCapture() bool {
-	// Try to query the TCC database
-	cmd := exec.Command("sqlite3",
-		"/Library/Application Support/com.apple.TCC/TCC.db",
-		"SELECT auth_value FROM access WHERE service='kTCCServiceScreenCapture' AND client LIKE '%slimrmm%' LIMIT 1")
-
-	output, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-
-	// auth_value 2 means authorized
-	return strings.TrimSpace(string(output)) == "2"
-}

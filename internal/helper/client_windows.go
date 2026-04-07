@@ -1,4 +1,4 @@
-// Package helper provides Windows helper process management for remote desktop.
+// Package helper provides Windows helper process management for system operations.
 // The helper runs in the user's interactive session to access the desktop.
 //go:build windows
 

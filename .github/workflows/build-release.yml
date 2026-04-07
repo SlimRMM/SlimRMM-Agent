@@ -75,7 +75,7 @@ jobs:
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
 
-  # Build Linux AMD64 binary with CGO enabled (required for remote desktop)
+  # Build Linux AMD64 binary with CGO enabled (required for helper process)
   build-linux-amd64:
     needs: version
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -121,7 +121,7 @@ jobs:
           name: binary-linux-amd64
           path: slimrmm-agent*
 
-  # Build Linux ARM64 binary (CGO disabled - no native runner, remote desktop limited)
+  # Build Linux ARM64 binary (CGO disabled - no native runner, helper process limited)
   build-linux-arm64:
     needs: version
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -162,7 +162,7 @@ jobs:
           name: binary-linux-arm64
           path: slimrmm-agent*
 
-  # Build Windows binary with CGO enabled (required for remote desktop)
+  # Build Windows binary with CGO enabled (required for helper process)
   build-windows:
     needs: version
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -210,7 +210,7 @@ jobs:
           name: binary-windows-amd64
           path: "*.zip"
 
-  # Build macOS binary with CGO enabled (required for remote desktop)
+  # Build macOS binary with CGO enabled (required for helper process)
   build-macos:
     needs: version
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -290,7 +290,7 @@ jobs:
           Maintainer: Kiefer Networks <info@slimrmm.io>
           Description: SlimRMM Remote Monitoring & Management Agent
            Remote monitoring and management agent for Linux, macOS, and Windows.
-           Provides system monitoring, remote desktop, terminal access, file
+           Provides system monitoring, terminal access, file
            management, software deployment, and compliance checking.
           EOF
 
@@ -460,10 +460,8 @@ jobs:
               <true/>
               <key>NSHighResolutionCapable</key>
               <true/>
-              <key>NSScreenCaptureUsageDescription</key>
-              <string>SlimRMM Agent requires screen recording access for remote desktop functionality.</string>
               <key>NSAppleEventsUsageDescription</key>
-              <string>SlimRMM Agent requires accessibility access for remote control functionality.</string>
+              <string>SlimRMM Agent requires accessibility access for system management functionality.</string>
           </dict>
           </plist>
           PLIST

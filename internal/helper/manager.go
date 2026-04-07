@@ -96,7 +96,7 @@ func (m *Manager) Release() {
 }
 
 // Pin prevents the helper from being shut down due to idle timeout.
-// Use this during active Remote Desktop sessions.
+// Use this during long-running sessions (e.g. winget operations).
 func (m *Manager) Pin() {
 	m.pinned.Store(true)
 	m.mu.Lock()
