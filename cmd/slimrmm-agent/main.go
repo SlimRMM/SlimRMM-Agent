@@ -24,8 +24,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/logging"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/proxmox"
-	"github.com/slimrmm/slimrmm-agent/internal/remotedesktop"
-	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
+"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/selfhealing"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
@@ -581,9 +580,6 @@ func cmdUpdate(logger *slog.Logger) int {
 func cmdRun(paths config.Paths, logger *slog.Logger) int {
 	logger.Info("starting SlimRMM Agent", "version", version.Get().Version)
 
-	// Initialize platform-specific permissions
-	remotedesktop.InitializePermissions(logger)
-
 	// Setup context with cancellation early so background goroutines inherit it
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -768,9 +764,6 @@ type agentRunner struct {
 // Run starts the agent and blocks until the context is cancelled
 func (r *agentRunner) Run(ctx context.Context) error {
 	r.logger.Info("starting SlimRMM Agent (Windows Service)", "version", version.Get().Version)
-
-	// Initialize platform-specific permissions
-	remotedesktop.InitializePermissions(r.logger)
 
 	// Ensure osquery is installed (auto-install if not present)
 	go func() {

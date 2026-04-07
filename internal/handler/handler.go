@@ -49,7 +49,6 @@ type Handler struct {
 	terminalManager *actions.TerminalManager
 	uploadManager   *actions.UploadManager
 	sendCh          chan []byte
-	sendBinaryCh    chan []byte
 	done            chan struct{}
 	mu              sync.RWMutex
 
@@ -282,7 +281,6 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		terminalManager:            actions.NewTerminalManager(),
 		uploadManager:              uploadManager,
 		sendCh:                     make(chan []byte, 256),
-		sendBinaryCh:               make(chan []byte, 64),
 		done:                       make(chan struct{}),
 		msgSem:                     make(chan struct{}, MaxConcurrentHandlers),
 		updater:                    updater.New(logger),
@@ -603,18 +601,6 @@ func (h *Handler) SendRaw(msg interface{}) {
 	case h.sendCh <- data:
 	default:
 		h.logger.Warn("send channel full, dropping message")
-	}
-}
-
-// SendBinary sends a pre-built binary message through the write pump.
-// Used for binary WebSocket frames (e.g. remote desktop video frames).
-// Thread-safe: uses a buffered channel for non-blocking sends.
-// If the send channel is full, the message is dropped with a warning log.
-func (h *Handler) SendBinary(data []byte) {
-	select {
-	case h.sendBinaryCh <- data:
-	default:
-		h.logger.Warn("binary send channel full, dropping frame")
 	}
 }
 

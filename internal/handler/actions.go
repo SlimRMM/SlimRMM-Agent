@@ -131,9 +131,6 @@ func (h *Handler) registerHandlers() {
 	// Hyper-V handlers (only active on Hyper-V hosts)
 	h.registerHyperVHandlers()
 
-	// Remote desktop handlers
-	h.registerRemoteDesktopHandlers()
-
 	// Tamper protection handlers
 	h.handlers["enable_tamper_protection"] = h.handleEnableTamperProtection
 	h.handlers["disable_tamper_protection"] = h.handleDisableTamperProtection

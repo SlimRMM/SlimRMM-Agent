@@ -86,11 +86,6 @@ func (h *Handler) writePump(ctx context.Context) error {
 			if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
 				return fmt.Errorf("writing message: %w", err)
 			}
-		case message := <-h.sendBinaryCh:
-			conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := conn.WriteMessage(websocket.BinaryMessage, message); err != nil {
-				return fmt.Errorf("writing binary message: %w", err)
-			}
 		case <-ticker.C:
 			conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
