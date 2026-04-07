@@ -183,7 +183,15 @@ func (h *Handler) handleSetQuality(ctx context.Context, data json.RawMessage) (i
 		return nil, fmt.Errorf("session_id is required")
 	}
 
-	return remotedesktop.SetQuality(req.SessionID, req.Quality), nil
+	session := remotedesktop.GetSession(req.SessionID)
+	if session == nil {
+		return nil, fmt.Errorf("session not found: %s", req.SessionID)
+	}
+
+	session.UpdateStreamingQuality(req.Quality)
+	h.logger.Info("quality changed", "session", req.SessionID, "quality", req.Quality)
+
+	return map[string]string{"status": "ok"}, nil
 }
 
 type setMonitorRequest struct {
