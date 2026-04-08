@@ -8,8 +8,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 )
+
+// validDBName matches safe database names: alphanumeric, underscores, hyphens.
+var validDBName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// validateDatabaseName checks that a database name contains only safe characters.
+func validateDatabaseName(dbName string) error {
+	if !validDBName.MatchString(dbName) {
+		return fmt.Errorf("invalid database name %q: must match [a-zA-Z0-9_-]+", dbName)
+	}
+	return nil
+}
 
 // PostgreSQLRestorer restores PostgreSQL databases from backups.
 type PostgreSQLRestorer struct {
@@ -87,6 +99,11 @@ func (r *PostgreSQLRestorer) Restore(ctx context.Context, data []byte, config Re
 		result.Status = "failed"
 		result.Error = "database name is required for restore"
 		return result, fmt.Errorf("database name is required")
+	}
+	if err := validateDatabaseName(dbName); err != nil {
+		result.Status = "failed"
+		result.Error = err.Error()
+		return result, err
 	}
 
 	// Build connection arguments
@@ -186,7 +203,7 @@ func (r *PostgreSQLRestorer) createDatabase(ctx context.Context, config RestoreC
 	}
 
 	// Connect to postgres database to create the target database
-	args = append(args, "-d", "postgres", "-c", fmt.Sprintf("CREATE DATABASE %s", dbName))
+	args = append(args, "-d", "postgres", "-c", fmt.Sprintf(`CREATE DATABASE "%s"`, strings.ReplaceAll(dbName, `"`, `""`)))
 
 	cmd := exec.CommandContext(ctx, "psql", args...)
 	if config.Password != "" {
@@ -275,6 +292,13 @@ func (r *MySQLRestorer) Restore(ctx context.Context, data []byte, config Restore
 		result.Status = "failed"
 		result.Error = "database name is required for restore"
 		return result, fmt.Errorf("database name is required")
+	}
+	if dbName != "" {
+		if err := validateDatabaseName(dbName); err != nil {
+			result.Status = "failed"
+			result.Error = err.Error()
+			return result, err
+		}
 	}
 
 	// Build connection arguments
@@ -374,7 +398,8 @@ func (r *MySQLRestorer) createDatabase(ctx context.Context, config RestoreConfig
 		args = append(args, "-u", config.Username)
 	}
 
-	args = append(args, "-e", fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", dbName))
+	escapedName := strings.ReplaceAll(dbName, "`", "``")
+	args = append(args, "-e", fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", escapedName))
 
 	cmd := exec.CommandContext(ctx, "mysql", args...)
 	if config.Password != "" {
