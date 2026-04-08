@@ -267,8 +267,8 @@ func TestIsNewerVersion(t *testing.T) {
 		{"2.0.0", "1.0.0", true},
 		{"1.0.0", "1.0.1", false},
 		{"1.0.0", "2.0.0", false},
-		{"1.0.0", "unknown", true},
-		{"1.0.0", "dev", true},
+		{"1.0.0", "unknown", false}, // dev/unknown builds must not auto-update
+		{"1.0.0", "dev", false},     // dev/unknown builds must not auto-update
 		{"1.0.0.1", "1.0.0", true},
 		{"1.0.0", "1.0.0.1", false},
 		{"1.0.0-beta", "1.0.0-alpha", false}, // Both become 1.0.0

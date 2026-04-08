@@ -199,6 +199,11 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*UpdateInfo, error) {
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
 	currentVersion := strings.TrimPrefix(version.Version, "v")
 
+	if currentVersion == "dev" || currentVersion == "unknown" {
+		u.logger.Warn("skipping auto-update: running a dev/unknown build", "version", currentVersion)
+		return nil, nil
+	}
+
 	if !isNewerVersion(latestVersion, currentVersion) {
 		u.logger.Info("already on latest version", "version", currentVersion)
 		return nil, nil
@@ -249,7 +254,8 @@ func matchesAssetPattern(assetName, pattern string) bool {
 // isNewerVersion compares two semantic version strings.
 func isNewerVersion(latest, current string) bool {
 	if current == "unknown" || current == "dev" {
-		return true
+		// Dev/unknown builds must not auto-update to avoid accidental downgrades.
+		return false
 	}
 
 	// Parse version strings into numeric parts
@@ -550,15 +556,50 @@ func (u *Updater) backupBinary(backupPath string) error {
 	return os.Chmod(backupPath, srcInfo.Mode())
 }
 
+// allowedDownloadHosts lists the URL prefixes that the updater is allowed to
+// download from. Any redirect or direct URL that does not start with one of
+// these prefixes is rejected to prevent SSRF and supply-chain attacks.
+var allowedDownloadHosts = []string{
+	"https://github.com/",
+	"https://objects.githubusercontent.com/",
+}
+
+// isAllowedDownloadURL validates that a URL starts with an allowed prefix.
+func isAllowedDownloadURL(u string) bool {
+	for _, prefix := range allowedDownloadHosts {
+		if strings.HasPrefix(u, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // downloadFile downloads a file from URL.
 func (u *Updater) downloadFile(ctx context.Context, url, destPath string) error {
+	// Validate download URL domain before making any request.
+	if !isAllowedDownloadURL(url) {
+		return fmt.Errorf("download URL rejected: host not in allowlist: %s", url)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", "SlimRMM-Agent/"+version.Version)
 
-	client := &http.Client{Timeout: 10 * time.Minute, Transport: httpTransport()}
+	client := &http.Client{
+		Timeout:   10 * time.Minute,
+		Transport: httpTransport(),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if !isAllowedDownloadURL(req.URL.String()) {
+				return fmt.Errorf("redirect to disallowed host: %s", req.URL.String())
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -606,7 +647,10 @@ func (u *Updater) extractTarGz(archivePath, destPath string) error {
 	}
 	defer gzr.Close()
 
-	tr := tar.NewReader(gzr)
+	// Limit decompressed size to prevent decompression bombs.
+	const maxDecompressedSize = 200 * 1024 * 1024 // 200 MB
+	limitedReader := io.LimitReader(gzr, maxDecompressedSize)
+	tr := tar.NewReader(limitedReader)
 
 	for {
 		header, err := tr.Next()
@@ -695,7 +739,11 @@ func (u *Updater) extractZipFile(f *zip.File, destPath string) error {
 	}
 	defer out.Close()
 
-	if _, err := io.Copy(out, rc); err != nil {
+	// Limit decompressed size to prevent decompression bombs.
+	const maxDecompressedSize = 200 * 1024 * 1024 // 200 MB
+	limitedReader := io.LimitReader(rc, maxDecompressedSize)
+
+	if _, err := io.Copy(out, limitedReader); err != nil {
 		return err
 	}
 
