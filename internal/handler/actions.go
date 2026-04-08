@@ -318,6 +318,9 @@ type deleteEntryRequest struct {
 }
 
 func (h *Handler) handleDeleteEntry(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req deleteEntryRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -336,6 +339,9 @@ type renameEntryRequest struct {
 }
 
 func (h *Handler) handleRenameEntry(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req renameEntryRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -354,6 +360,9 @@ type chmodRequest struct {
 }
 
 func (h *Handler) handleChmod(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req chmodRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -373,6 +382,9 @@ type chownRequest struct {
 }
 
 func (h *Handler) handleChown(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req chownRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -395,6 +407,9 @@ type zipEntryRequest struct {
 }
 
 func (h *Handler) handleZipEntry(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req zipEntryRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -438,6 +453,9 @@ type unzipEntryRequest struct {
 }
 
 func (h *Handler) handleUnzipEntry(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req unzipEntryRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -601,6 +619,9 @@ type uploadChunkRequest struct {
 }
 
 func (h *Handler) handleUploadChunk(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req uploadChunkRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
@@ -756,6 +777,9 @@ type downloadURLRequest struct {
 }
 
 func (h *Handler) handleDownloadURL(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	if h.IsInMaintenance() {
+		return nil, ErrMaintenanceActive
+	}
 	var req downloadURLRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)

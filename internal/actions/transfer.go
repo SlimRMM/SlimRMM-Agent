@@ -188,6 +188,12 @@ func (m *UploadManager) UploadChunk(sessionID string, chunkIndex int, data []byt
 	session.ChunkCount++
 	session.LastActivity = time.Now() // Update activity timestamp
 
+	if session.Received > session.TotalSize {
+		session.File.Close()
+		os.Remove(session.Path)
+		return fmt.Errorf("upload exceeded declared size")
+	}
+
 	return nil
 }
 
