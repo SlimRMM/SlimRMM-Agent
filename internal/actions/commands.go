@@ -69,6 +69,8 @@ func ExecuteCommandWithAuth(ctx context.Context, command string, timeout time.Du
 			return nil, fmt.Errorf("dangerous pattern detected: %s", validation.BlockReason)
 		case errors.Is(err, sandbox.ErrSensitiveCommand):
 			return nil, fmt.Errorf("sensitive command requires authorization: %s", command)
+		case errors.Is(err, sandbox.ErrInvalidAuthToken):
+			return nil, fmt.Errorf("invalid authorization token for sensitive command: %s", command)
 		case errors.Is(err, sandbox.ErrCommandNotAllowed):
 			return nil, fmt.Errorf("command not in whitelist: %s", extractBaseCommand(command))
 		case errors.Is(err, sandbox.ErrEmptyCommand):

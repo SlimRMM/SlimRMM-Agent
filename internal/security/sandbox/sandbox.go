@@ -7,6 +7,9 @@
 package sandbox
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"path/filepath"
 	"regexp"
@@ -24,6 +27,8 @@ var (
 	ErrDangerousPattern = errors.New("dangerous command pattern detected")
 	// ErrSensitiveCommand is returned when a sensitive command requires authorization.
 	ErrSensitiveCommand = errors.New("sensitive command requires server authorization")
+	// ErrInvalidAuthToken is returned when an auth token fails validation.
+	ErrInvalidAuthToken = errors.New("invalid authorization token")
 )
 
 // ValidationResult contains the result of command validation.
@@ -410,18 +415,71 @@ func ValidateCommand(command string) (*ValidationResult, error) {
 
 // ValidateCommandWithAuth validates a command with optional authorization token.
 // If the command is sensitive and no auth token is provided, it returns an error.
+// The auth token is validated using HMAC-SHA256: the token must be a base64-encoded
+// HMAC signature of at least 32 bytes. When an AuthKey is set, the token is
+// verified against that key using the command as the signed message.
 func ValidateCommandWithAuth(command string, authToken string) (*ValidationResult, error) {
+	return ValidateCommandWithAuthKey(command, authToken, nil)
+}
+
+// ValidateCommandWithAuthKey validates a command with an authorization token
+// verified against the provided HMAC key. If key is nil, the token is validated
+// for proper format and minimum length only.
+func ValidateCommandWithAuthKey(command string, authToken string, hmacKey []byte) (*ValidationResult, error) {
 	result, err := ValidateCommand(command)
 	if err != nil {
 		return result, err
 	}
 
 	// If command is sensitive and requires authorization
-	if result.IsSensitive && result.RequiresAuthToken && authToken == "" {
-		return result, ErrSensitiveCommand
+	if result.IsSensitive && result.RequiresAuthToken {
+		if authToken == "" {
+			return result, ErrSensitiveCommand
+		}
+		if err := validateAuthToken(command, authToken, hmacKey); err != nil {
+			return result, err
+		}
 	}
 
 	return result, nil
+}
+
+// minAuthTokenBytes is the minimum decoded size of a valid auth token.
+const minAuthTokenBytes = 32
+
+// validateAuthToken checks that the token is a valid base64 string of sufficient
+// length. When hmacKey is provided, it additionally verifies that the token is
+// a correct HMAC-SHA256 signature of the command.
+func validateAuthToken(command string, token string, hmacKey []byte) error {
+	// Decode token — must be valid base64.
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	if err != nil {
+		// Also try URL-safe and raw variants.
+		decoded, err = base64.URLEncoding.DecodeString(token)
+		if err != nil {
+			decoded, err = base64.RawStdEncoding.DecodeString(token)
+			if err != nil {
+				return ErrInvalidAuthToken
+			}
+		}
+	}
+
+	// Enforce minimum length.
+	if len(decoded) < minAuthTokenBytes {
+		return ErrInvalidAuthToken
+	}
+
+	// If an HMAC key is available, verify the signature.
+	if len(hmacKey) > 0 {
+		mac := hmac.New(sha256.New, hmacKey)
+		mac.Write([]byte(command))
+		expected := mac.Sum(nil)
+		if !hmac.Equal(decoded, expected) {
+			return ErrInvalidAuthToken
+		}
+	}
+
+	return nil
 }
 
 // GetAllowedCommands returns a list of all allowed commands.

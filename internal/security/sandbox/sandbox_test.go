@@ -1,6 +1,9 @@
 package sandbox
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"testing"
 )
 
@@ -121,6 +124,10 @@ func TestValidateCommand(t *testing.T) {
 	}
 }
 
+// validTestToken is a base64-encoded string of 32 bytes, used for tests that
+// don't supply an HMAC key (format-only validation).
+var validTestToken = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU="
+
 func TestValidateCommandWithAuth(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -129,10 +136,12 @@ func TestValidateCommandWithAuth(t *testing.T) {
 		wantErr   error
 	}{
 		{"non-sensitive no token", "ls -la", "", nil},
-		{"non-sensitive with token", "ls -la", "token123", nil},
-		{"sensitive with token", "rm file.txt", "token123", nil},
+		{"non-sensitive with token", "ls -la", validTestToken, nil},
+		{"sensitive with valid token", "rm file.txt", validTestToken, nil},
 		{"sensitive no token", "rm file.txt", "", ErrSensitiveCommand},
-		{"blocked command", "rm -rf /", "token123", ErrCommandBlocked},
+		{"sensitive short token", "rm file.txt", "dG9rZW4xMjM=", ErrInvalidAuthToken},
+		{"sensitive invalid base64", "rm file.txt", "!!!not-base64!!!", ErrInvalidAuthToken},
+		{"blocked command", "rm -rf /", validTestToken, ErrCommandBlocked},
 	}
 
 	for _, tt := range tests {
@@ -141,6 +150,41 @@ func TestValidateCommandWithAuth(t *testing.T) {
 			if err != tt.wantErr {
 				t.Errorf("ValidateCommandWithAuth(%q, %q) error = %v, want %v",
 					tt.command, tt.authToken, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateCommandWithAuthKey(t *testing.T) {
+	hmacKey := []byte("test-secret-key-for-hmac-signing")
+	command := "rm file.txt"
+
+	// Compute a valid HMAC token for the command.
+	mac := hmac.New(sha256.New, hmacKey)
+	mac.Write([]byte(command))
+	validToken := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	// Compute a token for a different command (will fail verification).
+	mac2 := hmac.New(sha256.New, hmacKey)
+	mac2.Write([]byte("other command"))
+	wrongToken := base64.StdEncoding.EncodeToString(mac2.Sum(nil))
+
+	tests := []struct {
+		name    string
+		token   string
+		wantErr error
+	}{
+		{"valid hmac token", validToken, nil},
+		{"wrong hmac token", wrongToken, ErrInvalidAuthToken},
+		{"empty token", "", ErrSensitiveCommand},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ValidateCommandWithAuthKey(command, tt.token, hmacKey)
+			if err != tt.wantErr {
+				t.Errorf("ValidateCommandWithAuthKey(%q, %q, key) error = %v, want %v",
+					command, tt.token, err, tt.wantErr)
 			}
 		})
 	}

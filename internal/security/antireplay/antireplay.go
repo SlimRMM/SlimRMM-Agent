@@ -54,7 +54,7 @@ func DefaultConfig() Config {
 		FutureWindow:    30 * time.Second, // Allow 30s clock skew
 		MaxCacheSize:    10000,            // Cache up to 10k request IDs
 		CleanupInterval: time.Minute,      // Cleanup every minute
-		RequireSignature: false,           // Disabled by default (mTLS provides auth)
+		RequireSignature: true,            // HMAC signature validation enabled
 	}
 }
 
