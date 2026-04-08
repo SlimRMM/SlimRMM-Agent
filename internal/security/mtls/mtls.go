@@ -3,12 +3,16 @@
 package mtls
 
 import (
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
+	"time"
 )
 
 const (
@@ -103,8 +107,112 @@ func loadCACert(tlsConfig *tls.Config, caPath string) error {
 	return nil
 }
 
+// ValidateCertificateBundle validates that the provided certificate bundle is
+// well-formed and consistent: PEM data is valid, the CA certificate has IsCA
+// set, the client certificate is not expired, the private key matches the
+// client certificate, and the client certificate is signed by the CA.
+func ValidateCertificateBundle(caCert, clientCert, clientKey []byte) error {
+	// Decode and parse the CA certificate
+	caBlock, _ := pem.Decode(caCert)
+	if caBlock == nil {
+		return fmt.Errorf("%w: CA certificate is not valid PEM", ErrInvalidCert)
+	}
+	caCertParsed, err := x509.ParseCertificate(caBlock.Bytes)
+	if err != nil {
+		return fmt.Errorf("%w: failed to parse CA certificate: %v", ErrInvalidCert, err)
+	}
+	if !caCertParsed.IsCA {
+		return fmt.Errorf("%w: CA certificate does not have IsCA flag set", ErrInvalidCert)
+	}
+
+	// Decode and parse the client certificate
+	clientBlock, _ := pem.Decode(clientCert)
+	if clientBlock == nil {
+		return fmt.Errorf("%w: client certificate is not valid PEM", ErrInvalidCert)
+	}
+	clientCertParsed, err := x509.ParseCertificate(clientBlock.Bytes)
+	if err != nil {
+		return fmt.Errorf("%w: failed to parse client certificate: %v", ErrInvalidCert, err)
+	}
+	if !time.Now().Before(clientCertParsed.NotAfter) {
+		return fmt.Errorf("%w: client certificate has expired (NotAfter: %v)", ErrInvalidCert, clientCertParsed.NotAfter)
+	}
+
+	// Decode and parse the private key
+	keyBlock, _ := pem.Decode(clientKey)
+	if keyBlock == nil {
+		return fmt.Errorf("%w: private key is not valid PEM", ErrInvalidCert)
+	}
+	privKey, err := parsePrivateKey(keyBlock.Bytes)
+	if err != nil {
+		return fmt.Errorf("%w: failed to parse private key: %v", ErrInvalidCert, err)
+	}
+
+	// Verify the private key matches the client certificate's public key
+	if !publicKeysMatch(clientCertParsed, privKey) {
+		return fmt.Errorf("%w: private key does not match client certificate public key", ErrInvalidCert)
+	}
+
+	// Verify the client certificate is signed by the CA
+	caPool := x509.NewCertPool()
+	caPool.AddCert(caCertParsed)
+	opts := x509.VerifyOptions{
+		Roots: caPool,
+		KeyUsages: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageClientAuth,
+			x509.ExtKeyUsageAny,
+		},
+	}
+	if _, err := clientCertParsed.Verify(opts); err != nil {
+		return fmt.Errorf("%w: client certificate not signed by provided CA: %v", ErrInvalidCert, err)
+	}
+
+	return nil
+}
+
+// parsePrivateKey attempts to parse a DER-encoded private key as PKCS8, PKCS1
+// RSA, or EC private key.
+func parsePrivateKey(der []byte) (interface{}, error) {
+	if key, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		return key, nil
+	}
+	if key, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return key, nil
+	}
+	if key, err := x509.ParseECPrivateKey(der); err == nil {
+		return key, nil
+	}
+	return nil, errors.New("unsupported private key type")
+}
+
+// publicKeysMatch checks whether the private key corresponds to the public key
+// in the certificate.
+func publicKeysMatch(cert *x509.Certificate, privKey interface{}) bool {
+	switch pub := cert.PublicKey.(type) {
+	case *rsa.PublicKey:
+		priv, ok := privKey.(*rsa.PrivateKey)
+		return ok && pub.N.Cmp(priv.N) == 0 && pub.E == priv.E
+	case *ecdsa.PublicKey:
+		priv, ok := privKey.(*ecdsa.PrivateKey)
+		return ok && pub.X.Cmp(priv.X) == 0 && pub.Y.Cmp(priv.Y) == 0
+	case ed25519.PublicKey:
+		priv, ok := privKey.(ed25519.PrivateKey)
+		return ok && pub.Equal(priv.Public())
+	default:
+		return false
+	}
+}
+
 // SaveCertificates saves the certificates to disk with proper permissions.
+// It validates the certificate bundle before writing any files.
 func SaveCertificates(paths CertPaths, caCert, clientCert, clientKey []byte) error {
+	// Validate the certificate bundle before writing anything to disk
+	if len(caCert) > 0 && len(clientCert) > 0 && len(clientKey) > 0 {
+		if err := ValidateCertificateBundle(caCert, clientCert, clientKey); err != nil {
+			return fmt.Errorf("certificate validation failed: %w", err)
+		}
+	}
+
 	files := []struct {
 		path    string
 		content []byte

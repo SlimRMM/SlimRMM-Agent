@@ -122,7 +122,15 @@ func TestSaveCertificates(t *testing.T) {
 		ClientKey:  filepath.Join(tmpDir, "client.key"),
 	}
 
-	err = SaveCertificates(paths, []byte("ca"), []byte("cert"), []byte("key"))
+	// Generate valid certificate bundle
+	caCertDER, caKey := generateTestCA(t)
+	clientCertDER, clientKeyDER := generateTestCert(t, caCertDER, caKey)
+
+	caCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCertDER})
+	clientCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: clientCertDER})
+	clientKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: clientKeyDER})
+
+	err = SaveCertificates(paths, caCertPEM, clientCertPEM, clientKeyPEM)
 	if err != nil {
 		t.Fatalf("SaveCertificates failed: %v", err)
 	}
@@ -141,6 +149,59 @@ func TestSaveCertificates(t *testing.T) {
 	}
 	if info.Mode().Perm() != keyFileMode {
 		t.Errorf("key file permissions = %o, want %o", info.Mode().Perm(), keyFileMode)
+	}
+}
+
+func TestSaveCertificatesRejectsInvalidPEM(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "save_invalid_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	paths := CertPaths{
+		CACert:     filepath.Join(tmpDir, "ca.crt"),
+		ClientCert: filepath.Join(tmpDir, "client.crt"),
+		ClientKey:  filepath.Join(tmpDir, "client.key"),
+	}
+
+	err = SaveCertificates(paths, []byte("bad-ca"), []byte("bad-cert"), []byte("bad-key"))
+	if err == nil {
+		t.Fatal("SaveCertificates should reject invalid PEM data")
+	}
+
+	// Verify no files were written
+	for _, path := range []string{paths.CACert, paths.ClientCert, paths.ClientKey} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Errorf("file should not exist after validation failure: %s", path)
+		}
+	}
+}
+
+func TestSaveCertificatesRejectsNonCACert(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "save_nonca_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	paths := CertPaths{
+		CACert:     filepath.Join(tmpDir, "ca.crt"),
+		ClientCert: filepath.Join(tmpDir, "client.crt"),
+		ClientKey:  filepath.Join(tmpDir, "client.key"),
+	}
+
+	// Generate a valid CA and client cert, then try to use the client cert as CA
+	caCertDER, caKey := generateTestCA(t)
+	clientCertDER, clientKeyDER := generateTestCert(t, caCertDER, caKey)
+
+	// Use client cert (non-CA) in place of CA cert
+	clientCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: clientCertDER})
+	clientKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: clientKeyDER})
+
+	err = SaveCertificates(paths, clientCertPEM, clientCertPEM, clientKeyPEM)
+	if err == nil {
+		t.Fatal("SaveCertificates should reject a non-CA certificate as the CA cert")
 	}
 }
 
