@@ -392,7 +392,10 @@ func DownloadURL(url, destPath string) (*DownloadResult, error) {
 		return nil, fmt.Errorf("creating directory: %w", err)
 	}
 
-	file, err := os.Create(destPath)
+	// O_EXCL ensures we fail if the file already exists - this prevents a
+	// race where an attacker plants a symlink at `destPath` after validation
+	// but before creation (TOCTOU). Matches the pattern used in StartUpload.
+	file, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("creating file: %w", err)
 	}
