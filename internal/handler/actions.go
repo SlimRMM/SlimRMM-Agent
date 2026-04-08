@@ -919,8 +919,30 @@ func (h *Handler) handleStartTerminal(ctx context.Context, data json.RawMessage)
 		terminalID = defaultTerminalID
 	}
 
+	// Enforce terminal session limits before starting
+	if !h.terminalSecurity.CanStartSession() {
+		return nil, fmt.Errorf("terminal session limit reached")
+	}
+
+	// Determine which shell will be used (mirrors logic in actions/terminal.go)
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		if runtime.GOOS == "windows" {
+			shell = "cmd.exe"
+		} else {
+			shell = "/bin/bash"
+		}
+	}
+
+	// Register the session with the security manager (validates shell allowlist)
+	if err := h.terminalSecurity.RegisterSession(terminalID, shell); err != nil {
+		return nil, fmt.Errorf("terminal security: %w", err)
+	}
+
 	term, err := h.terminalManager.StartTerminal(terminalID)
 	if err != nil {
+		// Roll back the security registration on failure
+		h.terminalSecurity.UnregisterSession(terminalID)
 		return nil, err
 	}
 
@@ -1010,6 +1032,12 @@ func (h *Handler) handleTerminalInput(ctx context.Context, data json.RawMessage)
 		"input", inputData,
 		"input_len", len(inputData),
 		"is_base64", req.IsBase64)
+
+	// Validate input through terminal security (size limits, dangerous sequences, rate tracking)
+	if err := h.terminalSecurity.ValidateInput(terminalID, []byte(inputData)); err != nil {
+		h.logger.Warn("terminal input rejected by security", "terminal_id", terminalID, "error", err)
+		return nil, fmt.Errorf("terminal security: %w", err)
+	}
 
 	var err error
 	if req.IsBase64 {
@@ -1110,6 +1138,9 @@ func (h *Handler) handleStopTerminal(ctx context.Context, data json.RawMessage) 
 	if err := h.terminalManager.StopTerminal(terminalID); err != nil {
 		return nil, err
 	}
+
+	// Unregister session from security manager to free the session slot
+	h.terminalSecurity.UnregisterSession(terminalID)
 
 	return map[string]string{"status": "stopped", "terminal_id": terminalID}, nil
 }

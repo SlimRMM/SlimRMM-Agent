@@ -24,6 +24,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/security/antireplay"
 	"github.com/slimrmm/slimrmm-agent/internal/security/audit"
 	"github.com/slimrmm/slimrmm-agent/internal/security/ratelimit"
+	terminalsec "github.com/slimrmm/slimrmm-agent/internal/security/terminal"
 	"github.com/slimrmm/slimrmm-agent/internal/services/backup"
 	"github.com/slimrmm/slimrmm-agent/internal/services/compliance"
 	"github.com/slimrmm/slimrmm-agent/internal/services/models"
@@ -105,9 +106,10 @@ type Handler struct {
 	serialNumberFetched bool
 
 	// Security modules for multi-layered protection
-	rateLimiter *ratelimit.ActionLimiter
-	antiReplay  *antireplay.Protector
-	auditLogger *audit.Logger
+	rateLimiter      *ratelimit.ActionLimiter
+	antiReplay       *antireplay.Protector
+	auditLogger      *audit.Logger
+	terminalSecurity *terminalsec.Manager
 
 	// Self-healing watchdog for connection monitoring
 	selfHealingWatchdog SelfHealingWatchdog
@@ -171,11 +173,13 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	rateLimiter := ratelimit.NewActionLimiter(ratelimit.DefaultConfig())
 	antiReplay := antireplay.New(antireplay.DefaultConfig())
 	auditLogger := audit.GetLogger()
+	terminalSecurity := terminalsec.NewManager(terminalsec.DefaultConfig())
 
 	logger.Info("security modules initialized",
 		"rate_limiter", "enabled",
 		"anti_replay", "enabled",
 		"audit_logging", "enabled",
+		"terminal_security", "enabled",
 	)
 
 	// Initialize software services for installation/uninstallation
@@ -291,6 +295,7 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		rateLimiter:                rateLimiter,
 		antiReplay:                 antiReplay,
 		auditLogger:                auditLogger,
+		terminalSecurity:           terminalSecurity,
 		softwareServices:           softwareServices,
 		validationService:          validationService,
 		complianceService:          complianceService,
@@ -635,6 +640,11 @@ func (h *Handler) Close() error {
 	// Stop upload manager cleanup goroutine
 	if h.uploadManager != nil {
 		h.uploadManager.Stop()
+	}
+
+	// Stop terminal security manager cleanup
+	if h.terminalSecurity != nil {
+		h.terminalSecurity.Stop()
 	}
 
 	// Stop anti-replay protection cleanup
