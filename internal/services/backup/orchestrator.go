@@ -333,7 +333,8 @@ func (o *Orchestrator) downloadManifest(ctx context.Context, url string) (*FileM
 func (o *Orchestrator) downloadData(ctx context.Context, url string) ([]byte, error) {
 	// SECURITY: Validate URL to prevent SSRF attacks
 	validator := urlval.NewDefault()
-	if err := validator.ValidateWithDNS(url); err != nil {
+	vr, err := validator.ValidateWithDNS(url)
+	if err != nil {
 		return nil, fmt.Errorf("url validation failed: %w", err)
 	}
 
@@ -342,7 +343,9 @@ func (o *Orchestrator) downloadData(ctx context.Context, url string) ([]byte, er
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := o.httpClient.Do(req)
+	// Use pinned transport to prevent DNS rebinding attacks
+	pinnedClient := vr.PinnedHTTPClient(o.httpClient.Timeout)
+	resp, err := pinnedClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("downloading: %w", err)
 	}
@@ -362,7 +365,8 @@ func (o *Orchestrator) downloadData(ctx context.Context, url string) ([]byte, er
 func (o *Orchestrator) uploadData(ctx context.Context, url string, data []byte) error {
 	// SECURITY: Validate URL to prevent SSRF attacks
 	validator := urlval.NewDefault()
-	if err := validator.ValidateWithDNS(url); err != nil {
+	vr, err := validator.ValidateWithDNS(url)
+	if err != nil {
 		return fmt.Errorf("url validation failed: %w", err)
 	}
 
@@ -374,7 +378,9 @@ func (o *Orchestrator) uploadData(ctx context.Context, url string, data []byte) 
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.ContentLength = int64(len(data))
 
-	resp, err := o.httpClient.Do(req)
+	// Use pinned transport to prevent DNS rebinding attacks
+	pinnedClient := vr.PinnedHTTPClient(o.httpClient.Timeout)
+	resp, err := pinnedClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("uploading: %w", err)
 	}
@@ -788,7 +794,8 @@ func (o *RestoreOrchestrator) restoreChain(ctx context.Context, req RestoreReque
 func (o *RestoreOrchestrator) downloadData(ctx context.Context, url string) ([]byte, error) {
 	// SECURITY: Validate URL to prevent SSRF attacks
 	validator := urlval.NewDefault()
-	if err := validator.ValidateWithDNS(url); err != nil {
+	vr, err := validator.ValidateWithDNS(url)
+	if err != nil {
 		return nil, fmt.Errorf("url validation failed: %w", err)
 	}
 
@@ -797,7 +804,9 @@ func (o *RestoreOrchestrator) downloadData(ctx context.Context, url string) ([]b
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := o.httpClient.Do(req)
+	// Use pinned transport to prevent DNS rebinding attacks
+	pinnedClient := vr.PinnedHTTPClient(o.httpClient.Timeout)
+	resp, err := pinnedClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("downloading: %w", err)
 	}

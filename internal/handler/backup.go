@@ -1127,7 +1127,8 @@ func (h *Handler) decryptData(ciphertext []byte, keyBase64 string, ivBase64 stri
 func (h *Handler) uploadBackupData(ctx context.Context, uploadURL string, data []byte) error {
 	// SECURITY: Validate URL to prevent SSRF attacks
 	validator := urlval.NewDefault()
-	if err := validator.ValidateWithDNS(uploadURL); err != nil {
+	vr, err := validator.ValidateWithDNS(uploadURL)
+	if err != nil {
 		return fmt.Errorf("url validation failed: %w", err)
 	}
 
@@ -1139,9 +1140,8 @@ func (h *Handler) uploadBackupData(ctx context.Context, uploadURL string, data [
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.ContentLength = int64(len(data))
 
-	client := &http.Client{
-		Timeout: 5 * time.Minute,
-	}
+	// Use pinned transport to prevent DNS rebinding attacks
+	client := vr.PinnedHTTPClient(5 * time.Minute)
 
 	resp, err := client.Do(req)
 	if err != nil {

@@ -744,7 +744,8 @@ func NewStreamingDownloader(cfg StreamingDownloaderConfig) *StreamingDownloader 
 func (sd *StreamingDownloader) Download(ctx context.Context, url string, w io.Writer) (int64, error) {
 	// SECURITY: Validate URL to prevent SSRF attacks
 	validator := urlval.NewDefault()
-	if err := validator.ValidateWithDNS(url); err != nil {
+	vr, err := validator.ValidateWithDNS(url)
+	if err != nil {
 		return 0, fmt.Errorf("url validation failed: %w", err)
 	}
 
@@ -753,7 +754,9 @@ func (sd *StreamingDownloader) Download(ctx context.Context, url string, w io.Wr
 		return 0, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := sd.httpClient.Do(req)
+	// Use pinned transport to prevent DNS rebinding attacks
+	pinnedClient := vr.PinnedHTTPClient(sd.httpClient.Timeout)
+	resp, err := pinnedClient.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("downloading: %w", err)
 	}

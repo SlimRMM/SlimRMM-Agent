@@ -448,7 +448,8 @@ func (so *StreamingOrchestrator) downloadManifest(ctx context.Context, url strin
 func (so *StreamingOrchestrator) uploadData(ctx context.Context, url string, data []byte) error {
 	// SECURITY: Validate URL to prevent SSRF attacks
 	validator := urlval.NewDefault()
-	if err := validator.ValidateWithDNS(url); err != nil {
+	vr, err := validator.ValidateWithDNS(url)
+	if err != nil {
 		return fmt.Errorf("url validation failed: %w", err)
 	}
 
@@ -460,7 +461,9 @@ func (so *StreamingOrchestrator) uploadData(ctx context.Context, url string, dat
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.ContentLength = int64(len(data))
 
-	resp, err := so.httpClient.Do(req)
+	// Use pinned transport to prevent DNS rebinding attacks
+	pinnedClient := vr.PinnedHTTPClient(so.httpClient.Timeout)
+	resp, err := pinnedClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("uploading: %w", err)
 	}
