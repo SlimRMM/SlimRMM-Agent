@@ -372,11 +372,13 @@ func DownloadURL(url, destPath string) (*DownloadResult, error) {
 
 	// Validate URL scheme and host (prevent SSRF attacks)
 	urlValidator := urlval.NewDefault()
-	if err := urlValidator.ValidateWithDNS(url); err != nil {
+	vr, err := urlValidator.ValidateWithDNS(url)
+	if err != nil {
 		return nil, fmt.Errorf("url validation failed: %w", err)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Minute}
+	// Use pinned transport to prevent DNS rebinding attacks
+	client := vr.PinnedHTTPClient(5 * time.Minute)
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("downloading: %w", err)
