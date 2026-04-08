@@ -7,6 +7,26 @@ import (
 	"time"
 )
 
+// mutatingActions lists actions that modify state or execute commands.
+// These MUST include a valid request_id and timestamp for anti-replay protection.
+var mutatingActions = map[string]bool{
+	"execute_command": true,
+	"execute_script":  true,
+	"start_terminal":  true,
+	"restart":         true,
+	"shutdown":        true,
+	"delete_entry":    true,
+	"upload_chunk":    true,
+	"download_url":    true,
+	"zip_entry":       true,
+	"unzip_entry":     true,
+	"docker_exec":     true,
+	"update_agent":    true,
+	"chmod":           true,
+	"chown":           true,
+	"rename_entry":    true,
+}
+
 // rootLevelActions lists actions whose fields are at the root level of the JSON
 // message rather than nested in a "data" object. Defined at package level to
 // avoid allocating a new map on every incoming message.
@@ -97,7 +117,20 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		return
 	}
 
-	// Security Layer 2: Anti-replay protection (for requests with request_id)
+	// Security Layer 2: Anti-replay protection
+	// Mutating actions MUST include a request_id; read-only actions may omit it.
+	if msg.RequestID == "" && mutatingActions[msg.Action] {
+		h.logger.Warn("mutating action missing request_id",
+			"action", msg.Action,
+		)
+		h.Send(Response{
+			Action:  msg.Action,
+			Success: false,
+			Error:   "request_id is required for mutating actions",
+		})
+		return
+	}
+
 	if msg.RequestID != "" {
 		// Extract timestamp if present in message
 		var msgWithTime struct {
@@ -105,10 +138,21 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 		}
 		json.Unmarshal(data, &msgWithTime)
 
-		requestTime := time.Now()
-		if msgWithTime.Timestamp > 0 {
-			requestTime = time.Unix(msgWithTime.Timestamp, 0)
+		if msgWithTime.Timestamp == 0 {
+			h.logger.Warn("request with request_id missing timestamp",
+				"action", msg.Action,
+				"request_id", msg.RequestID,
+			)
+			h.Send(Response{
+				Action:    msg.Action,
+				RequestID: msg.RequestID,
+				Success:   false,
+				Error:     "timestamp is required when request_id is set",
+			})
+			return
 		}
+
+		requestTime := time.Unix(msgWithTime.Timestamp, 0)
 
 		if err := h.antiReplay.ValidateRequest(msg.RequestID, requestTime); err != nil {
 			h.logger.Warn("replay detection triggered",
