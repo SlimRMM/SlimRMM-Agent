@@ -99,14 +99,14 @@ fi
 if [ -n "${SLIMRMM_SERVER}" ]; then
     echo "Server URL provided via environment: ${SLIMRMM_SERVER}"
 
-    # Build install command
-    INSTALL_CMD="${BINARY} install -s ${SLIMRMM_SERVER}"
+    # Build install command as an array to avoid eval
+    INSTALL_ARGS=( install -s "${SLIMRMM_SERVER}" )
     if [ -n "${SLIMRMM_TOKEN}" ]; then
-        INSTALL_CMD="${INSTALL_CMD} -k ${SLIMRMM_TOKEN}"
+        INSTALL_ARGS+=( -k "${SLIMRMM_TOKEN}" )
     fi
 
     # Run installation
-    eval "${INSTALL_CMD}"
+    "${BINARY}" "${INSTALL_ARGS[@]}"
 
     echo "SlimRMM Agent installed successfully"
     exit 0
