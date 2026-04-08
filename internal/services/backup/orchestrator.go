@@ -783,7 +783,14 @@ func (o *RestoreOrchestrator) restoreChain(ctx context.Context, req RestoreReque
 }
 
 // downloadData downloads data from the specified URL.
+// SECURITY: Validates URL to prevent SSRF attacks.
 func (o *RestoreOrchestrator) downloadData(ctx context.Context, url string) ([]byte, error) {
+	// SECURITY: Validate URL to prevent SSRF attacks
+	validator := urlval.NewDefault()
+	if err := validator.ValidateWithDNS(url); err != nil {
+		return nil, fmt.Errorf("url validation failed: %w", err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
