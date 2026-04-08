@@ -35,7 +35,7 @@ var (
 )
 
 // SharedTransport returns a process-wide HTTP transport with sane connection
-// pooling and a TLS 1.2 minimum floor. It is safe for concurrent use.
+// pooling and a TLS 1.3 minimum floor. It is safe for concurrent use.
 func SharedTransport() *http.Transport {
 	sharedTransportOnce.Do(func() {
 		sharedTransport = &http.Transport{
@@ -44,7 +44,7 @@ func SharedTransport() *http.Transport {
 			IdleConnTimeout:     90 * time.Second,
 			TLSHandshakeTimeout: 10 * time.Second,
 			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
+				MinVersion: tls.VersionTLS13,
 			},
 		}
 	})

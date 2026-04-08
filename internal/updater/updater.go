@@ -58,7 +58,7 @@ func httpTransport() *http.Transport {
 			IdleConnTimeout:     90 * time.Second,
 			TLSHandshakeTimeout: 10 * time.Second,
 			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
+				MinVersion: tls.VersionTLS13,
 			},
 		}
 	})
