@@ -401,6 +401,10 @@ func (h *Handler) handleDownloadAndInstallPKG(ctx context.Context, data json.Raw
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	if req.ExpectedHash == "" {
+		h.logger.Warn("installing package without hash verification", "type", "pkg")
+	}
+
 	h.logger.Info("starting PKG installation via service layer",
 		"installation_id", req.InstallationID,
 		"filename", req.Filename,
@@ -577,6 +581,10 @@ func (h *Handler) handleDownloadAndInstallDEB(ctx context.Context, data json.Raw
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	if req.ExpectedHash == "" {
+		h.logger.Warn("installing package without hash verification", "type", "deb")
+	}
+
 	h.logger.Info("starting DEB installation via service layer",
 		"installation_id", req.InstallationID,
 		"filename", req.Filename,
@@ -662,6 +670,10 @@ func (h *Handler) handleDownloadAndInstallRPM(ctx context.Context, data json.Raw
 	var req downloadAndInstallRPMRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if req.ExpectedHash == "" {
+		h.logger.Warn("installing package without hash verification", "type", "rpm")
 	}
 
 	h.logger.Info("starting RPM installation via service layer",

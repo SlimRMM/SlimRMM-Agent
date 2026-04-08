@@ -195,8 +195,15 @@ Write-Output "Windows Update completed successfully"
 	return result, nil
 }
 
+// validPackageName matches safe package name characters only.
+var validPackageName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._+:~-]*$`)
+
 // UninstallSoftware removes a software package.
 func UninstallSoftware(ctx context.Context, packageName string) (*CommandResult, error) {
+	if !validPackageName.MatchString(packageName) {
+		return nil, fmt.Errorf("invalid package name: %q", packageName)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
