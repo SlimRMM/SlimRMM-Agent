@@ -59,11 +59,10 @@ func NewTLSConfig(certPaths *CertPaths, cfg *Config) (*tls.Config, error) {
 		}
 	}
 
-	// Load CA certificate if available
+	// Load CA certificate if specified
 	if certPaths != nil && certPaths.CACert != "" {
 		if err := loadCACert(tlsConfig, certPaths.CACert); err != nil {
-			// CA cert is optional, log but continue
-			fmt.Printf("Warning: Could not load CA cert: %v\n", err)
+			return nil, fmt.Errorf("loading CA certificate: %w", err)
 		}
 	}
 

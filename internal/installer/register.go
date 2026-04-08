@@ -302,7 +302,7 @@ func registerAgent(ctx context.Context, serverURL string, enrollmentToken string
 		return registerAgentLegacy(ctx, serverURL, reqBody, client, logger)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
@@ -340,7 +340,7 @@ func registerAgentLegacy(ctx context.Context, serverURL string, reqBody []byte, 
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
@@ -446,7 +446,7 @@ func checkApprovalStatus(ctx context.Context, client *http.Client, serverURL, uu
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return "", fmt.Errorf("status check failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -493,7 +493,7 @@ func fetchCertificatesAndSave(ctx context.Context, cfg *config.Config, serverURL
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return nil, fmt.Errorf("certificate fetch failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -594,7 +594,7 @@ func RenewCertificatesWithContext(ctx context.Context, cfg *config.Config, paths
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return fmt.Errorf("renewal failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
