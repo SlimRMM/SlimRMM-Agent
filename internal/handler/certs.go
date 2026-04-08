@@ -89,6 +89,12 @@ func (h *Handler) renewCertificates(ctx context.Context) error {
 			return fmt.Errorf("saving certificates: %w", err)
 		}
 
+		// Reload in-memory TLS config so subsequent connections use the new certs
+		newTLS, err := mtls.NewTLSConfig(&certPaths, nil)
+		if err == nil {
+			h.tlsConfig = newTLS
+		}
+
 		h.logger.Info("certificates renewed and saved successfully")
 	}
 

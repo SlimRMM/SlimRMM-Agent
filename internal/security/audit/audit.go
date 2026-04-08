@@ -4,6 +4,7 @@ package audit
 
 import (
 	"context"
+	crypto_rand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -189,7 +190,7 @@ func New(cfg Config, baseLogger *slog.Logger) (*Logger, error) {
 	if cfg.LogPath != "" {
 		// Ensure directory exists
 		dir := filepath.Dir(cfg.LogPath)
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			return nil, fmt.Errorf("creating audit log directory: %w", err)
 		}
 
@@ -206,7 +207,9 @@ func New(cfg Config, baseLogger *slog.Logger) (*Logger, error) {
 
 // generateSessionID creates a unique session ID for this agent instance.
 func generateSessionID() string {
-	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
+	b := make([]byte, 16)
+	crypto_rand.Read(b)
+	return fmt.Sprintf("%x", b)
 }
 
 // Log records a security event.
