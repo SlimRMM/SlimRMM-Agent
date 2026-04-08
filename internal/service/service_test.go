@@ -231,7 +231,6 @@ func TestAgentInfoStruct(t *testing.T) {
 		LastHeartbeat:  "2024-01-15T10:05:00Z",
 		MTLSEnabled:    true,
 		FullDiskAccess: true,
-		ScreenSharing:  false,
 	}
 
 	if info.Version != "2.0.0" {
@@ -248,9 +247,6 @@ func TestAgentInfoStruct(t *testing.T) {
 	}
 	if !info.FullDiskAccess {
 		t.Error("FullDiskAccess should be true")
-	}
-	if info.ScreenSharing {
-		t.Error("ScreenSharing should be false")
 	}
 }
 
@@ -308,16 +304,6 @@ func TestCheckFullDiskAccess(t *testing.T) {
 		t.Error("checkFullDiskAccess should return false on non-macOS")
 	}
 	// On macOS, we can't predict the result, just verify it returns a bool
-}
-
-func TestCheckScreenSharingEnabled(t *testing.T) {
-	// This function is platform-specific, so just verify it doesn't panic
-	result := checkScreenSharingEnabled()
-
-	// On non-macOS platforms, it should return false
-	if runtime.GOOS != "darwin" && result {
-		t.Error("checkScreenSharingEnabled should return false on non-macOS")
-	}
 }
 
 func TestServiceConfigEmpty(t *testing.T) {
