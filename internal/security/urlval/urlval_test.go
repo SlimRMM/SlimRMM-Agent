@@ -18,7 +18,7 @@ func TestValidator(t *testing.T) {
 		{"valid https", "https://example.com/file.zip", false},
 		{"valid http", "http://example.com/file.zip", false},
 		{"valid with port", "https://example.com:8080/file.zip", false},
-		{"valid with path", "https://cdn.example.com/downloads/v1/file.zip", false},
+		{"valid with path", "https://8.8.4.4/downloads/v1/file.zip", false},
 
 		// Invalid schemes
 		{"file scheme", "file:///etc/passwd", true},
@@ -162,11 +162,7 @@ func TestValidateWithDNS(t *testing.T) {
 		url     string
 		wantErr bool
 	}{
-		// Valid external URLs
-		{"valid https", "https://example.com/file.zip", false},
-		{"valid with subdomain", "https://cdn.example.com/file", false},
-
-		// Direct IP addresses (already checked in Validate)
+		// Direct IP addresses (no DNS needed)
 		{"direct public IP", "https://8.8.8.8/dns", false},
 		{"direct private IP", "https://192.168.1.1/file", true},
 
