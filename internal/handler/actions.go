@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/logging"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/security/archive"
+	"github.com/slimrmm/slimrmm-agent/internal/security/pathval"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/services/compliance"
 	"github.com/slimrmm/slimrmm-agent/internal/services/filesystem"
@@ -411,6 +413,14 @@ func (h *Handler) handleZipEntry(ctx context.Context, data json.RawMessage) (int
 		outputPath = sourcePath + ".zip"
 	}
 
+	validator := pathval.New()
+	if err := validator.ValidateWithSymlinkResolution(sourcePath); err != nil {
+		return nil, fmt.Errorf("source path validation failed: %w", err)
+	}
+	if err := validator.ValidateWithSymlinkResolution(outputPath); err != nil {
+		return nil, fmt.Errorf("output path validation failed: %w", err)
+	}
+
 	if err := archive.CreateZip(sourcePath, outputPath); err != nil {
 		return nil, err
 	}
@@ -448,6 +458,14 @@ func (h *Handler) handleUnzipEntry(ctx context.Context, data json.RawMessage) (i
 		if len(outputPath) > 4 && outputPath[len(outputPath)-4:] == ".zip" {
 			outputPath = outputPath[:len(outputPath)-4]
 		}
+	}
+
+	validator := pathval.New()
+	if err := validator.ValidateWithSymlinkResolution(sourcePath); err != nil {
+		return nil, fmt.Errorf("source path validation failed: %w", err)
+	}
+	if err := validator.ValidateWithSymlinkResolution(outputPath); err != nil {
+		return nil, fmt.Errorf("output path validation failed: %w", err)
 	}
 
 	limits := archive.DefaultLimits()
@@ -605,6 +623,11 @@ func (h *Handler) handleUploadChunk(ctx context.Context, data json.RawMessage) (
 	// Simple upload (frontend format) - write directly to file
 	if req.Path == "" {
 		return nil, fmt.Errorf("path or session_id required")
+	}
+
+	validator := pathval.New()
+	if err := validator.ValidateWithSymlinkResolution(req.Path); err != nil {
+		return nil, fmt.Errorf("path validation failed: %w", err)
 	}
 
 	fs := filesystem.GetDefault()
@@ -1227,6 +1250,15 @@ func (h *Handler) handleListServices(ctx context.Context, data json.RawMessage) 
 	}, nil
 }
 
+// serviceNameRegex allows alphanumeric, dots, hyphens, and underscores.
+var serviceNameRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,256}$`)
+
+// isValidServiceName checks if a service name is safe for use in commands,
+// preventing injection attacks (e.g., PowerShell injection via crafted names).
+func isValidServiceName(name string) bool {
+	return serviceNameRegex.MatchString(name)
+}
+
 type serviceActionRequest struct {
 	Name string `json:"name"`
 }
@@ -1238,8 +1270,8 @@ func (h *Handler) handleStartService(ctx context.Context, data json.RawMessage) 
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
-	if req.Name == "" {
-		return nil, fmt.Errorf("service name is required")
+	if !isValidServiceName(req.Name) {
+		return nil, fmt.Errorf("invalid service name")
 	}
 
 	mgr := service.New()
@@ -1261,8 +1293,8 @@ func (h *Handler) handleStopService(ctx context.Context, data json.RawMessage) (
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
-	if req.Name == "" {
-		return nil, fmt.Errorf("service name is required")
+	if !isValidServiceName(req.Name) {
+		return nil, fmt.Errorf("invalid service name")
 	}
 
 	mgr := service.New()
@@ -1284,8 +1316,8 @@ func (h *Handler) handleRestartService(ctx context.Context, data json.RawMessage
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
-	if req.Name == "" {
-		return nil, fmt.Errorf("service name is required")
+	if !isValidServiceName(req.Name) {
+		return nil, fmt.Errorf("invalid service name")
 	}
 
 	mgr := service.New()
@@ -1312,8 +1344,8 @@ func (h *Handler) handleSetServiceStartType(ctx context.Context, data json.RawMe
 		return nil, fmt.Errorf("%s: %w", i18n.MsgInvalidRequest, err)
 	}
 
-	if req.Name == "" {
-		return nil, fmt.Errorf("service name is required")
+	if !isValidServiceName(req.Name) {
+		return nil, fmt.Errorf("invalid service name")
 	}
 
 	if req.StartType == "" {
