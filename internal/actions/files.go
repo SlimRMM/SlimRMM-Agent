@@ -49,8 +49,8 @@ func ListDirectory(path string) (*ListDirResult, error) {
 		// If result is nil and no error, fall through to standard handling (Unix)
 	}
 
-	// Validate path
-	if err := pathValidator.Validate(path); err != nil {
+	// Validate path (symlink-aware for existing directories)
+	if err := pathValidator.ValidateWithSymlinkResolution(path); err != nil {
 		return nil, fmt.Errorf("path validation failed: %w", err)
 	}
 
@@ -105,7 +105,7 @@ func ListDirectory(path string) (*ListDirResult, error) {
 
 // CreateFolder creates a new directory.
 func CreateFolder(path string, mode os.FileMode) error {
-	if err := pathValidator.Validate(filepath.Dir(path)); err != nil {
+	if err := pathValidator.ValidateWithSymlinkResolution(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("path validation failed: %w", err)
 	}
 
@@ -142,7 +142,7 @@ func RenameEntry(oldPath, newPath string) error {
 	if err := pathValidator.ValidateWithSymlinkResolution(oldPath); err != nil {
 		return fmt.Errorf("source path validation failed: %w", err)
 	}
-	if err := pathValidator.Validate(filepath.Dir(newPath)); err != nil {
+	if err := pathValidator.ValidateWithSymlinkResolution(filepath.Dir(newPath)); err != nil {
 		return fmt.Errorf("destination path validation failed: %w", err)
 	}
 
@@ -237,7 +237,7 @@ func ReadFile(path string, offset, limit int64) ([]byte, error) {
 
 // WriteFile writes data to a file.
 func WriteFile(path string, data []byte, mode os.FileMode) error {
-	if err := pathValidator.Validate(filepath.Dir(path)); err != nil {
+	if err := pathValidator.ValidateWithSymlinkResolution(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("path validation failed: %w", err)
 	}
 
@@ -253,7 +253,7 @@ func CopyFile(src, dst string) error {
 	if err := pathValidator.ValidateWithSymlinkResolution(src); err != nil {
 		return fmt.Errorf("source path validation failed: %w", err)
 	}
-	if err := pathValidator.Validate(filepath.Dir(dst)); err != nil {
+	if err := pathValidator.ValidateWithSymlinkResolution(filepath.Dir(dst)); err != nil {
 		return fmt.Errorf("destination path validation failed: %w", err)
 	}
 
@@ -280,7 +280,7 @@ func CopyFile(src, dst string) error {
 
 // GetFileInfo returns information about a file.
 func GetFileInfo(path string) (*FileInfo, error) {
-	if err := pathValidator.Validate(path); err != nil {
+	if err := pathValidator.ValidateWithSymlinkResolution(path); err != nil {
 		return nil, fmt.Errorf("path validation failed: %w", err)
 	}
 

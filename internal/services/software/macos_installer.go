@@ -173,6 +173,18 @@ func (i *PKGInstaller) Install(ctx context.Context, req *models.InstallRequest) 
 		"filename", req.Filename,
 	)
 
+	// Sanitize filename to prevent path traversal
+	req.Filename = filepath.Base(req.Filename)
+	if req.Filename == "." || req.Filename == ".." || strings.Contains(req.Filename, "..") {
+		return &models.InstallResult{
+			InstallationID: req.InstallationID,
+			Status:         models.StatusFailed,
+			Error:          "invalid filename",
+			StartedAt:      startedAt,
+			CompletedAt:    time.Now(),
+		}, nil
+	}
+
 	// Download the PKG file
 	tempDir := os.TempDir()
 	pkgPath := filepath.Join(tempDir, req.Filename)
