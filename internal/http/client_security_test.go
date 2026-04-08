@@ -80,16 +80,16 @@ func TestDownloadToFile_RejectsOversizeContentLength(t *testing.T) {
 	}
 }
 
-// TestSharedTransport_TLS12 verifies that the shared transport enforces
-// TLS 1.2 minimum and does not disable cert verification.
+// TestSharedTransport_TLS13 verifies that the shared transport enforces
+// TLS 1.3 minimum and does not disable cert verification.
 func TestSharedTransport_TLS12(t *testing.T) {
 	tr := SharedTransport()
 	if tr.TLSClientConfig == nil {
 		t.Fatal("shared transport has no TLSClientConfig")
 	}
-	if tr.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+	if tr.TLSClientConfig.MinVersion != tls.VersionTLS13 {
 		t.Errorf("MinVersion = %d, want %d",
-			tr.TLSClientConfig.MinVersion, tls.VersionTLS12)
+			tr.TLSClientConfig.MinVersion, tls.VersionTLS13)
 	}
 	if tr.TLSClientConfig.InsecureSkipVerify {
 		t.Error("InsecureSkipVerify must be false")
