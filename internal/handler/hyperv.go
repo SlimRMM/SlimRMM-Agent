@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/slimrmm/slimrmm-agent/internal/hyperv"
+	"github.com/slimrmm/slimrmm-agent/internal/security/pathval"
 )
 
 var (
@@ -265,6 +266,14 @@ func (h *Handler) handleHyperVExport(ctx context.Context, data json.RawMessage) 
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	// SECURITY: Validate export path to prevent path traversal attacks
+	if req.ExportPath != "" {
+		validator := pathval.New()
+		if err := validator.ValidateWithSymlinkResolution(req.ExportPath); err != nil {
+			return nil, fmt.Errorf("invalid export path: %w", err)
+		}
+	}
+
 	client, err := h.getHyperVClient(ctx)
 	if err != nil {
 		return nil, err
@@ -292,6 +301,14 @@ func (h *Handler) handleHyperVImport(ctx context.Context, data json.RawMessage) 
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	// SECURITY: Validate VMCX path to prevent path traversal attacks
+	if req.VMCXPath != "" {
+		validator := pathval.New()
+		if err := validator.ValidateWithSymlinkResolution(req.VMCXPath); err != nil {
+			return nil, fmt.Errorf("invalid vmcx path: %w", err)
+		}
+	}
+
 	client, err := h.getHyperVClient(ctx)
 	if err != nil {
 		return nil, err
@@ -317,6 +334,14 @@ func (h *Handler) handleHyperVBackup(ctx context.Context, data json.RawMessage) 
 	var req hyperv.BackupRequest
 	if err := json.Unmarshal(data, &req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// SECURITY: Validate backup path to prevent path traversal attacks
+	if req.BackupPath != "" {
+		validator := pathval.New()
+		if err := validator.ValidateWithSymlinkResolution(req.BackupPath); err != nil {
+			return nil, fmt.Errorf("invalid backup path: %w", err)
+		}
 	}
 
 	client, err := h.getHyperVClient(ctx)
@@ -353,6 +378,12 @@ func (h *Handler) handleHyperVListExports(ctx context.Context, data json.RawMess
 
 	if req.ExportPath == "" {
 		return nil, fmt.Errorf("export_path is required")
+	}
+
+	// SECURITY: Validate export path to prevent path traversal attacks
+	validator := pathval.New()
+	if err := validator.ValidateWithSymlinkResolution(req.ExportPath); err != nil {
+		return nil, fmt.Errorf("invalid export path: %w", err)
 	}
 
 	client, err := h.getHyperVClient(ctx)
