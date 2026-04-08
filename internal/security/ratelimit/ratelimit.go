@@ -191,11 +191,13 @@ func (al *ActionLimiter) allowAction(action string) bool {
 func (al *ActionLimiter) Allow(action string) bool {
 	// Map actions to rate limit categories
 	switch action {
-	case "execute_command", "run_command", "shell":
+	case "execute_command", "run_command", "shell",
+		"execute_script", "docker_exec",
+		"restart", "shutdown", "update_agent":
 		return al.AllowCommand()
 	case "terminal", "terminal_input", "terminal_resize":
 		return al.AllowTerminal()
-	case "list_dir", "read_file", "write_file", "delete_entry", "download_file":
+	case "list_dir", "read_file", "write_file", "delete_entry", "rename_entry", "download_file":
 		return al.AllowFileOp()
 	case "upload_chunk", "start_upload", "finish_upload":
 		return al.AllowUpload()
