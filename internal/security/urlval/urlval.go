@@ -3,11 +3,15 @@
 package urlval
 
 import (
+	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 var (
@@ -25,6 +29,9 @@ var (
 
 	// ErrInvalidURL indicates the URL is malformed.
 	ErrInvalidURL = errors.New("invalid url format")
+
+	// ErrDNSResolutionFailed indicates that DNS resolution failed.
+	ErrDNSResolutionFailed = errors.New("dns resolution failed")
 )
 
 // AllowedSchemes defines which URL schemes are permitted.
@@ -130,45 +137,116 @@ func (v *Validator) Validate(rawURL string) error {
 	return nil
 }
 
-// ValidateWithDNS validates the URL and also checks DNS resolution for private IPs.
-// This prevents SSRF attacks where a hostname resolves to a private IP.
-func (v *Validator) ValidateWithDNS(rawURL string) error {
-	// First perform basic validation
-	if err := v.Validate(rawURL); err != nil {
-		return err
+// ValidationResult holds the outcome of a DNS-validated URL check, including
+// the resolved IP addresses. Callers must use PinnedTransport (or the
+// convenience method PinnedHTTPClient) to ensure the actual HTTP connection
+// goes to one of these validated IPs, preventing DNS rebinding attacks.
+type ValidationResult struct {
+	// ResolvedIPs contains the validated IP addresses the hostname resolved to.
+	// Empty when the URL already contained a literal IP address.
+	ResolvedIPs []net.IP
+
+	// Host is the original hostname from the URL.
+	Host string
+}
+
+// PinnedTransport returns an *http.Transport whose DialContext is locked to the
+// resolved IPs returned by ValidateWithDNS. This prevents DNS rebinding: the
+// HTTP client will connect only to the IPs that were checked, not re-resolve
+// the hostname. If ResolvedIPs is empty (the URL used a literal IP), a default
+// transport is returned.
+func (vr *ValidationResult) PinnedTransport() *http.Transport {
+	if len(vr.ResolvedIPs) == 0 {
+		return &http.Transport{
+			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+		}
 	}
 
-	if !v.blockPrivateIPs {
-		return nil
+	// Round-robin index for multiple IPs
+	ips := vr.ResolvedIPs
+	host := vr.Host
+
+	return &http.Transport{
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// addr is "host:port" — extract port
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid address %q: %w", addr, err)
+			}
+
+			// Try each validated IP
+			var lastErr error
+			d := &net.Dialer{Timeout: 30 * time.Second}
+			for _, ip := range ips {
+				pinnedAddr := net.JoinHostPort(ip.String(), port)
+				conn, err := d.DialContext(ctx, network, pinnedAddr)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				return conn, nil
+			}
+			return nil, fmt.Errorf("all validated IPs for %s failed: %w", host, lastErr)
+		},
+	}
+}
+
+// PinnedHTTPClient returns an *http.Client that uses PinnedTransport and the
+// given timeout.
+func (vr *ValidationResult) PinnedHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: vr.PinnedTransport(),
+		Timeout:   timeout,
+	}
+}
+
+// ValidateWithDNS validates the URL and also checks DNS resolution for private IPs.
+// This prevents SSRF attacks where a hostname resolves to a private IP.
+// It returns a ValidationResult containing the resolved IPs so that callers can
+// pin HTTP connections to those IPs, preventing DNS rebinding attacks.
+// On DNS resolution failure the function fails closed (returns an error).
+func (v *Validator) ValidateWithDNS(rawURL string) (*ValidationResult, error) {
+	// First perform basic validation
+	if err := v.Validate(rawURL); err != nil {
+		return nil, err
 	}
 
 	// Parse URL to get host
 	u, _ := url.Parse(rawURL) // Already validated above
 	host := u.Hostname()
 
+	if !v.blockPrivateIPs {
+		return &ValidationResult{Host: host}, nil
+	}
+
 	// Skip DNS check if it's already an IP
 	if net.ParseIP(host) != nil {
-		return nil // Already checked in Validate()
+		return &ValidationResult{Host: host}, nil // Already checked in Validate()
 	}
 
 	// Resolve hostname and check all returned IPs
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		// DNS resolution failed - could be network issue
-		// Allow the request; the actual HTTP client will fail anyway
-		return nil
+		// Fail closed: DNS resolution failure must block the request.
+		// An attacker could exploit transient DNS failures to bypass validation.
+		return nil, fmt.Errorf("%w: %s: %v", ErrDNSResolutionFailed, host, err)
+	}
+
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("%w: %s: no addresses returned", ErrDNSResolutionFailed, host)
 	}
 
 	for _, ip := range ips {
 		if isPrivateIP(ip) {
-			return fmt.Errorf("%w: %s resolves to %s", ErrPrivateIP, host, ip.String())
+			return nil, fmt.Errorf("%w: %s resolves to %s", ErrPrivateIP, host, ip.String())
 		}
 		if v.blockLocalhost && ip.IsLoopback() {
-			return fmt.Errorf("%w: %s resolves to loopback %s", ErrLocalhost, host, ip.String())
+			return nil, fmt.Errorf("%w: %s resolves to loopback %s", ErrLocalhost, host, ip.String())
 		}
 	}
 
-	return nil
+	return &ValidationResult{ResolvedIPs: ips, Host: host}, nil
 }
 
 // isLocalhost checks if a hostname is localhost or loopback.

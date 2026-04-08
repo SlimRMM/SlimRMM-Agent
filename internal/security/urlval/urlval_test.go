@@ -1,6 +1,7 @@
 package urlval
 
 import (
+	"errors"
 	"net"
 	"testing"
 )
@@ -179,7 +180,7 @@ func TestValidateWithDNS(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := v.ValidateWithDNS(tt.url)
+			_, err := v.ValidateWithDNS(tt.url)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateWithDNS(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
 			}
@@ -197,7 +198,7 @@ func TestValidateWithDNS_NoPrivateIPCheck(t *testing.T) {
 	v := New(cfg)
 
 	// With BlockPrivateIPs=false, private IPs should be allowed
-	err := v.ValidateWithDNS("https://192.168.1.1/file")
+	_, err := v.ValidateWithDNS("https://192.168.1.1/file")
 	if err != nil {
 		t.Errorf("private IP should be allowed when BlockPrivateIPs=false: %v", err)
 	}
@@ -300,6 +301,7 @@ func TestErrorTypes(t *testing.T) {
 		ErrPrivateIP,
 		ErrLocalhost,
 		ErrInvalidURL,
+		ErrDNSResolutionFailed,
 	}
 
 	for _, err := range errors {
@@ -403,5 +405,95 @@ func TestValidate_CaseInsensitiveHost(t *testing.T) {
 				t.Error("should block localhost regardless of case")
 			}
 		})
+	}
+}
+
+func TestValidateWithDNS_FailsClosedOnUnresolvableHost(t *testing.T) {
+	v := NewDefault()
+
+	// A hostname that cannot be resolved should fail closed (return an error),
+	// not silently pass validation.
+	_, err := v.ValidateWithDNS("https://this-domain-does-not-exist-xyz123abc.example/file")
+	if err == nil {
+		t.Error("ValidateWithDNS should fail closed when DNS resolution fails")
+	}
+	if !errors.Is(err, ErrDNSResolutionFailed) {
+		t.Errorf("expected ErrDNSResolutionFailed, got: %v", err)
+	}
+}
+
+func TestValidateWithDNS_ReturnsResolvedIPs(t *testing.T) {
+	v := NewDefault()
+
+	// example.com should resolve to public IPs
+	vr, err := v.ValidateWithDNS("https://example.com/file")
+	if err != nil {
+		t.Fatalf("ValidateWithDNS failed for example.com: %v", err)
+	}
+	if vr == nil {
+		t.Fatal("expected non-nil ValidationResult")
+	}
+	if len(vr.ResolvedIPs) == 0 {
+		t.Error("expected resolved IPs for example.com")
+	}
+	if vr.Host != "example.com" {
+		t.Errorf("expected Host=example.com, got %s", vr.Host)
+	}
+}
+
+func TestValidateWithDNS_DirectIPReturnsEmptyResolvedIPs(t *testing.T) {
+	v := NewDefault()
+
+	// A direct public IP should pass and return empty ResolvedIPs
+	vr, err := v.ValidateWithDNS("https://8.8.8.8/dns")
+	if err != nil {
+		t.Fatalf("ValidateWithDNS failed for direct IP: %v", err)
+	}
+	if len(vr.ResolvedIPs) != 0 {
+		t.Errorf("expected empty ResolvedIPs for direct IP, got %v", vr.ResolvedIPs)
+	}
+}
+
+func TestValidationResult_PinnedTransport(t *testing.T) {
+	// Test that PinnedTransport returns a non-nil transport
+	vr := &ValidationResult{
+		ResolvedIPs: []net.IP{net.ParseIP("93.184.216.34")},
+		Host:        "example.com",
+	}
+
+	transport := vr.PinnedTransport()
+	if transport == nil {
+		t.Fatal("PinnedTransport returned nil")
+	}
+	if transport.DialContext == nil {
+		t.Error("PinnedTransport should set DialContext for resolved IPs")
+	}
+}
+
+func TestValidationResult_PinnedTransport_NoIPs(t *testing.T) {
+	// When no IPs are resolved (direct IP URL), transport should use default dialing
+	vr := &ValidationResult{Host: "8.8.8.8"}
+
+	transport := vr.PinnedTransport()
+	if transport == nil {
+		t.Fatal("PinnedTransport returned nil")
+	}
+	if transport.DialContext != nil {
+		t.Error("PinnedTransport should not set DialContext when no resolved IPs")
+	}
+}
+
+func TestValidationResult_PinnedHTTPClient(t *testing.T) {
+	vr := &ValidationResult{
+		ResolvedIPs: []net.IP{net.ParseIP("93.184.216.34")},
+		Host:        "example.com",
+	}
+
+	client := vr.PinnedHTTPClient(30 * 1e9) // 30 seconds
+	if client == nil {
+		t.Fatal("PinnedHTTPClient returned nil")
+	}
+	if client.Transport == nil {
+		t.Error("PinnedHTTPClient should set Transport")
 	}
 }
