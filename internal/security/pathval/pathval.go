@@ -163,22 +163,19 @@ func (v *Validator) Validate(path string) error {
 	// Check forbidden paths first
 	for _, forbidden := range v.forbiddenPaths {
 		if strings.HasPrefix(cleanPath, forbidden) {
-			return ErrForbiddenPath
+			if len(cleanPath) == len(forbidden) || cleanPath[len(forbidden)] == '/' || cleanPath[len(forbidden)] == filepath.Separator {
+				return ErrForbiddenPath
+			}
 		}
 	}
 
-	// Check forbidden patterns in filename and path components
-	pathLower := strings.ToLower(cleanPath)
+	// Check forbidden patterns in individual path components
 	for _, pattern := range v.forbiddenPatterns {
 		patternLower := strings.ToLower(pattern)
-		// Check if pattern appears in the path
-		if strings.Contains(pathLower, patternLower) {
-			return ErrForbiddenPath
-		}
-		// Also check the base filename
-		baseLower := strings.ToLower(filepath.Base(cleanPath))
-		if strings.Contains(baseLower, patternLower) {
-			return ErrForbiddenPath
+		for _, component := range strings.Split(cleanPath, string(filepath.Separator)) {
+			if strings.Contains(strings.ToLower(component), patternLower) {
+				return ErrForbiddenPath
+			}
 		}
 	}
 
