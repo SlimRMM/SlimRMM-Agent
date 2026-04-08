@@ -278,11 +278,68 @@ func (s *DefaultComplianceService) runRegistryCheck(ctx context.Context, check *
 	return result, nil
 }
 
+// validateCommand validates a command string for security before execution.
+// SECURITY: Prevents execution of arbitrary or dangerous commands.
+func validateCommand(cmd string) error {
+	cmd = strings.TrimSpace(cmd)
+
+	// Reject empty commands
+	if cmd == "" {
+		return fmt.Errorf("command must not be empty")
+	}
+
+	// SECURITY: Limit command length to prevent resource exhaustion
+	if len(cmd) > 2048 {
+		return fmt.Errorf("command exceeds maximum allowed length of 2048 characters")
+	}
+
+	// SECURITY: Reject shell metacharacters to prevent command chaining/injection
+	dangerousChars := []string{";", "|", "&&", "||", "$", "`", ">", "<", "(", ")"}
+	for _, ch := range dangerousChars {
+		if strings.Contains(cmd, ch) {
+			return fmt.Errorf("command contains forbidden shell metacharacter: %s", ch)
+		}
+	}
+
+	// SECURITY: Check base command against allowlist of safe compliance check commands
+	allowedCommands := []string{
+		"systemctl", "sysctl", "ufw", "iptables", "auditctl",
+		"getenforce", "sestatus", "cat", "grep", "ls", "stat",
+		"test", "dpkg", "rpm", "reg", "wmic",
+		"powershell -Command Get-", "defaults",
+	}
+
+	// Extract the base command (first token, or first two tokens for powershell)
+	allowed := false
+	for _, ac := range allowedCommands {
+		if strings.HasPrefix(cmd, ac+" ") || cmd == ac {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return fmt.Errorf("command %q is not in the list of allowed compliance check commands", strings.Fields(cmd)[0])
+	}
+
+	return nil
+}
+
 // runCommandCheck executes a command-based compliance check.
 func (s *DefaultComplianceService) runCommandCheck(ctx context.Context, check *Check, result *CheckResult) (*CheckResult, error) {
 	if s.commandRunner == nil {
 		result.Status = "error"
 		result.Message = "command runner not available"
+		return result, nil
+	}
+
+	// SECURITY: Validate command before execution
+	if err := validateCommand(check.Command); err != nil {
+		s.logger.Warn("compliance command validation failed",
+			"check_id", check.ID,
+			"error", err,
+		)
+		result.Status = "error"
+		result.Message = fmt.Sprintf("command validation failed: %v", err)
 		return result, nil
 	}
 
