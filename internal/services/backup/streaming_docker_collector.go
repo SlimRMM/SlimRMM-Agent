@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
 )
 
@@ -543,13 +542,12 @@ func (c *StreamingDockerComposeCollector) CollectStream(ctx context.Context, con
 		return 0, fmt.Errorf("reading compose file: %w", err)
 	}
 
-	// Read .env file if exists
-	envPath := filepath.Join(filepath.Dir(config.ComposePath), ".env")
-	envData, _ := os.ReadFile(envPath) // Ignore error if not exists
+	// Skip .env file — it often contains secrets (DB passwords, API keys)
+	c.logger.Info("skipping .env file in backup for security")
 
 	// Get compose project info
 	psOutput, _ := exec.CommandContext(ctx, "docker", "compose", "-f", config.ComposePath, "ps", "--format", "json").Output()
-	configOutput, _ := exec.CommandContext(ctx, "docker", "compose", "-f", config.ComposePath, "config").Output()
+	configOutput, _ := exec.CommandContext(ctx, "docker", "compose", "-f", config.ComposePath, "config", "--no-interpolate").Output()
 
 	// Create metadata
 	metadata := map[string]interface{}{
@@ -559,7 +557,7 @@ func (c *StreamingDockerComposeCollector) CollectStream(ctx context.Context, con
 		"agent_uuid":    config.AgentUUID,
 		"version":       2,
 		"compose_file":  string(composeData),
-		"env_file":      string(envData),
+		"env_file":      "",
 		"ps_output":     string(psOutput),
 		"config_output": string(configOutput),
 	}
