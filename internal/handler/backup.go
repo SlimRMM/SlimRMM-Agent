@@ -1516,7 +1516,8 @@ func (h *Handler) downloadBackupData(ctx context.Context, downloadURL string) ([
 		return nil, fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	return io.ReadAll(resp.Body)
+	// SECURITY: Limit response body size to prevent OOM on large/malicious responses (5GB)
+	return io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024*1024))
 }
 
 // restoreBackupData restores data based on backup type.

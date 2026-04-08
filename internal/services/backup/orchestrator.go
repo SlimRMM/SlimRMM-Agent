@@ -353,7 +353,8 @@ func (o *Orchestrator) downloadData(ctx context.Context, url string) ([]byte, er
 		return nil, fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	return io.ReadAll(resp.Body)
+	// SECURITY: Limit response body size to prevent OOM on large/malicious responses (5GB)
+	return io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024*1024))
 }
 
 // uploadData uploads data to the specified URL.
@@ -807,7 +808,8 @@ func (o *RestoreOrchestrator) downloadData(ctx context.Context, url string) ([]b
 		return nil, fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	// SECURITY: Limit response body size to prevent OOM on large/malicious responses (5GB)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024*1024))
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
