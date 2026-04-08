@@ -29,6 +29,13 @@ Group={{.Group}}
 Environment="{{$key}}={{$value}}"
 {{end}}
 
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+
 # Logging - use standard log location
 StandardOutput=append:/var/log/slimrmm/agent.log
 StandardError=append:/var/log/slimrmm/agent.log
@@ -69,7 +76,7 @@ func (m *SystemdManager) InstallWithConfig(cfg *ServiceConfig) error {
 		return fmt.Errorf("parsing template: %w", err)
 	}
 
-	f, err := os.Create(unitPath)
+	f, err := os.OpenFile(unitPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("creating unit file: %w", err)
 	}

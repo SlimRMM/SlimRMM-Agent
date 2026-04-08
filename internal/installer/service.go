@@ -34,6 +34,11 @@ Restart=always
 RestartSec=10
 User=root
 Environment="SLIMRMM_SERVICE=1"
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
 
 [Install]
 WantedBy=multi-user.target
