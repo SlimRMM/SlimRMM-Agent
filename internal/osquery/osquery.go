@@ -580,7 +580,18 @@ func installMacOS(ctx context.Context, version string) error {
 
 	// Download and install PKG directly with dynamic version
 	pkgURL := fmt.Sprintf("https://pkg.osquery.io/darwin/osquery-%s.pkg", version)
-	tmpPkg := "/tmp/osquery.pkg"
+
+	tmpFile, err := os.CreateTemp("", "osquery-*.pkg")
+	if err != nil {
+		return fmt.Errorf("creating temp file for osquery pkg: %w", err)
+	}
+	tmpPkg := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPkg)
+
+	if err := os.Chmod(tmpPkg, 0600); err != nil {
+		return fmt.Errorf("setting temp file permissions: %w", err)
+	}
 
 	slog.Info("downloading osquery PKG", "url", pkgURL)
 
@@ -598,12 +609,8 @@ func installMacOS(ctx context.Context, version string) error {
 	installCmd.Stderr = &stderr
 
 	if err := installCmd.Run(); err != nil {
-		os.Remove(tmpPkg) // Cleanup on failure
 		return fmt.Errorf("installing osquery pkg: %w (%s)", err, stderr.String())
 	}
-
-	// Cleanup
-	os.Remove(tmpPkg)
 
 	return nil
 }
@@ -952,7 +959,18 @@ func installLinuxDirect(ctx context.Context, version string) error {
 	if _, err := exec.LookPath("dpkg"); err == nil {
 		// Debian/Ubuntu - download and install .deb directly
 		debURL := fmt.Sprintf("https://pkg.osquery.io/deb/osquery_%s-1.linux_%s.deb", version, debArch)
-		tmpDeb := "/tmp/osquery.deb"
+
+		tmpFile, err := os.CreateTemp("", "osquery-*.deb")
+		if err != nil {
+			return fmt.Errorf("creating temp file for osquery deb: %w", err)
+		}
+		tmpDeb := tmpFile.Name()
+		tmpFile.Close()
+		defer os.Remove(tmpDeb)
+
+		if err := os.Chmod(tmpDeb, 0600); err != nil {
+			return fmt.Errorf("setting temp file permissions: %w", err)
+		}
 
 		slog.Info("downloading osquery deb", "url", debURL)
 		downloadCmd := exec.CommandContext(ctx, "curl", "-fsSL", "-o", tmpDeb, debURL)
@@ -961,12 +979,22 @@ func installLinuxDirect(ctx context.Context, version string) error {
 		}
 
 		installCmd = exec.CommandContext(ctx, "dpkg", "-i", tmpDeb)
-		defer os.Remove(tmpDeb)
 
 	} else if _, err := exec.LookPath("rpm"); err == nil {
 		// RHEL/CentOS/Fedora - download and install .rpm directly
 		rpmURL := fmt.Sprintf("https://pkg.osquery.io/rpm/osquery-%s-1.linux.%s.rpm", version, rpmArch)
-		tmpRpm := "/tmp/osquery.rpm"
+
+		tmpFile, err := os.CreateTemp("", "osquery-*.rpm")
+		if err != nil {
+			return fmt.Errorf("creating temp file for osquery rpm: %w", err)
+		}
+		tmpRpm := tmpFile.Name()
+		tmpFile.Close()
+		defer os.Remove(tmpRpm)
+
+		if err := os.Chmod(tmpRpm, 0600); err != nil {
+			return fmt.Errorf("setting temp file permissions: %w", err)
+		}
 
 		slog.Info("downloading osquery rpm", "url", rpmURL)
 		downloadCmd := exec.CommandContext(ctx, "curl", "-fsSL", "-o", tmpRpm, rpmURL)
@@ -976,7 +1004,6 @@ func installLinuxDirect(ctx context.Context, version string) error {
 
 		// Use rpm -U (upgrade) to handle both install and upgrade
 		installCmd = exec.CommandContext(ctx, "rpm", "-U", "--force", tmpRpm)
-		defer os.Remove(tmpRpm)
 
 	} else {
 		return fmt.Errorf("no supported package installer found (dpkg or rpm)")
