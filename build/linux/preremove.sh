@@ -8,7 +8,7 @@ set -e
 
 CONFIG_DIR="/var/lib/slimrmm"
 CONFIG_FILE="$CONFIG_DIR/.slimrmm_config.json"
-BACKUP_DIR="/tmp/slimrmm-upgrade-backup"
+BACKUP_DIR="/var/lib/slimrmm/upgrade-backup"
 BINARY_PATH="/usr/local/bin/slimrmm-agent"
 SERVICE_FILE="/etc/systemd/system/slimrmm-agent.service"
 
@@ -51,6 +51,7 @@ if is_upgrade "$1"; then
 
     # Backup configuration files
     mkdir -p "$BACKUP_DIR"
+    chmod 700 "$BACKUP_DIR"
     if [ -f "$CONFIG_FILE" ]; then
         cp -p "$CONFIG_FILE" "$BACKUP_DIR/"
         echo "Configuration backed up to $BACKUP_DIR"

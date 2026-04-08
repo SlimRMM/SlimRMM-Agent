@@ -13,7 +13,7 @@ set -e
 
 CONFIG_DIR="/var/lib/slimrmm"
 CONFIG_FILE="${CONFIG_DIR}/.slimrmm_config.json"
-BACKUP_DIR="/tmp/slimrmm-upgrade-backup"
+BACKUP_DIR="/var/lib/slimrmm/upgrade-backup"
 BINARY="/usr/local/bin/slimrmm-agent"
 
 echo "Installing SlimRMM Agent..."
