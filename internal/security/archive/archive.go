@@ -185,6 +185,17 @@ func CreateZip(srcPath, zipPath string) error {
 			return err
 		}
 
+		// Skip symlinks to prevent data exfiltration via symlink traversal.
+		// filepath.Walk resolves symlinks before calling the callback, so
+		// info.Mode() won't show ModeSymlink. Use os.Lstat instead.
+		lstInfo, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if lstInfo.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+
 		// Create header
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
