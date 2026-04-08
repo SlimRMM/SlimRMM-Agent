@@ -292,14 +292,14 @@ func registerAgent(ctx context.Context, serverURL string, enrollmentToken string
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		// Try legacy endpoint as fallback
-		return registerAgentLegacy(ctx, serverURL, reqBody, client, logger)
+		return registerAgentLegacy(ctx, serverURL, enrollmentToken, reqBody, client, logger)
 	}
 	defer resp.Body.Close()
 
 	// If enrollment endpoint returns 404, try legacy
 	if resp.StatusCode == http.StatusNotFound {
 		logger.Debug("enrollment endpoint not found, trying legacy registration")
-		return registerAgentLegacy(ctx, serverURL, reqBody, client, logger)
+		return registerAgentLegacy(ctx, serverURL, enrollmentToken, reqBody, client, logger)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -324,13 +324,16 @@ func registerAgent(ctx context.Context, serverURL string, enrollmentToken string
 }
 
 // registerAgentLegacy uses the old /api/v1/agents/register endpoint.
-func registerAgentLegacy(ctx context.Context, serverURL string, reqBody []byte, client *http.Client, logger *slog.Logger) (*RegistrationResponse, error) {
+func registerAgentLegacy(ctx context.Context, serverURL string, enrollmentToken string, reqBody []byte, client *http.Client, logger *slog.Logger) (*RegistrationResponse, error) {
 	url := serverURL + "/api/v1/agents/register"
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if enrollmentToken != "" {
+		httpReq.Header.Set("X-Registration-Key", enrollmentToken)
+	}
 
 	logger.Debug("sending legacy registration request", "url", url)
 
