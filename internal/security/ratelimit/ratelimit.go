@@ -150,11 +150,7 @@ func (al *ActionLimiter) AllowCommand() bool {
 	al.mu.RLock()
 	defer al.mu.RUnlock()
 
-	// Must pass both global and command limits
-	if !al.limiters["global"].Allow() {
-		return false
-	}
-	return al.limiters["command"].Allow()
+	return al.allowAction("command")
 }
 
 // AllowTerminal checks terminal rate limit.
@@ -162,10 +158,7 @@ func (al *ActionLimiter) AllowTerminal() bool {
 	al.mu.RLock()
 	defer al.mu.RUnlock()
 
-	if !al.limiters["global"].Allow() {
-		return false
-	}
-	return al.limiters["terminal"].Allow()
+	return al.allowAction("terminal")
 }
 
 // AllowFileOp checks file operation rate limit.
@@ -173,10 +166,7 @@ func (al *ActionLimiter) AllowFileOp() bool {
 	al.mu.RLock()
 	defer al.mu.RUnlock()
 
-	if !al.limiters["global"].Allow() {
-		return false
-	}
-	return al.limiters["file"].Allow()
+	return al.allowAction("file")
 }
 
 // AllowUpload checks upload rate limit.
@@ -184,10 +174,17 @@ func (al *ActionLimiter) AllowUpload() bool {
 	al.mu.RLock()
 	defer al.mu.RUnlock()
 
-	if !al.limiters["global"].Allow() {
+	return al.allowAction("upload")
+}
+
+// allowAction checks the per-action limiter first (more restrictive), then
+// only consumes a global token if the action is permitted. This avoids
+// wasting global tokens when per-action limits are already exhausted.
+func (al *ActionLimiter) allowAction(action string) bool {
+	if !al.limiters[action].Allow() {
 		return false
 	}
-	return al.limiters["upload"].Allow()
+	return al.limiters["global"].Allow()
 }
 
 // Allow checks rate limit for a specific action type.
