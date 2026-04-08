@@ -25,6 +25,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/proxmox"
 "github.com/slimrmm/slimrmm-agent/internal/security/mtls"
+	"github.com/slimrmm/slimrmm-agent/internal/security/urlval"
 	"github.com/slimrmm/slimrmm-agent/internal/selfhealing"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
@@ -46,13 +47,16 @@ Commands:
 
 Options:
   -s, --server URL     Server URL (required for install)
-  -k, --key TOKEN      Enrollment token for auto-approval (optional)
+  -k, --key TOKEN      Enrollment token for auto-approval (prefer SLIMRMM_TOKEN env var)
   -d, --debug          Enable debug logging
   -v, --version        Show version information
   -h, --help           Show this help message
 
 Examples:
-  # Install with enrollment token (recommended)
+  # Install with enrollment token via environment variable (recommended)
+  sudo SLIMRMM_TOKEN=YOUR_TOKEN slimrmm-agent install -s https://rmm.example.com
+
+  # Install with enrollment token via CLI flag (less secure - visible in ps)
   sudo slimrmm-agent install -s https://rmm.example.com -k YOUR_TOKEN
 
   # Install without token (requires manual approval)
@@ -146,6 +150,9 @@ type arguments struct {
 func parseArgs(args []string) arguments {
 	result := arguments{}
 
+	var tokenFromCLI string
+	var tokenArgIndex int = -1
+
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
@@ -156,7 +163,8 @@ func parseArgs(args []string) arguments {
 			}
 		case "-k", "--key":
 			if i+1 < len(args) {
-				result.key = args[i+1]
+				tokenFromCLI = args[i+1]
+				tokenArgIndex = i + 1
 				i++
 			}
 		case "-d", "--debug":
@@ -185,8 +193,33 @@ func parseArgs(args []string) arguments {
 	if result.server == "" {
 		result.server = os.Getenv("SLIMRMM_SERVER")
 	}
-	if result.key == "" {
+
+	// Resolve enrollment token: prefer env var over CLI arg for security.
+	// If the CLI value starts with "env:" or is empty, read from SLIMRMM_TOKEN.
+	if tokenFromCLI == "" || strings.HasPrefix(tokenFromCLI, "env:") {
 		result.key = os.Getenv("SLIMRMM_TOKEN")
+	} else {
+		result.key = tokenFromCLI
+	}
+
+	// Clear the environment variable to minimise exposure window
+	os.Unsetenv("SLIMRMM_TOKEN")
+
+	// Warn when token is supplied via CLI (visible in ps / /proc/cmdline)
+	if tokenFromCLI != "" && !strings.HasPrefix(tokenFromCLI, "env:") {
+		// Logger is not set up yet at parse time, so we use slog default
+		slog.Warn("enrollment token provided via command line - consider using SLIMRMM_TOKEN environment variable instead for security")
+	}
+
+	// Obscure the token value in os.Args so it no longer appears in
+	// /proc/<pid>/cmdline on Linux or in `ps` output.
+	if tokenArgIndex >= 0 && tokenArgIndex < len(os.Args)-1 {
+		// os.Args indices are offset by 1 compared to the args slice
+		// because os.Args[0] is the program name.
+		osArgsIdx := tokenArgIndex + 1
+		if osArgsIdx < len(os.Args) {
+			os.Args[osArgsIdx] = "***"
+		}
 	}
 
 	return result
@@ -215,6 +248,12 @@ func cmdInstall(args arguments, paths config.Paths, logger *slog.Logger) int {
 			args.server = existingCfg.GetServer()
 		}
 
+		// Validate server URL before registration
+		if err := validateServerURL(args.server, logger); err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid server URL: %v\n", err)
+			return 1
+		}
+
 		fmt.Println("Re-registering to obtain new certificates...")
 		_, err = installer.RegisterWithExistingUUID(args.server, args.key, paths, existingCfg.GetUUID())
 		if err != nil {
@@ -238,6 +277,12 @@ func cmdInstall(args arguments, paths config.Paths, logger *slog.Logger) int {
 		fmt.Fprintln(os.Stderr, "Error: Server URL required for fresh installation")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Usage: slimrmm-agent install -s https://your-server.com [-k TOKEN]")
+		return 1
+	}
+
+	// Validate server URL before proceeding
+	if err := validateServerURL(args.server, logger); err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid server URL: %v\n", err)
 		return 1
 	}
 
@@ -295,6 +340,23 @@ func cmdInstall(args arguments, paths config.Paths, logger *slog.Logger) int {
 	fmt.Println("\n✓ Installation complete")
 	fmt.Println("  Agent is now running and connected to the server")
 	return 0
+}
+
+// validateServerURL checks that the server URL is safe and uses HTTPS.
+func validateServerURL(serverURL string, logger *slog.Logger) error {
+	validator := urlval.NewDefault()
+	if err := validator.Validate(serverURL); err != nil {
+		logger.Error("invalid server URL", "url", serverURL, "error", err)
+		return fmt.Errorf("invalid server URL: %w", err)
+	}
+
+	// Enforce HTTPS to prevent MitM attacks
+	if !strings.HasPrefix(strings.ToLower(serverURL), "https://") {
+		logger.Error("server URL must use HTTPS", "url", serverURL)
+		return fmt.Errorf("server URL must use https:// scheme (got %s)", serverURL)
+	}
+
+	return nil
 }
 
 // cmdUninstall removes the agent
