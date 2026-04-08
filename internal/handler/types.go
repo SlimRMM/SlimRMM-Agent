@@ -118,6 +118,7 @@ type HeartbeatMessage struct {
 	Docker             *DockerInfo                `json:"docker,omitempty"`
 	Winget             *HeartbeatWinget           `json:"winget,omitempty"`
 	BackupCapabilities *backup.BackupCapabilities `json:"backup_capabilities,omitempty"`
+	DroppedMessages    int64                      `json:"dropped_messages,omitempty"`
 }
 
 // HeartbeatWinget contains Windows Package Manager (winget) information.

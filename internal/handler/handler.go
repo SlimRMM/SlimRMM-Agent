@@ -142,6 +142,10 @@ type Handler struct {
 
 	// Event log collection manager
 	eventLogManager *eventlog.Manager
+
+	// Counter for messages dropped when the send channel is full.
+	// Accessed atomically; included in heartbeat data for observability.
+	droppedMessages int64
 }
 
 // New creates a new Handler.
@@ -587,6 +591,7 @@ func (h *Handler) Send(resp Response) {
 	select {
 	case h.sendCh <- data:
 	default:
+		atomic.AddInt64(&h.droppedMessages, 1)
 		h.logger.Warn("send channel full, dropping message")
 	}
 }
@@ -605,6 +610,7 @@ func (h *Handler) SendRaw(msg interface{}) {
 	select {
 	case h.sendCh <- data:
 	default:
+		atomic.AddInt64(&h.droppedMessages, 1)
 		h.logger.Warn("send channel full, dropping message")
 	}
 }

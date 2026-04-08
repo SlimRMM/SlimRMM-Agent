@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/monitor"
@@ -60,8 +61,9 @@ func (h *Handler) buildBaseHeartbeat(ctx context.Context, stats *monitor.Stats) 
 			ProcessCount:  stats.ProcessCount,
 			Timezone:      stats.Timezone,
 		},
-		ExternalIP:   stats.ExternalIP,
-		SerialNumber: h.getSerialNumber(ctx),
+		ExternalIP:      stats.ExternalIP,
+		SerialNumber:    h.getSerialNumber(ctx),
+		DroppedMessages: atomic.LoadInt64(&h.droppedMessages),
 	}
 }
 

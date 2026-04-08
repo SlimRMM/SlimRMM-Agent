@@ -254,7 +254,7 @@ func (h *Handler) handleMessage(ctx context.Context, data []byte) {
 	case <-handlerCtx.Done():
 		if handlerCtx.Err() == context.DeadlineExceeded {
 			err = fmt.Errorf("handler timeout after %s for action %q", handlerTimeout, msg.Action)
-			h.logger.Warn("handler timeout",
+			h.logger.Warn("handler timeout, goroutine may be leaked",
 				"action", msg.Action,
 				"request_id", msg.RequestID,
 				"timeout", handlerTimeout,
