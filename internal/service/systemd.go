@@ -68,6 +68,9 @@ func (m *SystemdManager) Install(name, displayName, description, execPath string
 }
 
 // InstallWithConfig installs a systemd service with full configuration.
+// Security: text/template is used intentionally here because ServiceConfig
+// fields are validated by regex before reaching this point, which serves as
+// the security boundary against template injection.
 func (m *SystemdManager) InstallWithConfig(cfg *ServiceConfig) error {
 	unitPath := filepath.Join(systemdUnitPath, cfg.Name+".service")
 

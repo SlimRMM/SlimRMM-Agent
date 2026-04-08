@@ -244,6 +244,20 @@ func (m *TerminalManager) StopTerminal(id string) error {
 	return nil
 }
 
+// StopAll stops all terminal sessions.
+func (m *TerminalManager) StopAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, term := range m.terminals {
+		term.mu.Lock()
+		if term.running && term.cpty != nil {
+			term.cpty.Close()
+		}
+		term.mu.Unlock()
+		delete(m.terminals, id)
+	}
+}
+
 // IsRunning checks if a terminal is running.
 func (m *TerminalManager) IsRunning(id string) bool {
 	m.mu.RLock()

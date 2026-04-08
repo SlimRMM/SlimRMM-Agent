@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"text/template"
+	"html/template"
 )
 
 const launchdPlistPath = "/Library/LaunchDaemons"
