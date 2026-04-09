@@ -81,8 +81,10 @@ var longRunningActions = map[string]bool{
 // actionToResponseAction maps request action names to their response action names.
 // This is needed because the backend expects specific action names for certain responses.
 var actionToResponseAction = map[string]string{
-	"pull_logs":           "logs_result",
-	"create_agent_backup": "backup_result",
+	"pull_logs":                  "logs_result",
+	"create_agent_backup":        "backup_result",
+	"install_remote_desktop":     "install_remote_desktop_result",
+	"uninstall_remote_desktop":   "uninstall_remote_desktop_result",
 }
 
 // Message represents a WebSocket message from the backend.

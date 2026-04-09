@@ -23,10 +23,16 @@ func (h *Handler) registerRemoteDesktopHandlers() {
 
 // installRemoteDesktopRequest is the payload for install_remote_desktop.
 type installRemoteDesktopRequest struct {
+	ExecutionID string `json:"execution_id,omitempty"`
 	RelayServer string `json:"relay_server"`
 	IDServer    string `json:"id_server"`
 	PublicKey   string `json:"public_key"`
 	Password    string `json:"password,omitempty"`
+}
+
+// uninstallRemoteDesktopRequest is the payload for uninstall_remote_desktop.
+type uninstallRemoteDesktopRequest struct {
+	ExecutionID string `json:"execution_id,omitempty"`
 }
 
 // handleInstallRemoteDesktop installs and configures RustDesk.
@@ -48,15 +54,27 @@ func (h *Handler) handleInstallRemoteDesktop(ctx context.Context, data json.RawM
 	}
 
 	if err := h.remoteDesktopService.Install(ctx, cfg); err != nil {
-		return nil, fmt.Errorf("installing remote desktop: %w", err)
+		return map[string]interface{}{
+			"execution_id": req.ExecutionID,
+			"success":      false,
+			"error":        fmt.Sprintf("installing remote desktop: %v", err),
+		}, fmt.Errorf("installing remote desktop: %w", err)
 	}
 
 	status, err := h.remoteDesktopService.GetStatus(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("getting remote desktop status after install: %w", err)
+		return map[string]interface{}{
+			"execution_id": req.ExecutionID,
+			"success":      false,
+			"error":        fmt.Sprintf("getting remote desktop status after install: %v", err),
+		}, fmt.Errorf("getting remote desktop status after install: %w", err)
 	}
 
-	return status, nil
+	return map[string]interface{}{
+		"execution_id": req.ExecutionID,
+		"success":      true,
+		"status":       status,
+	}, nil
 }
 
 // handleUninstallRemoteDesktop removes RustDesk from the system.
@@ -65,12 +83,24 @@ func (h *Handler) handleUninstallRemoteDesktop(ctx context.Context, data json.Ra
 		return nil, ErrMaintenanceActive
 	}
 
+	var req uninstallRemoteDesktopRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		// Non-fatal: execution_id is optional, continue with empty value.
+		req = uninstallRemoteDesktopRequest{}
+	}
+
 	if err := h.remoteDesktopService.Uninstall(ctx); err != nil {
-		return nil, fmt.Errorf("uninstalling remote desktop: %w", err)
+		return map[string]interface{}{
+			"execution_id": req.ExecutionID,
+			"success":      false,
+			"error":        fmt.Sprintf("uninstalling remote desktop: %v", err),
+		}, fmt.Errorf("uninstalling remote desktop: %w", err)
 	}
 
 	return map[string]interface{}{
-		"uninstalled": true,
+		"execution_id": req.ExecutionID,
+		"success":      true,
+		"uninstalled":  true,
 	}, nil
 }
 
