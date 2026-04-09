@@ -4,7 +4,9 @@ package remotedesktop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,9 +63,49 @@ func (s *Service) Install(ctx context.Context, cfg Config) error {
 	return nil
 }
 
+// getLatestVersion resolves the latest RustDesk release version from the
+// GitHub API. The returned string is the bare version number without a
+// leading "v" prefix (e.g. "1.3.8").
+func (s *Service) getLatestVersion(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://api.github.com/repos/rustdesk/rustdesk/releases/latest", nil)
+	if err != nil {
+		return "", fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetching latest release: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", fmt.Errorf("decoding release JSON: %w", err)
+	}
+
+	version := strings.TrimPrefix(release.TagName, "v")
+	if version == "" {
+		return "", fmt.Errorf("empty version in tag_name %q", release.TagName)
+	}
+	return version, nil
+}
+
 // downloadInstaller downloads the appropriate RustDesk installer for the
 // current platform and returns the path to the downloaded file.
 func (s *Service) downloadInstaller(ctx context.Context) (string, error) {
+	version, err := s.getLatestVersion(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolving latest rustdesk version: %w", err)
+	}
+
 	var (
 		ext      string
 		archPart string
@@ -91,14 +133,13 @@ func (s *Service) downloadInstaller(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("unsupported os: %s", runtime.GOOS)
 	}
 
-	// Build download URL from latest release.
-	// The actual URL will follow redirects from the GitHub releases page.
-	downloadURL := fmt.Sprintf("https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-%s", ext)
+	// Build download URL including the resolved version number.
+	downloadURL := fmt.Sprintf("https://github.com/rustdesk/rustdesk/releases/latest/download/rustdesk-%s-%s", version, ext)
 
 	tmpDir := os.TempDir()
 	destPath := filepath.Join(tmpDir, "rustdesk-installer-"+ext)
 
-	s.logger.Info("downloading rustdesk", "url", downloadURL, "dest", destPath)
+	s.logger.Info("downloading rustdesk", "url", downloadURL, "dest", destPath, "version", version)
 
 	client := agenthttp.NewClient(s.logger)
 	if err := client.DownloadToFile(ctx, downloadURL, destPath,
@@ -131,7 +172,7 @@ func (s *Service) installLinux(ctx context.Context, path string) error {
 		cmd = exec.CommandContext(ctx, "dpkg", "-i", path)
 	} else if strings.HasSuffix(path, ".rpm") {
 		s.logger.Info("installing rustdesk via rpm", "path", path)
-		cmd = exec.CommandContext(ctx, "rpm", "-i", path)
+		cmd = exec.CommandContext(ctx, "rpm", "-Uvh", path)
 	} else {
 		return fmt.Errorf("unsupported package format: %s", path)
 	}
@@ -207,7 +248,7 @@ func (s *Service) Configure(cfg Config) error {
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf("rendezvous_server = '%s'\n", cfg.IDServer))
 	if cfg.RelayServer != "" {
-		builder.WriteString(fmt.Sprintf("relay-server = '%s'\n", cfg.RelayServer))
+		builder.WriteString(fmt.Sprintf("relay_server = '%s'\n", cfg.RelayServer))
 	}
 	if cfg.PublicKey != "" {
 		builder.WriteString(fmt.Sprintf("key = '%s'\n", cfg.PublicKey))
@@ -302,6 +343,14 @@ func (s *Service) Uninstall(ctx context.Context) error {
 
 // uninstallLinux removes RustDesk via the system package manager.
 func (s *Service) uninstallLinux(ctx context.Context) error {
+	// Stop and disable the systemd service before removing the package.
+	if err := exec.CommandContext(ctx, "systemctl", "stop", "rustdesk").Run(); err != nil {
+		s.logger.Debug("systemctl stop rustdesk returned error (may not be running)", "error", err)
+	}
+	if err := exec.CommandContext(ctx, "systemctl", "disable", "rustdesk").Run(); err != nil {
+		s.logger.Debug("systemctl disable rustdesk returned error", "error", err)
+	}
+
 	// Try dpkg first, fall back to rpm.
 	dpkg := exec.CommandContext(ctx, "dpkg", "-r", "rustdesk")
 	if output, err := dpkg.CombinedOutput(); err != nil {
@@ -323,6 +372,11 @@ func (s *Service) uninstallMacOS(ctx context.Context) error {
 
 	if _, err := os.Stat(appPath); os.IsNotExist(err) {
 		return fmt.Errorf("rustdesk is not installed at %s", appPath)
+	}
+
+	// Kill the RustDesk process before removing the app bundle.
+	if err := exec.Command("pkill", "-x", "RustDesk").Run(); err != nil {
+		s.logger.Debug("pkill RustDesk returned error (may not be running)", "error", err)
 	}
 
 	if err := os.RemoveAll(appPath); err != nil {

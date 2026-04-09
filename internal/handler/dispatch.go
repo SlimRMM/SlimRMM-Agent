@@ -28,8 +28,9 @@ var mutatingActions = map[string]bool{
 	// Remote desktop actions
 	"install_remote_desktop":    true,
 	"uninstall_remote_desktop":  true,
-	"remote_desktop_connect":    true,
-	"remote_desktop_disconnect": true,
+	"remote_desktop_connect":         true,
+	"remote_desktop_disconnect":      true,
+	"remote_desktop_request_consent": true,
 }
 
 // rootLevelActions lists actions whose fields are at the root level of the JSON

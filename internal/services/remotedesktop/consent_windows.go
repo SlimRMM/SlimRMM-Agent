@@ -17,11 +17,14 @@ func (s *Service) requestConsentPlatform(ctx context.Context, requesterName stri
 
 	message := fmt.Sprintf("%s wants to connect via Remote Desktop. Allow?", requesterName)
 
+	// Escape single quotes to prevent PowerShell injection.
+	safeMessage := strings.ReplaceAll(message, "'", "''")
+
 	// Use PowerShell to show a message box.
 	script := fmt.Sprintf(
 		`Add-Type -AssemblyName PresentationFramework; `+
 			`[System.Windows.MessageBox]::Show('%s', 'Remote Desktop Request', 'YesNo', 'Question')`,
-		message,
+		safeMessage,
 	)
 
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
