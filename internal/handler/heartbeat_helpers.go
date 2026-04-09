@@ -175,6 +175,25 @@ func (h *Handler) addBackupCapabilities(ctx context.Context, heartbeat *Heartbea
 	}
 }
 
+// addRustDeskInfo adds RustDesk remote desktop info to heartbeat if installed.
+func (h *Handler) addRustDeskInfo(ctx context.Context, heartbeat *HeartbeatMessage) {
+	rdStatus, err := h.remoteDesktopService.GetStatus(ctx)
+	if err != nil {
+		h.logger.Debug("failed to get rustdesk status for heartbeat", "error", err)
+		return
+	}
+
+	if rdStatus == nil || !rdStatus.Installed {
+		return
+	}
+
+	heartbeat.RustDesk = &HeartbeatRustDesk{
+		Installed: rdStatus.Installed,
+		ID:        rdStatus.ID,
+		Version:   rdStatus.Version,
+	}
+}
+
 // addWingetInfo adds Winget info to heartbeat on Windows.
 func (h *Handler) addWingetInfo(ctx context.Context, heartbeat *HeartbeatMessage) {
 	if runtime.GOOS != "windows" {

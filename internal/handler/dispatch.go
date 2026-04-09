@@ -25,6 +25,11 @@ var mutatingActions = map[string]bool{
 	"chmod":           true,
 	"chown":           true,
 	"rename_entry":    true,
+	// Remote desktop actions
+	"install_remote_desktop":    true,
+	"uninstall_remote_desktop":  true,
+	"remote_desktop_connect":    true,
+	"remote_desktop_disconnect": true,
 }
 
 // rootLevelActions lists actions whose fields are at the root level of the JSON

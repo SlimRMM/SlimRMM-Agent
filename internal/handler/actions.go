@@ -190,6 +190,9 @@ func (h *Handler) registerHandlers() {
 
 	// Event log collection
 	h.handlers["event_log_config"] = h.handleEventLogConfig
+
+	// Remote desktop handlers (RustDesk)
+	h.registerRemoteDesktopHandlers()
 }
 
 // Command handlers

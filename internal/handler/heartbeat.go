@@ -188,6 +188,7 @@ func (h *Handler) sendHeartbeat(ctx context.Context) {
 	h.addDockerInfo(ctx, &heartbeat)
 	h.addWingetInfo(ctx, &heartbeat)
 	h.addBackupCapabilities(ctx, &heartbeat)
+	h.addRustDeskInfo(ctx, &heartbeat)
 
 	// Send heartbeat
 	h.SendRaw(heartbeat)

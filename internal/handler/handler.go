@@ -29,6 +29,7 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/services/compliance"
 	"github.com/slimrmm/slimrmm-agent/internal/services/models"
 	"github.com/slimrmm/slimrmm-agent/internal/services/process"
+	"github.com/slimrmm/slimrmm-agent/internal/services/remotedesktop"
 	"github.com/slimrmm/slimrmm-agent/internal/services/software"
 	"github.com/slimrmm/slimrmm-agent/internal/services/validation"
 	wingetservice "github.com/slimrmm/slimrmm-agent/internal/services/winget"
@@ -139,6 +140,9 @@ type Handler struct {
 
 	// Winget upgrade service for package upgrades
 	wingetUpgradeService *wingetservice.UpgradeService
+
+	// Remote desktop service for RustDesk management
+	remoteDesktopService *remotedesktop.Service
 
 	// Event log collection manager
 	eventLogManager *eventlog.Manager
@@ -279,6 +283,9 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 	// Initialize winget upgrade service
 	wingetUpgradeService := wingetservice.NewUpgradeService(logger)
 
+	// Initialize remote desktop service
+	remoteDesktopService := remotedesktop.New(logger)
+
 	h := &Handler{
 		cfg:                        cfg,
 		paths:                      paths,
@@ -312,6 +319,7 @@ func New(cfg *config.Config, paths config.Paths, tlsConfig *tls.Config, logger *
 		streamingOrchestrator:      streamingOrchestrator,
 		streamingCollectorRegistry: streamingCollectorRegistry,
 		wingetUpgradeService:       wingetUpgradeService,
+		remoteDesktopService:       remoteDesktopService,
 	}
 
 	// Initialize event log collection manager

@@ -74,6 +74,8 @@ var longRunningActions = map[string]bool{
 	"zip_entry":                     true,
 	"unzip_entry":                   true,
 	"run_compliance_check":          true,
+	"install_remote_desktop":        true,
+	"uninstall_remote_desktop":      true,
 }
 
 // actionToResponseAction maps request action names to their response action names.
@@ -118,7 +120,15 @@ type HeartbeatMessage struct {
 	Docker             *DockerInfo                `json:"docker,omitempty"`
 	Winget             *HeartbeatWinget           `json:"winget,omitempty"`
 	BackupCapabilities *backup.BackupCapabilities `json:"backup_capabilities,omitempty"`
+	RustDesk           *HeartbeatRustDesk         `json:"rustdesk,omitempty"`
 	DroppedMessages    int64                      `json:"dropped_messages,omitempty"`
+}
+
+// HeartbeatRustDesk contains RustDesk remote desktop information.
+type HeartbeatRustDesk struct {
+	Installed bool   `json:"installed"`
+	ID        string `json:"id,omitempty"`
+	Version   string `json:"version,omitempty"`
 }
 
 // HeartbeatWinget contains Windows Package Manager (winget) information.
