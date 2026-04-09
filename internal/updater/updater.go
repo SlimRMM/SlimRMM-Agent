@@ -562,6 +562,7 @@ func (u *Updater) backupBinary(backupPath string) error {
 var allowedDownloadHosts = []string{
 	"https://github.com/",
 	"https://objects.githubusercontent.com/",
+	"https://release-assets.githubusercontent.com/",
 }
 
 // isAllowedDownloadURL validates that a URL starts with an allowed prefix.
