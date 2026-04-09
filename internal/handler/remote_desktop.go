@@ -114,8 +114,19 @@ func (h *Handler) handleGetRemoteDesktopStatus(ctx context.Context, data json.Ra
 	return status, nil
 }
 
-// handleRemoteDesktopConnect ensures RustDesk is running and returns connection info.
+// remoteDesktopConnectRequest is the payload for remote_desktop_connect.
+type remoteDesktopConnectRequest struct {
+	Password string `json:"password"`
+}
+
+// handleRemoteDesktopConnect sets the one-time password, ensures RustDesk is
+// running, and returns connection info.
 func (h *Handler) handleRemoteDesktopConnect(ctx context.Context, data json.RawMessage) (interface{}, error) {
+	req, err := unmarshalRequest[remoteDesktopConnectRequest](data)
+	if err != nil {
+		return nil, err
+	}
+
 	status, err := h.remoteDesktopService.GetStatus(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("getting remote desktop status: %w", err)
@@ -129,9 +140,17 @@ func (h *Handler) handleRemoteDesktopConnect(ctx context.Context, data json.RawM
 		return nil, fmt.Errorf("remote desktop service is not running")
 	}
 
+	// Set the one-time password provided by the backend.
+	if req.Password != "" {
+		if err := h.remoteDesktopService.SetPassword(req.Password); err != nil {
+			return nil, fmt.Errorf("setting remote desktop password: %w", err)
+		}
+	}
+
 	result := remotedesktop.ConnectResult{
-		ID:     status.ID,
-		Status: *status,
+		ID:       status.ID,
+		Password: req.Password,
+		Status:   *status,
 	}
 
 	return result, nil
