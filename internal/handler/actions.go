@@ -2070,9 +2070,23 @@ func (h *Handler) handleRunComplianceCheck(ctx context.Context, data json.RawMes
 		"check_count", len(req.Checks),
 	)
 
-	// Convert request to service format
-	serviceChecks := make([]compliance.Check, 0, len(req.Checks))
+	// Filter checks by OS before execution
+	var osFilteredChecks []complianceCheck
 	for _, c := range req.Checks {
+		// Skip registry checks on non-Windows
+		if c.CheckType == "registry" && runtime.GOOS != "windows" {
+			continue
+		}
+		// Skip plist checks on non-macOS
+		if c.CheckType == "plist" && runtime.GOOS != "darwin" {
+			continue
+		}
+		osFilteredChecks = append(osFilteredChecks, c)
+	}
+
+	// Convert request to service format
+	serviceChecks := make([]compliance.Check, 0, len(osFilteredChecks))
+	for _, c := range osFilteredChecks {
 		serviceChecks = append(serviceChecks, compliance.Check{
 			ID:             c.CheckID,
 			Name:           c.CisID,

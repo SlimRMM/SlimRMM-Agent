@@ -90,6 +90,14 @@ func (s *DefaultComplianceService) RunPolicyCheck(ctx context.Context, req *Poli
 			}
 		}
 
+		if checkResult.Status == "error" {
+			s.logger.Warn("compliance check failed",
+				"check_id", check.ID,
+				"check_type", check.Type,
+				"error", checkResult.Message,
+			)
+		}
+
 		result.Results = append(result.Results, *checkResult)
 		result.TotalChecks++
 
