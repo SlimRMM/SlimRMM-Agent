@@ -24,8 +24,9 @@ import (
 	"github.com/slimrmm/slimrmm-agent/internal/logging"
 	"github.com/slimrmm/slimrmm-agent/internal/osquery"
 	"github.com/slimrmm/slimrmm-agent/internal/proxmox"
-"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
+	"github.com/slimrmm/slimrmm-agent/internal/security/mtls"
 	"github.com/slimrmm/slimrmm-agent/internal/security/urlval"
+	"github.com/slimrmm/slimrmm-agent/internal/services/remotedesktop"
 	"github.com/slimrmm/slimrmm-agent/internal/selfhealing"
 	"github.com/slimrmm/slimrmm-agent/internal/service"
 	"github.com/slimrmm/slimrmm-agent/internal/updater"
@@ -43,6 +44,7 @@ Commands:
   info        Show agent status and configuration (alias: status)
   status      Show agent status and configuration (alias: info)
   update      Check for and install updates
+  version     Show version information
   run         Run the agent in foreground (for debugging)
 
 Options:
@@ -112,6 +114,9 @@ func main() {
 		exitCode = cmdUninstall(paths, logger)
 	case "info", "status":
 		exitCode = cmdStatus(paths)
+	case "version":
+		fmt.Println(version.Get().String())
+		exitCode = 0
 	case "update":
 		exitCode = cmdUpdate(logger)
 	case "run":
@@ -173,7 +178,7 @@ func parseArgs(args []string) arguments {
 			result.version = true
 		case "-h", "--help":
 			result.help = true
-		case "install", "uninstall", "status", "info", "update", "run":
+		case "install", "uninstall", "status", "info", "update", "run", "version":
 			result.command = arg
 		default:
 			// Check for legacy flags for backwards compatibility
@@ -512,6 +517,24 @@ func cmdStatus(paths config.Paths) int {
 		}
 	}
 	fmt.Printf("Proxmox:     %s\n", proxmoxStatus)
+
+	// RustDesk availability
+	rdLogger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	rdService := remotedesktop.New(rdLogger)
+	rdCtx, rdCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer rdCancel()
+	rdStatus, err := rdService.GetStatus(rdCtx)
+	rustdeskDisplay := "Not installed"
+	if err == nil && rdStatus.Installed {
+		if rdStatus.Version != "" && rdStatus.ID != "" {
+			rustdeskDisplay = fmt.Sprintf("Installed (v%s, ID: %s)", rdStatus.Version, rdStatus.ID)
+		} else if rdStatus.Version != "" {
+			rustdeskDisplay = fmt.Sprintf("Installed (v%s)", rdStatus.Version)
+		} else {
+			rustdeskDisplay = "Installed"
+		}
+	}
+	fmt.Printf("RustDesk:    %s\n", rustdeskDisplay)
 
 	return 0
 }
