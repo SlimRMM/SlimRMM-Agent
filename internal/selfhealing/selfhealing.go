@@ -235,11 +235,17 @@ func (w *Watchdog) performRestart() {
 		err = cmd.Run()
 
 	case "windows":
-		// Windows: Use sc.exe or net stop/start
-		exec.Command("net", "stop", "SlimRMMAgent").Run()
-		time.Sleep(2 * time.Second)
-		cmd = exec.Command("net", "start", "SlimRMMAgent")
-		err = cmd.Run()
+		// Windows: Schedule restart via a detached PowerShell process.
+		// We cannot use "net stop" + "net start" sequentially because stopping
+		// the service kills this process, so the start command never executes.
+		// Instead, spawn a PowerShell background job that outlives this process.
+		psScript := `Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 2; Restart-Service -Name SlimRMMAgent -Force' -WindowStyle Hidden`
+		cmd = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psScript)
+		err = cmd.Start()
+		if err == nil {
+			// Detach: do not wait for the child process
+			cmd.Process.Release()
+		}
 
 	default:
 		w.logger.Error("unsupported platform for self-restart", "os", runtime.GOOS)
