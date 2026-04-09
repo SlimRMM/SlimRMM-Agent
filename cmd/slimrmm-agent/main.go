@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand"
 	"os"
@@ -402,6 +403,9 @@ func cmdUninstall(paths config.Paths, logger *slog.Logger) int {
 
 // cmdStatus shows agent status
 func cmdStatus(paths config.Paths) int {
+	// Suppress background logging during status output
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
 	fmt.Println("SlimRMM Agent Status")
 	fmt.Println("====================")
 
