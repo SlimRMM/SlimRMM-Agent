@@ -11,8 +11,15 @@ import (
 	"strings"
 	"sync"
 
-	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
+
+var (
+	modadvapi32        = windows.NewLazySystemDLL("advapi32.dll")
+	procRegSetValueExW = modadvapi32.NewProc("RegSetValueExW")
 )
 
 // setRawValue writes a raw value to a registry key using the Windows API directly.
@@ -22,18 +29,22 @@ func setRawValue(key registry.Key, name string, valType uint32, data []byte) err
 	if err != nil {
 		return err
 	}
-	var dataPtr *byte
+	var dataPtr uintptr
 	if len(data) > 0 {
-		dataPtr = &data[0]
+		dataPtr = uintptr(unsafe.Pointer(&data[0]))
 	}
-	return windows.RegSetValueEx(
-		windows.Handle(key),
-		nameUTF16,
+	ret, _, _ := procRegSetValueExW.Call(
+		uintptr(key),
+		uintptr(unsafe.Pointer(nameUTF16)),
 		0,
-		valType,
+		uintptr(valType),
 		dataPtr,
-		uint32(len(data)),
+		uintptr(len(data)),
 	)
+	if ret != 0 {
+		return fmt.Errorf("RegSetValueEx failed with error code %d", ret)
+	}
+	return nil
 }
 
 // WindowsService implements Service for Windows registry operations.
