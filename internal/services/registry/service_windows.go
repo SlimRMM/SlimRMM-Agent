@@ -182,6 +182,11 @@ func (s *WindowsService) ListKey(_ context.Context, hive, path string) (*ListKey
 	defer key.Close()
 
 	result := &ListKeyResult{}
+	if path == "" {
+		result.Path = hive
+	} else {
+		result.Path = hive + `\` + path
+	}
 
 	// Enumerate subkeys.
 	subkeys, err := key.ReadSubKeyNames(-1)
