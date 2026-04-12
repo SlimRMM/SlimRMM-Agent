@@ -11,8 +11,30 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
+
+// setRawValue writes a raw value to a registry key using the Windows API directly.
+// This is needed because registry.Key only exposes typed setters, not a generic SetValue.
+func setRawValue(key registry.Key, name string, valType uint32, data []byte) error {
+	nameUTF16, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return err
+	}
+	var dataPtr *byte
+	if len(data) > 0 {
+		dataPtr = &data[0]
+	}
+	return windows.RegSetValueEx(
+		windows.Handle(key),
+		nameUTF16,
+		0,
+		valType,
+		dataPtr,
+		uint32(len(data)),
+	)
+}
 
 // WindowsService implements Service for Windows registry operations.
 type WindowsService struct{}
@@ -320,7 +342,7 @@ func copyKeyRecursive(srcRoot registry.Key, srcPath string, dstRoot registry.Key
 			if err != nil {
 				return fmt.Errorf("failed to read value %q: %w", name, err)
 			}
-			if err := dstKey.SetValue(name, valType, buf[:n]); err != nil {
+			if err := setRawValue(dstKey, name, valType, buf[:n]); err != nil {
 				return fmt.Errorf("failed to write value %q: %w", name, err)
 			}
 		}
@@ -504,7 +526,7 @@ func (s *WindowsService) RenameValue(_ context.Context, hive, path, oldName, new
 	}
 
 	// Write the value with the new name.
-	if err := key.SetValue(newName, valType, buf[:n]); err != nil {
+	if err := setRawValue(key, newName, valType, buf[:n]); err != nil {
 		return fmt.Errorf("failed to write value %q: %w", newName, err)
 	}
 
