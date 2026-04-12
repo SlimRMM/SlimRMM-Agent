@@ -26,11 +26,18 @@ var mutatingActions = map[string]bool{
 	"chown":           true,
 	"rename_entry":    true,
 	// Remote desktop actions
-	"install_remote_desktop":    true,
-	"uninstall_remote_desktop":  true,
+	"install_remote_desktop":         true,
+	"uninstall_remote_desktop":       true,
 	"remote_desktop_connect":         true,
 	"remote_desktop_disconnect":      true,
 	"remote_desktop_request_consent": true,
+	// Registry actions
+	"registry_create_key":   true,
+	"registry_delete_key":   true,
+	"registry_rename_key":   true,
+	"registry_set_value":    true,
+	"registry_delete_value": true,
+	"registry_rename_value": true,
 }
 
 // rootLevelActions lists actions whose fields are at the root level of the JSON
@@ -82,6 +89,15 @@ var rootLevelActions = map[string]bool{
 	"uninstall_deb":             true,
 	"uninstall_rpm":             true,
 	"cancel_software_uninstall": true,
+	// Registry actions - fields at root level
+	"registry_list":         true,
+	"registry_search":       true,
+	"registry_create_key":   true,
+	"registry_delete_key":   true,
+	"registry_rename_key":   true,
+	"registry_set_value":    true,
+	"registry_delete_value": true,
+	"registry_rename_value": true,
 }
 
 // handleMessage processes an incoming message.

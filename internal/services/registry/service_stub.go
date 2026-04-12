@@ -42,3 +42,43 @@ func (s *StubService) ExportKey(ctx context.Context, keyPath, outputPath string)
 func (s *StubService) IsAvailable() bool {
 	return false
 }
+
+// ListKey returns an error as registry operations are not available.
+func (s *StubService) ListKey(ctx context.Context, hive, path string) (*ListKeyResult, error) {
+	return nil, ErrNotWindows
+}
+
+// CreateKey returns an error as registry operations are not available.
+func (s *StubService) CreateKey(ctx context.Context, hive, path string) error {
+	return ErrNotWindows
+}
+
+// DeleteKey returns an error as registry operations are not available.
+func (s *StubService) DeleteKey(ctx context.Context, hive, path string) error {
+	return ErrNotWindows
+}
+
+// RenameKey returns an error as registry operations are not available.
+func (s *StubService) RenameKey(ctx context.Context, hive, path, newName string) error {
+	return ErrNotWindows
+}
+
+// SetValue returns an error as registry operations are not available.
+func (s *StubService) SetValue(ctx context.Context, hive, path, name, valueType string, data interface{}) error {
+	return ErrNotWindows
+}
+
+// DeleteValue returns an error as registry operations are not available.
+func (s *StubService) DeleteValue(ctx context.Context, hive, path, name string) error {
+	return ErrNotWindows
+}
+
+// RenameValue returns an error as registry operations are not available.
+func (s *StubService) RenameValue(ctx context.Context, hive, path, oldName, newName string) error {
+	return ErrNotWindows
+}
+
+// SearchKey returns an error as registry operations are not available.
+func (s *StubService) SearchKey(ctx context.Context, hive, path, query string, maxResults int) (*SearchResult, error) {
+	return nil, ErrNotWindows
+}

@@ -193,6 +193,16 @@ func (h *Handler) registerHandlers() {
 
 	// Remote desktop handlers (RustDesk)
 	h.registerRemoteDesktopHandlers()
+
+	// Registry operations
+	h.handlers["registry_list"] = h.handleRegistryList
+	h.handlers["registry_search"] = h.handleRegistrySearch
+	h.handlers["registry_create_key"] = h.handleRegistryCreateKey
+	h.handlers["registry_delete_key"] = h.handleRegistryDeleteKey
+	h.handlers["registry_rename_key"] = h.handleRegistryRenameKey
+	h.handlers["registry_set_value"] = h.handleRegistrySetValue
+	h.handlers["registry_delete_value"] = h.handleRegistryDeleteValue
+	h.handlers["registry_rename_value"] = h.handleRegistryRenameValue
 }
 
 // Command handlers
