@@ -3,9 +3,11 @@
 package security
 
 import (
+	"bufio"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // CollectSecurityInfo gathers security posture on Linux systems.
@@ -17,6 +19,11 @@ func CollectSecurityInfo() *Info {
 	collectDiskEncryptionInfo(info)
 	collectRDPInfo(info)
 	collectPasswordPolicyInfo(info)
+	collectSecureBootInfo(info)
+	collectOpenPortsInfo(info)
+	collectAuditLoggingInfo(info)
+	collectExpiredCertsInfo(info)
+	collectRootkitScanInfo(info)
 
 	return info
 }
@@ -172,6 +179,125 @@ func collectPasswordPolicyInfo(info *Info) {
 					return
 				}
 			}
+		}
+	}
+}
+
+// collectSecureBootInfo checks if Secure Boot is enabled.
+func collectSecureBootInfo(info *Info) {
+	// Try mokutil first
+	out, err := exec.Command("mokutil", "--sb-state").Output()
+	if err == nil {
+		if strings.Contains(strings.ToLower(string(out)), "secureboot enabled") {
+			info.SecureBootEnabled = true
+			return
+		}
+	}
+
+	// Fallback: check if EFI firmware directory exists (indicates UEFI boot)
+	if _, err := os.Stat("/sys/firmware/efi"); err == nil {
+		// EFI exists; check secure boot variable
+		data, err := os.ReadFile("/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c")
+		if err == nil && len(data) >= 5 && data[4] == 1 {
+			info.SecureBootEnabled = true
+		}
+	}
+}
+
+// collectOpenPortsInfo counts unexpected listening ports.
+func collectOpenPortsInfo(info *Info) {
+	out, err := exec.Command("ss", "-tlnH").Output()
+	if err != nil {
+		return
+	}
+
+	commonPorts := map[string]bool{
+		"22": true, "80": true, "443": true,
+	}
+
+	count := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		// Local address is field 3 (0-indexed), format addr:port or [addr]:port
+		local := fields[3]
+		port := local
+		if idx := strings.LastIndex(local, ":"); idx >= 0 {
+			port = local[idx+1:]
+		}
+		if !commonPorts[port] {
+			count++
+		}
+	}
+	info.OpenPortsCount = count
+}
+
+// collectAuditLoggingInfo checks if auditd or rsyslog is active.
+func collectAuditLoggingInfo(info *Info) {
+	for _, svc := range []string{"auditd", "rsyslog", "syslog"} {
+		out, err := exec.Command("systemctl", "is-active", svc).Output()
+		if err == nil && strings.TrimSpace(string(out)) == "active" {
+			info.AuditLoggingActive = true
+			return
+		}
+	}
+}
+
+// collectExpiredCertsInfo counts expired certificates in /etc/ssl/certs/.
+func collectExpiredCertsInfo(info *Info) {
+	entries, err := os.ReadDir("/etc/ssl/certs")
+	if err != nil {
+		return
+	}
+
+	expired := 0
+	for _, entry := range entries {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".pem") && !strings.HasSuffix(entry.Name(), ".crt")) {
+			continue
+		}
+		path := "/etc/ssl/certs/" + entry.Name()
+		// openssl x509 -checkend 0 exits non-zero if cert has expired
+		err := exec.Command("openssl", "x509", "-in", path, "-checkend", "0", "-noout").Run()
+		if err != nil {
+			expired++
+		}
+	}
+	info.ExpiredCertificates = expired
+}
+
+// collectRootkitScanInfo checks for rkhunter or chkrootkit and their last scan.
+func collectRootkitScanInfo(info *Info) {
+	// Check rkhunter log
+	if fi, err := os.Stat("/var/log/rkhunter.log"); err == nil {
+		info.LastRootkitScan = fi.ModTime().UTC().Format(time.RFC3339)
+		// Check if last run was clean
+		if f, err := os.Open("/var/log/rkhunter.log"); err == nil {
+			defer f.Close()
+			scanner := bufio.NewScanner(f)
+			lastResult := ""
+			for scanner.Scan() {
+				line := scanner.Text()
+				if strings.Contains(line, "System checks summary") || strings.Contains(line, "No warnings found") || strings.Contains(line, "Warning") {
+					lastResult = line
+				}
+			}
+			info.RootkitScanClean = strings.Contains(lastResult, "No warnings found") || !strings.Contains(lastResult, "Warning")
+		}
+		return
+	}
+
+	// Check chkrootkit log
+	if fi, err := os.Stat("/var/log/chkrootkit.log"); err == nil {
+		info.LastRootkitScan = fi.ModTime().UTC().Format(time.RFC3339)
+		data, err := os.ReadFile("/var/log/chkrootkit.log")
+		if err == nil {
+			info.RootkitScanClean = !strings.Contains(string(data), "INFECTED")
 		}
 	}
 }
