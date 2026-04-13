@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/services/backup"
+	"github.com/slimrmm/slimrmm-agent/internal/services/security"
 )
 
 const (
@@ -123,6 +124,7 @@ type HeartbeatMessage struct {
 	Winget             *HeartbeatWinget           `json:"winget,omitempty"`
 	BackupCapabilities *backup.BackupCapabilities `json:"backup_capabilities,omitempty"`
 	RustDesk           *HeartbeatRustDesk         `json:"rustdesk,omitempty"`
+	SecurityInfo       *security.Info             `json:"security_info,omitempty"`
 	DroppedMessages    int64                      `json:"dropped_messages,omitempty"`
 }
 

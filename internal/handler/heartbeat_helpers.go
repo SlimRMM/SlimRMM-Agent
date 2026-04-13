@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/slimrmm/slimrmm-agent/internal/monitor"
+	"github.com/slimrmm/slimrmm-agent/internal/services/security"
 	"github.com/slimrmm/slimrmm-agent/internal/winget"
 	"github.com/slimrmm/slimrmm-agent/pkg/version"
 )
@@ -349,6 +350,21 @@ func (h *Handler) bootstrapWingetEnvironment(parentCtx context.Context) {
 	} else if changed {
 		h.logger.Info("WinGet environment was updated (PS7 or WinGet.Client module installed/updated)")
 		winget.GetDefault().Refresh()
+	}
+}
+
+// addSecurityInfo adds security posture info to heartbeat if changed.
+func (h *Handler) addSecurityInfo(_ context.Context, heartbeat *HeartbeatMessage) {
+	secInfo := security.CollectSecurityInfo()
+
+	currentHash := hashStruct(secInfo)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if currentHash != h.lastSecurityHash {
+		heartbeat.SecurityInfo = secInfo
+		h.lastSecurityHash = currentHash
+		h.logger.Debug("security info changed, including in heartbeat")
 	}
 }
 

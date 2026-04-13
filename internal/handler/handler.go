@@ -92,8 +92,9 @@ type Handler struct {
 	// Delta tracking for heartbeat optimization - only send when changed
 	lastProxmoxHash string
 	lastHyperVHash  string
-	lastDockerHash  string
-	lastWingetHash  string
+	lastDockerHash   string
+	lastWingetHash   string
+	lastSecurityHash string
 
 	// Winget update failure tracking (exponential backoff on repeated failures)
 	wingetUpdateFailCount    int
